@@ -21,6 +21,13 @@ macOS 主机为下一阶段。
 
 已编译的 Windows 主机：`host-windows/target/release/lighting-host.exe`。
 
+主机二进制依赖 DXGI / WASAPI / `eframe`，只能在 Windows 上 `cargo run` / `cargo build`。Linux 上可跑不依赖 Win32 的辅助逻辑：
+
+```bash
+cd host-windows
+cargo test --lib
+```
+
 启动主机：
 
 ```powershell
