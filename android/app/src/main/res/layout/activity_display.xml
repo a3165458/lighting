@@ -31,16 +31,16 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="top"
-        android:background="#B3000000"
+        android:background="#E60A0B10"
         android:clickable="false"
         android:focusable="false"
         android:gravity="center_vertical"
-        android:minHeight="28dp"
+        android:minHeight="30dp"
         android:orientation="vertical"
-        android:paddingLeft="12dp"
-        android:paddingTop="5dp"
-        android:paddingRight="12dp"
-        android:paddingBottom="5dp">
+        android:paddingLeft="14dp"
+        android:paddingTop="6dp"
+        android:paddingRight="14dp"
+        android:paddingBottom="6dp">
 
         <TextView
             android:id="@+id/status"
@@ -49,7 +49,7 @@
             android:clickable="false"
             android:focusable="false"
             android:text="连接中…"
-            android:textColor="@android:color/white"
+            android:textColor="@color/text"
             android:textSize="12sp" />
 
         <TextView
@@ -61,7 +61,7 @@
             android:ellipsize="end"
             android:focusable="false"
             android:maxLines="4"
-            android:textColor="#CCFFFFFF"
+            android:textColor="@color/text_muted"
             android:textSize="11sp"
             android:visibility="gone" />
     </app.lighting.display.PassThroughBar>
