@@ -286,8 +286,6 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "1".into(),
             "-profile:v".into(),
             settings.profile.clone(),
-            "-level:v".into(),
-            level,
             "-forced-idr".into(),
             "1".into(),
             "-aud".into(),
@@ -395,7 +393,8 @@ pub fn avc_level(width: u32, height: u32, fps: u32) -> &'static str {
     } else if area <= 1920 * 1088 && fps <= 30 {
         "4.0"
     } else if area <= 1920 * 1088 {
-        "4.1"
+        // 1080p60 exceeds Level 4.1 MaxMBPS; NVENC rejects 4.1 as Invalid Level.
+        "4.2"
     } else if area <= 2560 * 1440 {
         "5.0"
     } else {
