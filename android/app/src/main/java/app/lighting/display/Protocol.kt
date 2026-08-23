@@ -107,6 +107,7 @@ object LitProtocol {
             audioEnabled = obj.optBoolean("audioEnabled", false),
             audioSampleRate = obj.optInt("audioSampleRate", 48000),
             audioChannels = obj.optInt("audioChannels", 2),
+            hostName = obj.optString("hostName").trim(),
         )
     }
 
@@ -136,6 +137,8 @@ data class StreamConfig(
     val audioEnabled: Boolean = false,
     val audioSampleRate: Int = 48000,
     val audioChannels: Int = 2,
+    /** PC name for the connection history; older hosts leave it empty. */
+    val hostName: String = "",
 )
 
 class LitSocket(host: String, port: Int, connectTimeoutMs: Int = 1_500) : AutoCloseable {
