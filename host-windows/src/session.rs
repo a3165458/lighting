@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 use crate::adb;
 use crate::displays::{self, DisplayInfo};
@@ -126,7 +126,7 @@ async fn run_session_inner(
 
     set_status(&status, "等待设备", "请在平板上打开 Lighting 并连接");
 
-    let (stop_tx, mut stop_rx) = watch::channel(false);
+    let (stop_tx, stop_rx) = watch::channel(false);
     let stop2 = stop.clone();
     tokio::spawn(async move {
         while !stop2.load(Ordering::Relaxed) {
@@ -135,7 +135,37 @@ async fn run_session_inner(
         let _ = stop_tx.send(true);
     });
 
-    // Stay on the same listen + adb reverse until the user clicks 停止.
+    // Accept never stops while the share is running. Incoming reconnects are
+    // parked here during the previous client's teardown (ffmpeg wait / adb).
+    let (conn_tx, mut conn_rx) = mpsc::channel(1);
+    let mut accept_stop = stop_rx.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = accept_stop.changed() => break,
+                accepted = listener.accept() => {
+                    match accepted {
+                        Ok(pair) => {
+                            tokio::select! {
+                                _ = accept_stop.changed() => break,
+                                sent = conn_tx.send(pair) => {
+                                    if sent.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!("accept failed: {err:#}");
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    let mut stop_rx = stop_rx;
     loop {
         if !session_policy::continue_accept_loop(stop.load(Ordering::Relaxed)) {
             cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref()).await;
@@ -147,8 +177,11 @@ async fn run_session_inner(
                 cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref()).await;
                 return Ok(());
             }
-            accepted = listener.accept() => {
-                let (s, addr) = accepted.context("accept")?;
+            incoming = conn_rx.recv() => {
+                let Some((s, addr)) = incoming else {
+                    cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref()).await;
+                    anyhow::bail!("listen loop ended");
+                };
                 set_status(&status, "已连接", format!("{addr}"));
                 s
             }
@@ -177,10 +210,14 @@ async fn run_session_inner(
             return Ok(());
         }
 
-        if let (Some(adb_bin), Some(serial)) = (adb_path.as_ref(), reverse_serial.as_deref()) {
-            if let Err(err) = adb::reverse_port(adb_bin, serial, protocol::PORT).await {
-                tracing::warn!("re-apply adb reverse failed: {err:#}");
-            }
+        // Refresh reverse in the background so USB 127.0.0.1 is restored
+        // without stalling the already-running accept task.
+        if let (Some(adb_bin), Some(serial)) = (adb_path.clone(), reverse_serial.clone()) {
+            tokio::spawn(async move {
+                if let Err(err) = adb::reverse_port(&adb_bin, &serial, protocol::PORT).await {
+                    tracing::warn!("re-apply adb reverse failed: {err:#}");
+                }
+            });
         }
         set_status(&status, "等待设备", "上一台已断开，等待重新连接");
     }
@@ -413,9 +450,9 @@ async fn handle_client(
     }
 
     audio_stop.store(true, Ordering::Relaxed);
-    session.stop();
-    let _ = writer.shutdown().await;
     reader_task.abort();
+    let _ = writer.shutdown().await;
+    session.stop_in_background();
     Ok(())
 }
 

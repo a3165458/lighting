@@ -137,5 +137,6 @@ Audio PCM：默认 48000 Hz、立体声、16-bit little-endian 交错。
 ## 断线与编码器重启
 
 - 用户点击「开始共享」后，主机保持同一 `TcpListener` 与（若已成功）`adb reverse`。客户端 EOF / broken pipe / 拔线只结束**当前** `handle_client`，然后回到「等待设备」，**不要**拆掉整次共享。只有用户点「停止」才解绑 reverse、结束会话。
+- 共享仍在运行时，`accept` 与上一台客户端的拆除并行：ffmpeg `wait()` 和 `adb reverse` 刷新不得挡住下一台进来。设备侧第一次自动重连应略等（约 650ms + 抖动），避免打进拆除空窗；仍失败则本页点选手动重连。
 - 编码器中途重启或切换（含 ddagrab → gdigrab）时，主机必须先再发一包 codec-config，再发一帧 IDR，然后才继续普通帧。设备在已配置解码器后若再收到 `FLAG_CODEC_CONFIG`，应重新 `configure` MediaCodec，避免黑屏。
 - 设备停留在显示页且用户未返回时，socket 断开后应短回退自动重连数次；仍失败则留在本页，允许点状态栏/屏幕手动重连。

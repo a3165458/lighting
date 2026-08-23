@@ -26,14 +26,28 @@ pub struct EncodeSettings {
 }
 
 pub struct EncoderSession {
-    child: Child,
+    child: Option<Child>,
     pub rx: Receiver<EncodedPacket>,
 }
 
 impl EncoderSession {
     pub fn stop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    /// Kill ffmpeg without blocking the accept loop on `wait()`.
+    pub fn stop_in_background(mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = std::thread::Builder::new()
+                .name("lighting-ffmpeg-wait".into())
+                .spawn(move || {
+                    let _ = child.wait();
+                });
+        }
     }
 }
 
@@ -103,7 +117,10 @@ pub fn start_encoder(
         }
     });
 
-    Ok(EncoderSession { child, rx })
+    Ok(EncoderSession {
+        child: Some(child),
+        rx,
+    })
 }
 
 fn is_hevc(codec: &str) -> bool {
@@ -236,7 +253,10 @@ pub fn start_encoder_gdigrab(
             tracing::warn!("encoder pump ended: {err:#}");
         }
     });
-    Ok(EncoderSession { child, rx })
+    Ok(EncoderSession {
+        child: Some(child),
+        rx,
+    })
 }
 
 fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
