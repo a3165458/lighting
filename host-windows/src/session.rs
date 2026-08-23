@@ -391,34 +391,9 @@ async fn handle_client(
         },
     };
 
-    let mut session = None;
-    let mut last_err = None;
-    for enc in encoder::encoder_fallback_chain(&codec) {
-        match encoder::start_encoder(&ffmpeg, &display, &settings, enc) {
-            Ok(s) => {
-                tracing::info!("using encoder {enc}");
-                session = Some(s);
-                break;
-            }
-            Err(err) => {
-                tracing::warn!("encoder {enc} failed: {err:#}");
-                last_err = Some(err);
-            }
-        }
-    }
-    if session.is_none() {
-        match encoder::start_encoder_gdigrab(
-            &ffmpeg,
-            &display,
-            &settings,
-            encoder::encoder_fallback_chain(&codec)[0],
-        ) {
-            Ok(s) => session = Some(s),
-            Err(err) => anyhow::bail!("启动编码器失败: {err:#}; 先前: {last_err:?}"),
-        }
-    }
-    let mut session = session.context("no encoder")?;
     let hevc = codec.eq_ignore_ascii_case("hevc") || codec.eq_ignore_ascii_case("h265");
+    let (mut session, bootstrap) =
+        start_live_encoder(&ffmpeg, &display, &settings, hevc)?;
     let t0 = std::time::Instant::now();
     let audio_stop = Arc::new(AtomicBool::new(false));
     let (audio_tx, audio_rx) = std::sync::mpsc::sync_channel::<crate::audio::AudioPacket>(48);
@@ -450,6 +425,10 @@ async fn handle_client(
             }
         }
     });
+
+    if let Err(err) = write_bootstrap(&mut writer, t0, &bootstrap).await {
+        anyhow::bail!("发送首帧失败: {err:#}");
+    }
 
     while !stop.load(Ordering::Relaxed) {
         while let Ok(pkt) = audio_rx.try_recv() {
@@ -542,15 +521,68 @@ async fn write_bootstrap<W: tokio::io::AsyncWrite + Unpin>(
     Ok(())
 }
 
+fn start_live_encoder(
+    ffmpeg: &std::path::PathBuf,
+    display: &DisplayInfo,
+    settings: &EncodeSettings,
+    hevc: bool,
+) -> Result<(encoder::EncoderSession, Vec<EncodedPacket>)> {
+    let mut last_err: Option<anyhow::Error> = None;
+    for enc in encoder::encoder_fallback_chain(&settings.codec) {
+        let session = match encoder::start_encoder(ffmpeg, display, settings, enc) {
+            Ok(s) => s,
+            Err(err) => {
+                tracing::warn!("encoder {enc} failed: {err:#}");
+                last_err = Some(err);
+                continue;
+            }
+        };
+        match annexb::recv_bootstrap(&session.rx, Duration::from_secs(3), hevc) {
+            Ok(bootstrap) => {
+                tracing::info!("using encoder {enc}");
+                return Ok((session, bootstrap));
+            }
+            Err(err) => {
+                tracing::warn!("{enc} died before codec-config + IDR: {err:#}");
+                last_err = Some(err);
+            }
+        }
+    }
+    tracing::warn!("desktop duplication encoders failed, trying gdigrab: {:?}", last_err);
+    restart_encoder_with_bootstrap(ffmpeg, display, settings, hevc)
+}
+
 fn restart_encoder_with_bootstrap(
     ffmpeg: &std::path::PathBuf,
     display: &DisplayInfo,
     settings: &EncodeSettings,
     hevc: bool,
 ) -> Result<(encoder::EncoderSession, Vec<EncodedPacket>)> {
-    let session = encoder::start_encoder_gdigrab(ffmpeg, display, settings, &settings.encoder)?;
-    let bootstrap = annexb::recv_bootstrap(&session.rx, Duration::from_secs(3), hevc)?;
-    Ok((session, bootstrap))
+    let mut last_err: Option<anyhow::Error> = None;
+    for enc in encoder::encoder_fallback_chain(&settings.codec) {
+        let session = match encoder::start_encoder_gdigrab(ffmpeg, display, settings, enc) {
+            Ok(s) => s,
+            Err(err) => {
+                tracing::warn!("gdigrab encoder {enc} failed: {err:#}");
+                last_err = Some(err);
+                continue;
+            }
+        };
+        match annexb::recv_bootstrap(&session.rx, Duration::from_secs(3), hevc) {
+            Ok(bootstrap) => {
+                tracing::info!("gdigrab bootstrap ok with {enc}");
+                return Ok((session, bootstrap));
+            }
+            Err(err) => {
+                tracing::warn!("{enc} closed before codec-config + IDR: {err:#}");
+                last_err = Some(err);
+            }
+        }
+    }
+    anyhow::bail!(
+        "encoder pipe closed before codec-config + IDR: {:?}",
+        last_err
+    )
 }
 
 fn codec_limit(hello: &Hello, codec: &str) -> (u32, u32, u32, bool) {
@@ -818,7 +850,7 @@ mod tests {
 
     #[test]
     fn avc_level_matches_common_phones() {
-        assert_eq!(crate::encoder::avc_level(1920, 1080, 60), "4.1");
+        assert_eq!(crate::encoder::avc_level(1920, 1080, 60), "4.2");
         assert_eq!(crate::encoder::avc_level(1280, 720, 60), "3.2");
         assert_eq!(crate::encoder::avc_level(2560, 1440, 60), "5.0");
     }

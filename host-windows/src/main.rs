@@ -53,8 +53,8 @@ fn main() -> eframe::Result<()> {
 
     let native = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([540.0, 640.0])
-            .with_min_inner_size([440.0, 500.0])
+            .with_inner_size([560.0, 720.0])
+            .with_min_inner_size([480.0, 560.0])
             .with_title("Lighting 副屏"),
         ..Default::default()
     };
@@ -63,10 +63,70 @@ fn main() -> eframe::Result<()> {
         native,
         Box::new(|cc| {
             install_cjk_fonts(&cc.egui_ctx);
-            cc.egui_ctx.set_pixels_per_point(1.15);
+            apply_theme(&cc.egui_ctx);
             Ok(Box::new(LightingApp::new()))
         }),
     )
+}
+
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(106, 80, 249);
+const BG: egui::Color32 = egui::Color32::from_rgb(247, 247, 249);
+const CARD: egui::Color32 = egui::Color32::WHITE;
+const TEXT: egui::Color32 = egui::Color32::from_rgb(24, 23, 37);
+const MUTED: egui::Color32 = egui::Color32::from_rgb(120, 118, 135);
+const BORDER: egui::Color32 = egui::Color32::from_rgb(228, 226, 235);
+const OK: egui::Color32 = egui::Color32::from_rgb(62, 168, 118);
+const WARN: egui::Color32 = egui::Color32::from_rgb(214, 158, 46);
+const ERR: egui::Color32 = egui::Color32::from_rgb(214, 84, 84);
+
+fn apply_theme(ctx: &egui::Context) {
+    let mut style = (*ctx.style()).clone();
+    style.visuals = egui::Visuals::light();
+    style.visuals.panel_fill = BG;
+    style.visuals.window_fill = BG;
+    style.visuals.extreme_bg_color = egui::Color32::from_rgb(240, 240, 244);
+    style.visuals.widgets.noninteractive.bg_fill = CARD;
+    style.visuals.widgets.noninteractive.fg_stroke.color = TEXT;
+    style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(238, 236, 246);
+    style.visuals.widgets.inactive.weak_bg_fill = egui::Color32::from_rgb(238, 236, 246);
+    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(232, 229, 246);
+    style.visuals.widgets.hovered.weak_bg_fill = egui::Color32::from_rgb(232, 229, 246);
+    style.visuals.widgets.active.bg_fill = ACCENT;
+    style.visuals.widgets.active.weak_bg_fill = ACCENT;
+    style.visuals.widgets.open.bg_fill = egui::Color32::from_rgb(238, 236, 246);
+    style.visuals.selection.bg_fill = ACCENT.linear_multiply(0.25);
+    style.visuals.selection.stroke.color = ACCENT;
+    style.visuals.hyperlink_color = ACCENT;
+    style.visuals.widgets.noninteractive.bg_stroke.color = BORDER;
+    style.visuals.widgets.inactive.bg_stroke.color = BORDER;
+    style.visuals.widgets.hovered.bg_stroke.color = ACCENT;
+    style.visuals.widgets.active.bg_stroke.color = ACCENT;
+    style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+    style.spacing.button_padding = egui::vec2(16.0, 8.0);
+    style.spacing.interact_size.y = 30.0;
+    style.spacing.combo_width = 240.0;
+    style.visuals.widgets.noninteractive.corner_radius = 10.0.into();
+    style.visuals.widgets.inactive.corner_radius = 10.0.into();
+    style.visuals.widgets.hovered.corner_radius = 10.0.into();
+    style.visuals.widgets.active.corner_radius = 10.0.into();
+    style.visuals.widgets.open.corner_radius = 10.0.into();
+    style.visuals.window_corner_radius = 14.0.into();
+    style.visuals.menu_corner_radius = 10.0.into();
+    ctx.set_style(style);
+    ctx.set_pixels_per_point(1.15);
+}
+
+fn card_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(CARD)
+        .stroke(egui::Stroke::new(1.0, BORDER))
+        .corner_radius(14.0)
+        .inner_margin(egui::Margin::same(16))
+        .outer_margin(egui::Margin::symmetric(0, 6))
+}
+
+fn section_title(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).size(15.0).strong().color(TEXT));
 }
 
 fn install_cjk_fonts(ctx: &egui::Context) {
@@ -308,146 +368,191 @@ impl eframe::App for LightingApp {
             self.running = false;
         }
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Lighting 副屏");
-            ui.label("插上数据线，点「开始共享」，平板再点「USB 一键连接」。");
-            ui.add_space(10.0);
-
-            ui.horizontal(|ui| {
-                let start = ui.add_enabled(
-                    !snap.running,
-                    egui::Button::new(egui::RichText::new("开始共享").size(18.0))
-                        .min_size(egui::vec2(168.0, 36.0)),
-                );
-                if start.clicked() {
-                    self.start();
-                }
-                let stop = ui.add_enabled(
-                    snap.running,
-                    egui::Button::new("停止").min_size(egui::vec2(72.0, 36.0)),
-                );
-                if stop.clicked() {
-                    self.stop_session();
-                }
-                if ui.button("刷新").clicked() {
-                    self.refresh_displays();
-                    self.refresh_devices();
-                }
-            });
-
-            ui.add_space(8.0);
-            let (transport, transport_color) =
-                usb_transport_line(&snap, &self.adb_path, &self.devices);
-            ui.colored_label(transport_color, transport);
-
-            let ready: Vec<&adb::AdbDevice> = self
-                .devices
-                .iter()
-                .filter(|d| d.state == "device")
-                .collect();
-            if ready.len() > 1 {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(BG).inner_margin(egui::Margin::same(18)))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new("Lighting 副屏").size(26.0).strong().color(TEXT));
+                        ui.label(egui::RichText::new("把 Android 平板/手机变成电脑的第二块屏").color(MUTED));
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let phase = display_phase(&snap.phase);
+                        let (chip, chip_color) = phase_chip(&phase);
+                        egui::Frame::new()
+                            .fill(chip_color.linear_multiply(0.12))
+                            .stroke(egui::Stroke::new(1.0, chip_color))
+                            .corner_radius(999.0)
+                            .inner_margin(egui::Margin::symmetric(12, 6))
+                            .show(ui, |ui| {
+                                ui.label(egui::RichText::new(chip).color(chip_color).strong());
+                            });
+                    });
+                });
                 ui.add_space(4.0);
-                ui.label("检测到多台设备，请选一台：");
-                device_combo(ui, "device_main", &self.devices, &mut self.selected_device);
-            }
 
-            ui.add_space(8.0);
-            ui.label("要投出的显示器（扩展模式请先安装虚拟屏并选中副屏）：");
-            if self.displays.is_empty() {
-                ui.colored_label(egui::Color32::YELLOW, "未枚举到显示器");
-            } else {
-                egui::ComboBox::from_id_salt("display")
-                    .selected_text(
-                        self.displays
-                            .get(self.selected_display)
-                            .map(|d| d.label())
-                            .unwrap_or_default(),
-                    )
-                    .show_ui(ui, |ui| {
-                        for (i, d) in self.displays.iter().enumerate() {
-                            ui.selectable_value(&mut self.selected_display, i, d.label());
-                        }
-                    });
-            }
-
-            ui.add_space(8.0);
-            ui.separator();
-            ui.label("输出分辨率（自动不超过该机硬解上限与对齐要求）");
-            ui.horizontal(|ui| {
-                ui.radio_value(&mut self.max_res, MaxRes::Device, "匹配设备");
-                ui.radio_value(&mut self.max_res, MaxRes::Balanced, "平衡 75%");
-                ui.radio_value(&mut self.max_res, MaxRes::Smooth, "流畅 55%");
-            });
-            ui.horizontal(|ui| {
-                ui.radio_value(&mut self.max_res, MaxRes::Fhd, "强制 1080p");
-                ui.radio_value(&mut self.max_res, MaxRes::Uhd2k, "强制 2K");
-            });
-            ui.horizontal(|ui| {
-                ui.label("帧率");
-                ui.add(egui::Slider::new(&mut self.fps, 30..=120).suffix(" fps"));
-            });
-            ui.horizontal(|ui| {
-                ui.label("码率上限");
-                ui.add(egui::Slider::new(&mut self.bitrate_kbps, 5_000..=40_000).suffix(" kbps"));
-            });
-            ui.checkbox(&mut self.send_audio, "同步传输系统声音（桌面音频）");
-            ui.checkbox(&mut self.prefer_hevc, "优先 HEVC（设备支持时，文字更清晰）");
-
-            ui.add_space(10.0);
-            ui.separator();
-            let phase = display_phase(&snap.phase);
-            ui.horizontal(|ui| {
-                ui.strong("阶段");
-                ui.colored_label(phase_color(&phase), &phase);
-            });
-            let detail = human_detail(&snap);
-            ui.label(if detail.is_empty() { "—" } else { detail.as_str() });
-            ui.label(metrics_line(snap.frames, snap.bitrate_kbps));
-            if !self.last_error.is_empty() {
-                ui.colored_label(
-                    egui::Color32::from_rgb(220, 80, 80),
-                    human_last_error(&self.last_error),
-                );
-            }
-
-            ui.add_space(8.0);
-            egui::CollapsingHeader::new("高级")
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.label("局域网绑定（一般不用改）");
+                card_frame().show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label("地址");
-                        ui.text_edit_singleline(&mut self.bind_host);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("端口");
-                        ui.add(egui::DragValue::new(&mut self.bind_port).range(1..=65535));
+                        ui.vertical(|ui| {
+                            section_title(ui, "开始");
+                            ui.label(egui::RichText::new("插上数据线，点开始共享，平板再点「USB 一键连接」").color(MUTED));
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let stop = ui.add_enabled(
+                                snap.running,
+                                egui::Button::new(egui::RichText::new("停止").size(15.0))
+                                    .min_size(egui::vec2(72.0, 40.0)),
+                            );
+                            if stop.clicked() {
+                                self.stop_session();
+                            }
+                            let start = ui.add_enabled(
+                                !snap.running,
+                                egui::Button::new(
+                                    egui::RichText::new("开始共享").size(16.0).color(egui::Color32::WHITE).strong(),
+                                )
+                                .fill(ACCENT)
+                                .min_size(egui::vec2(150.0, 40.0)),
+                            );
+                            if start.clicked() {
+                                self.start();
+                            }
+                        });
                     });
                     ui.add_space(6.0);
-                    ui.label("Android 设备");
-                    if self.devices.is_empty() {
-                        ui.weak("未检测到设备");
-                    } else {
-                        device_combo(ui, "device_advanced", &self.devices, &mut self.selected_device);
-                    }
-                    if !self.adb_path.is_empty() {
-                        ui.weak(format!("adb：{}", self.adb_path));
-                    }
-                    if !self.last_error.is_empty() {
-                        ui.collapsing("详情", |ui| {
-                            ui.weak(&self.last_error);
+                    let (transport, transport_color) =
+                        usb_transport_line(&snap, &self.adb_path, &self.devices);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("USB").color(MUTED));
+                        ui.colored_label(transport_color, transport);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("刷新").clicked() {
+                                self.refresh_displays();
+                                self.refresh_devices();
+                            }
                         });
-                    }
-                    if ui.button("刷新显示器 / 设备").clicked() {
-                        self.refresh_displays();
-                        self.refresh_devices();
+                    });
+                    let ready: Vec<&adb::AdbDevice> = self
+                        .devices
+                        .iter()
+                        .filter(|d| d.state == "device")
+                        .collect();
+                    if ready.len() > 1 {
+                        ui.add_space(4.0);
+                        ui.label("检测到多台设备，请选一台：");
+                        device_combo(ui, "device_main", &self.devices, &mut self.selected_device);
                     }
                 });
 
-            ui.add_space(12.0);
-            ui.weak("扩展屏：winget install VirtualDrivers.Virtual-Display-Driver ，然后在 Windows 显示设置里设为「扩展」并选这块虚拟屏。");
-            ui.weak("平板触控：单击/拖动、长按右键、双指滚动。局域网请在两边的「高级」里填写。");
-        });
+                card_frame().show(ui, |ui| {
+                    section_title(ui, "投屏");
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("要投出的显示器").color(MUTED));
+                    if self.displays.is_empty() {
+                        ui.colored_label(WARN, "未枚举到显示器");
+                    } else {
+                        egui::ComboBox::from_id_salt("display")
+                            .selected_text(
+                                egui::RichText::new(
+                                    self.displays
+                                        .get(self.selected_display)
+                                        .map(|d| d.label())
+                                        .unwrap_or_default(),
+                                )
+                                .color(TEXT),
+                            )
+                            .width(320.0)
+                            .show_ui(ui, |ui| {
+                                for (i, d) in self.displays.iter().enumerate() {
+                                    ui.selectable_value(&mut self.selected_display, i, d.label());
+                                }
+                            });
+                    }
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new("输出分辨率（自动不超过该机硬解上限）").color(MUTED));
+                    ui.horizontal_wrapped(|ui| {
+                        ui.radio_value(&mut self.max_res, MaxRes::Device, "匹配设备");
+                        ui.radio_value(&mut self.max_res, MaxRes::Balanced, "平衡 75%");
+                        ui.radio_value(&mut self.max_res, MaxRes::Smooth, "流畅 55%");
+                        ui.radio_value(&mut self.max_res, MaxRes::Fhd, "1080p");
+                        ui.radio_value(&mut self.max_res, MaxRes::Uhd2k, "2K");
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("帧率").color(MUTED));
+                        ui.add(egui::Slider::new(&mut self.fps, 30..=120).suffix(" fps"));
+                        ui.label(egui::RichText::new("码率").color(MUTED));
+                        ui.add(egui::Slider::new(&mut self.bitrate_kbps, 5_000..=40_000).suffix(" kbps"));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.send_audio, "同步系统声音");
+                        ui.checkbox(&mut self.prefer_hevc, "优先 HEVC");
+                    });
+                });
+
+                card_frame().show(ui, |ui| {
+                    section_title(ui, "状态");
+                    ui.add_space(4.0);
+                    let phase = display_phase(&snap.phase);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("阶段").color(MUTED));
+                        ui.colored_label(phase_color(&phase), egui::RichText::new(&phase).strong());
+                    });
+                    let detail = human_detail(&snap);
+                    ui.label(if detail.is_empty() { "—" } else { detail.as_str() });
+                    ui.label(egui::RichText::new(metrics_line(snap.frames, snap.bitrate_kbps)).color(MUTED));
+                    if !self.last_error.is_empty() {
+                        ui.colored_label(ERR, human_last_error(&self.last_error));
+                    }
+                });
+
+                egui::CollapsingHeader::new(egui::RichText::new("高级").color(MUTED))
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        card_frame().show(ui, |ui| {
+                            ui.label(egui::RichText::new("局域网绑定（一般不用改）").color(MUTED));
+                            ui.horizontal(|ui| {
+                                ui.label("地址");
+                                ui.text_edit_singleline(&mut self.bind_host);
+                                ui.label("端口");
+                                ui.add(egui::DragValue::new(&mut self.bind_port).range(1..=65535));
+                            });
+                            ui.add_space(6.0);
+                            ui.label(egui::RichText::new("Android 设备").color(MUTED));
+                            if self.devices.is_empty() {
+                                ui.weak("未检测到设备");
+                            } else {
+                                device_combo(ui, "device_advanced", &self.devices, &mut self.selected_device);
+                            }
+                            if !self.adb_path.is_empty() {
+                                ui.weak(format!("adb：{}", self.adb_path));
+                            }
+                            if !self.last_error.is_empty() {
+                                ui.collapsing("详情", |ui| {
+                                    ui.weak(&self.last_error);
+                                });
+                            }
+                            if ui.button("刷新显示器 / 设备").clicked() {
+                                self.refresh_displays();
+                                self.refresh_devices();
+                            }
+                        });
+                    });
+
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new("扩展屏：winget install VirtualDrivers.Virtual-Display-Driver ，设为「扩展」并选这块虚拟屏。").color(MUTED).size(12.0));
+                ui.label(egui::RichText::new("平板触控：单击/拖动、长按右键、双指滚动。局域网请在两边的「高级」里填写。").color(MUTED).size(12.0));
+            });
+    }
+}
+
+fn phase_chip(phase: &str) -> (String, egui::Color32) {
+    match phase {
+        "编码" | "已连接" | "共享中" => ("共享中".into(), OK),
+        "错误" | "出错" => ("出错".into(), ERR),
+        "监听" | "等待设备" | "正在准备" => ("等待设备".into(), WARN),
+        "已停止" | "空闲" => ("空闲".into(), MUTED),
+        other => (other.to_string(), MUTED),
     }
 }
 
@@ -468,17 +573,17 @@ fn device_combo(ui: &mut egui::Ui, id: &'static str, devices: &[adb::AdbDevice],
 
 fn phase_color(phase: &str) -> egui::Color32 {
     match phase {
-        "编码" | "已连接" | "共享中" => egui::Color32::from_rgb(90, 200, 120),
-        "错误" | "出错" => egui::Color32::from_rgb(220, 80, 80),
-        "已停止" | "空闲" => egui::Color32::from_rgb(170, 170, 170),
-        "监听" | "等待设备" | "正在准备" => egui::Color32::from_rgb(230, 190, 80),
-        _ => egui::Color32::from_rgb(200, 200, 200),
+        "编码" | "已连接" | "共享中" => OK,
+        "错误" | "出错" => ERR,
+        "已停止" | "空闲" => MUTED,
+        "监听" | "等待设备" | "正在准备" => WARN,
+        _ => TEXT,
     }
 }
 
 fn humanize_session_transport(raw: &str) -> (String, egui::Color32) {
-    let warn = egui::Color32::from_rgb(230, 180, 80);
-    let ok = egui::Color32::from_rgb(90, 200, 120);
+    let warn = WARN;
+    let ok = OK;
     if raw.contains("已就绪") {
         ("USB 已就绪".into(), ok)
     } else if raw.contains("失败") {
@@ -504,8 +609,8 @@ fn usb_transport_line(
     let pending = devices
         .iter()
         .any(|d| d.state == "unauthorized" || d.state == "offline");
-    let warn = egui::Color32::from_rgb(230, 180, 80);
-    let ok = egui::Color32::from_rgb(90, 200, 120);
+    let warn = WARN;
+    let ok = OK;
     if adb_path.is_empty() {
         return ("未检测到 USB 驱动。请换数据线，或在高级里用局域网连接".into(), warn);
     }
@@ -521,7 +626,7 @@ fn usb_transport_line(
         return (format!("已找到设备，将自动连接 · {name}"), ok);
     }
     if ready > 1 {
-        return ("检测到多台设备，请选择一台".into(), egui::Color32::WHITE);
+        return ("检测到多台设备，请选择一台".into(), TEXT);
     }
     ("未检测到设备。请检查数据线是否支持传数据".into(), warn)
 }
