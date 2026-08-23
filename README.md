@@ -81,10 +81,10 @@ $env:JAVA_HOME = "C:\Program Files\Microsoft\jdk-17.0.20.101-hotspot"
 $env:ANDROID_HOME = "D:\Lighting\.runtime\android-sdk"
 D:\Lighting\.runtime\gradle-8.9\bin\gradle.bat -p android assembleDebug
 ```
-4. 电脑点「开始共享」
-5. 设备上打开 Lighting，地址保持 `127.0.0.1`，端口 `17400`，点连接
+4. 电脑点「开始共享」（只插一台已授权设备时会自动选中）
+5. 设备上打开 Lighting，点「USB 一键连接」
 
-电脑会执行 `adb reverse tcp:17400 tcp:17400`，所以设备访问本机回环即可。
+不需要填写地址或端口。局域网测试请在两边的「高级」里填写电脑 IP。
 
 ## 第一期能力
 
