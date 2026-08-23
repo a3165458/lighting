@@ -8,6 +8,7 @@ mod session;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use session::{display_phase, live_transport, metrics_line, SessionRequest, SessionStatus};
@@ -111,6 +112,9 @@ struct LightingApp {
     running: bool,
     last_error: String,
     adb_path: String,
+    bind_host: String,
+    bind_port: u16,
+    last_poll: Instant,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -143,6 +147,9 @@ impl LightingApp {
             running: false,
             last_error: String::new(),
             adb_path: String::new(),
+            bind_host: "0.0.0.0".into(),
+            bind_port: protocol::PORT,
+            last_poll: Instant::now(),
         };
         app.refresh_devices();
         app
@@ -176,13 +183,39 @@ impl LightingApp {
         match self.rt.block_on(adb::list_devices(&adb)) {
             Ok(list) => {
                 self.devices = list;
-                if self.selected_device >= self.devices.len() {
-                    self.selected_device = 0;
+                self.select_usb_device();
+                if self.last_error.contains("adb") || self.last_error.contains("找不到") {
+                    self.last_error.clear();
                 }
-                self.last_error.clear();
             }
             Err(err) => self.last_error = format!("{err:#}"),
         }
+    }
+
+    fn select_usb_device(&mut self) {
+        let ready: Vec<usize> = self
+            .devices
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.state == "device")
+            .map(|(i, _)| i)
+            .collect();
+        if ready.len() == 1 {
+            self.selected_device = ready[0];
+        } else if self.selected_device >= self.devices.len() {
+            self.selected_device = 0;
+        }
+    }
+
+    fn maybe_poll_devices(&mut self) {
+        if self.running {
+            return;
+        }
+        if self.last_poll.elapsed() < Duration::from_secs(2) {
+            return;
+        }
+        self.last_poll = Instant::now();
+        self.refresh_devices();
     }
 
     fn start(&mut self) {
@@ -201,11 +234,28 @@ impl LightingApp {
             .devices
             .get(self.selected_device)
             .filter(|d| d.state == "device")
-            .map(|d| d.serial.clone());
+            .map(|d| d.serial.clone())
+            .or_else(|| {
+                self.devices
+                    .iter()
+                    .find(|d| d.state == "device")
+                    .map(|d| d.serial.clone())
+            });
+        let bind_host = self.bind_host.trim();
+        let bind_host = if bind_host.is_empty() {
+            "0.0.0.0"
+        } else {
+            bind_host
+        };
+        let bind_port = if self.bind_port == 0 {
+            protocol::PORT
+        } else {
+            self.bind_port
+        };
         let req = SessionRequest {
             display_index: self.selected_display,
             device_serial: serial,
-            bind: format!("0.0.0.0:{}", protocol::PORT),
+            bind: format!("{bind_host}:{bind_port}"),
             prefer_hevc: self.prefer_hevc,
             bitrate_kbps: self.bitrate_kbps,
             fps: self.fps,
@@ -244,6 +294,7 @@ impl LightingApp {
 impl eframe::App for LightingApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        self.maybe_poll_devices();
         let snap = self
             .status
             .lock()
@@ -259,19 +310,48 @@ impl eframe::App for LightingApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Lighting 副屏");
-            ui.label("把 Android 平板/手机当成电脑的扩展屏。USB 数据线即可（不限 Type-C）。");
-            ui.add_space(8.0);
+            ui.label("插上数据线，点「开始共享」，平板再点「USB 一键连接」。");
+            ui.add_space(10.0);
 
             ui.horizontal(|ui| {
-                if ui.button("刷新显示器").clicked() {
-                    self.refresh_displays();
+                let start = ui.add_enabled(
+                    !snap.running,
+                    egui::Button::new(egui::RichText::new("开始共享").size(18.0))
+                        .min_size(egui::vec2(168.0, 36.0)),
+                );
+                if start.clicked() {
+                    self.start();
                 }
-                if ui.button("刷新设备").clicked() {
+                let stop = ui.add_enabled(
+                    snap.running,
+                    egui::Button::new("停止").min_size(egui::vec2(72.0, 36.0)),
+                );
+                if stop.clicked() {
+                    self.stop_session();
+                }
+                if ui.button("刷新").clicked() {
+                    self.refresh_displays();
                     self.refresh_devices();
                 }
             });
 
-            ui.add_space(6.0);
+            ui.add_space(8.0);
+            let (transport, transport_color) =
+                usb_transport_line(&snap, &self.adb_path, &self.devices);
+            ui.colored_label(transport_color, transport);
+
+            let ready: Vec<&adb::AdbDevice> = self
+                .devices
+                .iter()
+                .filter(|d| d.state == "device")
+                .collect();
+            if ready.len() > 1 {
+                ui.add_space(4.0);
+                ui.label("检测到多台设备，请选一台：");
+                device_combo(ui, "device_main", &self.devices, &mut self.selected_device);
+            }
+
+            ui.add_space(8.0);
             ui.label("要投出的显示器（扩展模式请先安装虚拟屏并选中副屏）：");
             if self.displays.is_empty() {
                 ui.colored_label(egui::Color32::YELLOW, "未枚举到显示器");
@@ -289,30 +369,6 @@ impl eframe::App for LightingApp {
                         }
                     });
             }
-
-            ui.add_space(6.0);
-            ui.label("Android 设备（需开启 USB 调试）：");
-            if !self.adb_path.is_empty() {
-                ui.weak(format!("adb：{}", self.adb_path));
-            }
-            if !self.devices.is_empty() {
-                egui::ComboBox::from_id_salt("device")
-                    .selected_text(
-                        self.devices
-                            .get(self.selected_device)
-                            .map(|d| d.label())
-                            .unwrap_or_default(),
-                    )
-                    .show_ui(ui, |ui| {
-                        for (i, d) in self.devices.iter().enumerate() {
-                            ui.selectable_value(&mut self.selected_device, i, d.label());
-                        }
-                    });
-            }
-            ui.colored_label(
-                transport_color(&snap.transport, snap.running, &self.adb_path, &self.devices),
-                transport_line(&snap, &self.adb_path, &self.devices),
-            );
 
             ui.add_space(8.0);
             ui.separator();
@@ -338,88 +394,197 @@ impl eframe::App for LightingApp {
             ui.checkbox(&mut self.prefer_hevc, "优先 HEVC（设备支持时，文字更清晰）");
 
             ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                let start = ui.add_enabled(!snap.running, egui::Button::new("开始共享"));
-                if start.clicked() {
-                    self.start();
-                }
-                let stop = ui.add_enabled(snap.running, egui::Button::new("停止"));
-                if stop.clicked() {
-                    self.stop_session();
-                }
-            });
-
-            ui.add_space(10.0);
             ui.separator();
             let phase = display_phase(&snap.phase);
             ui.horizontal(|ui| {
                 ui.strong("阶段");
                 ui.colored_label(phase_color(&phase), &phase);
             });
-            ui.label(if snap.detail.is_empty() {
-                "—"
-            } else {
-                snap.detail.as_str()
-            });
+            let detail = human_detail(&snap);
+            ui.label(if detail.is_empty() { "—" } else { detail.as_str() });
             ui.label(metrics_line(snap.frames, snap.bitrate_kbps));
             if !self.last_error.is_empty() {
-                ui.colored_label(egui::Color32::from_rgb(220, 80, 80), &self.last_error);
+                ui.colored_label(
+                    egui::Color32::from_rgb(220, 80, 80),
+                    human_last_error(&self.last_error),
+                );
             }
+
+            ui.add_space(8.0);
+            egui::CollapsingHeader::new("高级")
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.label("局域网绑定（一般不用改）");
+                    ui.horizontal(|ui| {
+                        ui.label("地址");
+                        ui.text_edit_singleline(&mut self.bind_host);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("端口");
+                        ui.add(egui::DragValue::new(&mut self.bind_port).range(1..=65535));
+                    });
+                    ui.add_space(6.0);
+                    ui.label("Android 设备");
+                    if self.devices.is_empty() {
+                        ui.weak("未检测到设备");
+                    } else {
+                        device_combo(ui, "device_advanced", &self.devices, &mut self.selected_device);
+                    }
+                    if !self.adb_path.is_empty() {
+                        ui.weak(format!("adb：{}", self.adb_path));
+                    }
+                    if !self.last_error.is_empty() {
+                        ui.collapsing("详情", |ui| {
+                            ui.weak(&self.last_error);
+                        });
+                    }
+                    if ui.button("刷新显示器 / 设备").clicked() {
+                        self.refresh_displays();
+                        self.refresh_devices();
+                    }
+                });
 
             ui.add_space(12.0);
             ui.weak("扩展屏：winget install VirtualDrivers.Virtual-Display-Driver ，然后在 Windows 显示设置里设为「扩展」并选这块虚拟屏。");
-            ui.weak(format!(
-                "USB：电脑执行 adb reverse 后，平板连接 127.0.0.1:{}。平板触控：单击/拖动、长按右键、双指滚动。",
-                protocol::PORT
-            ));
+            ui.weak("平板触控：单击/拖动、长按右键、双指滚动。局域网请在两边的「高级」里填写。");
         });
     }
 }
 
+fn device_combo(ui: &mut egui::Ui, id: &'static str, devices: &[adb::AdbDevice], selected: &mut usize) {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(
+            devices
+                .get(*selected)
+                .map(|d| d.label())
+                .unwrap_or_default(),
+        )
+        .show_ui(ui, |ui| {
+            for (i, d) in devices.iter().enumerate() {
+                ui.selectable_value(selected, i, d.label());
+            }
+        });
+}
+
 fn phase_color(phase: &str) -> egui::Color32 {
     match phase {
-        "编码" | "已连接" => egui::Color32::from_rgb(90, 200, 120),
-        "错误" => egui::Color32::from_rgb(220, 80, 80),
+        "编码" | "已连接" | "共享中" => egui::Color32::from_rgb(90, 200, 120),
+        "错误" | "出错" => egui::Color32::from_rgb(220, 80, 80),
         "已停止" | "空闲" => egui::Color32::from_rgb(170, 170, 170),
-        "监听" | "等待设备" => egui::Color32::from_rgb(230, 190, 80),
+        "监听" | "等待设备" | "正在准备" => egui::Color32::from_rgb(230, 190, 80),
         _ => egui::Color32::from_rgb(200, 200, 200),
     }
 }
 
-fn transport_line(snap: &SessionStatus, adb_path: &str, devices: &[adb::AdbDevice]) -> String {
-    live_transport(snap.running, &snap.transport)
-        .map(str::to_string)
-        .unwrap_or_else(|| idle_transport(adb_path, devices))
-}
-
-fn idle_transport(adb_path: &str, devices: &[adb::AdbDevice]) -> String {
-    if adb_path.is_empty() {
-        return "USB：未找到 adb · 平板可填电脑 IP 走 Wi-Fi".into();
-    }
-    let ready = devices.iter().filter(|d| d.state == "device").count();
-    if ready == 0 {
-        "USB：未检测到已授权设备 · 可走 Wi-Fi（填电脑局域网 IP）".into()
+fn humanize_session_transport(raw: &str) -> (String, egui::Color32) {
+    let warn = egui::Color32::from_rgb(230, 180, 80);
+    let ok = egui::Color32::from_rgb(90, 200, 120);
+    if raw.contains("已就绪") {
+        ("USB 已就绪".into(), ok)
+    } else if raw.contains("失败") {
+        ("请换数据线，并确认已点允许 USB 调试".into(), warn)
+    } else if raw.contains("未找到 adb") {
+        ("未检测到 USB 驱动。请换数据线，或在高级里用局域网连接".into(), warn)
+    } else if raw.contains("未检测") {
+        ("未检测到设备。请检查数据线是否支持传数据".into(), warn)
     } else {
-        format!("USB：已检测到 {ready} 台设备 · 开始共享后自动 adb reverse")
+        (raw.to_string(), egui::Color32::GRAY)
     }
 }
 
-fn transport_color(
-    transport: &str,
-    running: bool,
+fn usb_transport_line(
+    snap: &SessionStatus,
     adb_path: &str,
     devices: &[adb::AdbDevice],
-) -> egui::Color32 {
-    let text = live_transport(running, transport)
-        .map(str::to_string)
-        .unwrap_or_else(|| idle_transport(adb_path, devices));
-    if text.contains("已就绪") || text.contains("已检测") {
-        egui::Color32::from_rgb(90, 200, 120)
-    } else if text.contains("失败") || text.contains("未找到 adb") {
-        egui::Color32::from_rgb(230, 180, 80)
-    } else if text.contains("未检测") {
-        egui::Color32::from_rgb(230, 180, 80)
-    } else {
-        egui::Color32::GRAY
+) -> (String, egui::Color32) {
+    if let Some(raw) = live_transport(snap.running, &snap.transport) {
+        return humanize_session_transport(raw);
     }
+    let ready = devices.iter().filter(|d| d.state == "device").count();
+    let pending = devices
+        .iter()
+        .any(|d| d.state == "unauthorized" || d.state == "offline");
+    let warn = egui::Color32::from_rgb(230, 180, 80);
+    let ok = egui::Color32::from_rgb(90, 200, 120);
+    if adb_path.is_empty() {
+        return ("未检测到 USB 驱动。请换数据线，或在高级里用局域网连接".into(), warn);
+    }
+    if pending && ready == 0 {
+        return ("请打开 USB 调试并点允许".into(), warn);
+    }
+    if ready == 1 {
+        let name = devices
+            .iter()
+            .find(|d| d.state == "device")
+            .map(|d| d.serial.as_str())
+            .unwrap_or("");
+        return (format!("已找到设备，将自动连接 · {name}"), ok);
+    }
+    if ready > 1 {
+        return ("检测到多台设备，请选择一台".into(), egui::Color32::WHITE);
+    }
+    ("未检测到设备。请检查数据线是否支持传数据".into(), warn)
+}
+
+fn human_detail(snap: &SessionStatus) -> String {
+    let detail = snap.detail.trim();
+    if detail.is_empty() {
+        return String::new();
+    }
+    let lower = detail.to_lowercase();
+    if snap.phase == "错误" {
+        return human_last_error(detail);
+    }
+    if looks_like_bind_or_port(detail) {
+        return String::new();
+    }
+    if lower.contains("adb reverse 失败") || detail.contains("adb reverse 失败") {
+        return "请换数据线，或检查是否弹出 USB 调试允许".into();
+    }
+    if lower.contains("adb reverse") {
+        return String::new();
+    }
+    if detail.contains("请在平板") {
+        return "请在平板点「USB 一键连接」".into();
+    }
+    if detail.contains("未检测到已授权") {
+        return "未检测到设备。请打开 USB 调试并点允许，或换一根能传数据的线".into();
+    }
+    if detail.contains("未找到 adb") {
+        return "未检测到 USB 驱动。请换数据线，或在高级里用局域网连接".into();
+    }
+    if snap.phase == "已连接" {
+        return "平板已连上".into();
+    }
+    if looks_technical(detail) {
+        return String::new();
+    }
+    detail.to_string()
+}
+
+fn human_last_error(raw: &str) -> String {
+    let lower = raw.to_lowercase();
+    if raw.contains("找不到 adb") || lower.contains("adb.exe") {
+        return "未检测到 USB 驱动。请安装平台工具，或换一根能传数据的线。".into();
+    }
+    if raw.contains("没有可用显示器") {
+        return "没有可用显示器".into();
+    }
+    if looks_like_bind_or_port(raw) {
+        return "无法开始共享，请稍后重试".into();
+    }
+    raw.lines().next().unwrap_or(raw).to_string()
+}
+
+fn looks_like_bind_or_port(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("17400")
+        || lower.contains("0.0.0.0")
+        || lower.contains("127.0.0.1")
+        || lower.contains("connection refused")
+        || text.contains("绑定")
+}
+
+fn looks_technical(text: &str) -> bool {
+    looks_like_bind_or_port(text) || text.contains("adb reverse") || text.contains("tcp:")
 }

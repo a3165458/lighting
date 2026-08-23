@@ -5,12 +5,8 @@ import org.json.JSONObject
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.EOFException
-import java.net.ConnectException
 import java.net.InetSocketAddress
-import java.net.NoRouteToHostException
 import java.net.Socket
-import java.net.SocketTimeoutException
-import java.net.UnknownHostException
 
 object LitProtocol {
     const val PORT = 17400
@@ -189,28 +185,6 @@ fun reconnectBackoffMs(failIndex: Int, jitterMs: Int): Long {
     return base + jitterMs.coerceIn(0, 200)
 }
 
-fun describeConnectError(error: Throwable, host: String, port: Int): String {
-    val blob = buildString {
-        var t: Throwable? = error
-        while (t != null) {
-            append(t.javaClass.simpleName)
-            append(' ')
-            append(t.message.orEmpty())
-            append(' ')
-            t = t.cause
-        }
-    }.lowercase()
-    return when {
-        error is UnknownHostException || "unknownhost" in blob || "unresolved" in blob ->
-            "找不到主机 $host。USB 请用 127.0.0.1。"
-        error is ConnectException || "refused" in blob || "econnrefused" in blob ->
-            "连不上 $host:$port。请先在电脑点「开始共享」，USB 需已授权调试。"
-        error is SocketTimeoutException || "timed out" in blob || "timeout" in blob ->
-            "连接超时。主机未在听，或 Wi-Fi 地址不对。"
-        error is NoRouteToHostException || "unreachable" in blob ->
-            "网络不可达。USB 请保持 127.0.0.1；局域网请填电脑 IP。"
-        "econnreset" in blob || "reset" in blob || isEof(error) ->
-            "连接中断。主机可能已停止，或 USB 已拔出。"
-        else -> "连接失败：${error.message ?: error.javaClass.simpleName}"
-    }
-}
+@Suppress("UNUSED_PARAMETER")
+fun describeConnectError(error: Throwable, host: String, port: Int): String =
+    ConnectCopy.fromThrowable(error, host).primary

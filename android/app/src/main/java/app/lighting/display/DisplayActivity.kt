@@ -1,5 +1,6 @@
 package app.lighting.display
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.os.Build
@@ -27,6 +28,8 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         const val EXTRA_HOST = "host"
         const val EXTRA_PORT = "port"
         const val EXTRA_ERROR = "error"
+        const val EXTRA_ERROR_HINT = "error_hint"
+        const val EXTRA_ERROR_DETAIL = "error_detail"
         private const val RECONNECT_ATTEMPTS = 7
         private const val RECONNECT_BUDGET_MS = 12_000L
         private const val HUD_HIDE_MS = 2800L
@@ -45,6 +48,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     @Volatile private var lit: LitSocket? = null
     @Volatile private var everVideo = false
     @Volatile private var lastError: String? = null
+    @Volatile private var lastFail: UserFacingError? = null
     private val decoder = VideoDecoder()
     private var audio: AudioPlayer? = null
     private var streamW = 0
@@ -129,8 +133,17 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     }
 
     override fun finish() {
-        if (!everVideo && !lastError.isNullOrBlank()) {
-            setResult(RESULT_OK, Intent().putExtra(EXTRA_ERROR, lastError))
+        val fail = lastFail
+        if (!everVideo && fail != null) {
+            setResult(
+                Activity.RESULT_OK,
+                Intent()
+                    .putExtra(EXTRA_ERROR, fail.primary)
+                    .putExtra(EXTRA_ERROR_HINT, fail.hint)
+                    .putExtra(EXTRA_ERROR_DETAIL, fail.detail),
+            )
+        } else if (!everVideo && !lastError.isNullOrBlank()) {
+            setResult(Activity.RESULT_OK, Intent().putExtra(EXTRA_ERROR, lastError))
         }
         super.finish()
     }
@@ -140,12 +153,19 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         startSession()
     }
 
+    private fun rememberFail(error: Throwable, host: String): String {
+        val mapped = ConnectCopy.fromThrowable(error, host)
+        lastFail = mapped
+        lastError = mapped.primary
+        return mapped.primary
+    }
+
     private fun startSession() {
         stopSession()
         val gen = ++sessionGen
         running = true
         showManualReconnect(false)
-        val host = intent.getStringExtra(EXTRA_HOST)?.ifBlank { null } ?: "127.0.0.1"
+        val host = intent.getStringExtra(EXTRA_HOST)?.ifBlank { null } ?: ConnectCopy.USB_HOST
         val port = intent.getIntExtra(EXTRA_PORT, LitProtocol.PORT)
         val metrics = DisplayMetrics()
         @Suppress("DEPRECATION")
@@ -157,14 +177,18 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
             var fails = 0
             var windowStart = 0L
             while (running && sessionGen == gen) {
-                setHud(if (fails == 0) "连接中…" else "重连中", reason = null, keep = true)
+                setHud(
+                    if (fails == 0) ConnectCopy.connectingLabel(host) else "重连中",
+                    reason = null,
+                    keep = true,
+                )
                 val reachedVideo = try {
                     runSessionOnce(host, port, metrics, refresh, caps, gen)
                 } catch (t: Throwable) {
                     Log.e("Lighting", "session failed", t)
-                    lastError = describeConnectError(t, host, port)
+                    val primary = rememberFail(t, host)
                     if (running && sessionGen == gen) {
-                        setHud("重连中", reason = lastError, keep = true)
+                        setHud("重连中", reason = primary, keep = true)
                     }
                     false
                 } finally {
@@ -175,6 +199,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     fails = 0
                     windowStart = 0L
                     lastError = null
+                    lastFail = null
                 }
                 fails++
                 if (windowStart == 0L) {
@@ -246,6 +271,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                             reachedVideo = true
                             everVideo = true
                             lastError = null
+                            lastFail = null
                             letterboxSurface(cfg.width, cfg.height)
                             setHud("${cfg.codec} ${cfg.width}×${cfg.height}@${cfg.fps}", reason = null, keep = false)
                             if (!isCfg) {
@@ -262,8 +288,14 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     LitProtocol.MSG_HEARTBEAT -> sock.write(LitProtocol.MSG_HEARTBEAT)
                     LitProtocol.MSG_ERROR -> {
                         val remote = String(msg.payload, Charsets.UTF_8)
-                        lastError = remote
-                        setHud(remote, reason = null, keep = true)
+                        val primary = if (ConnectCopy.hasPortJargon(remote)) {
+                            "连接中断，请检查数据线或重新点开始"
+                        } else {
+                            remote
+                        }
+                        lastError = primary
+                        lastFail = UserFacingError(primary, "", remote)
+                        setHud(primary, reason = null, keep = true)
                     }
                 }
             }
@@ -271,7 +303,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
             if (!running || sessionGen != gen) return reachedVideo
             if (reachedVideo) {
                 Log.w("Lighting", "socket dropped after video", t)
-                lastError = describeConnectError(t, host, port)
+                rememberFail(t, host)
                 return true
             }
             throw t
@@ -379,7 +411,8 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         runOnUiThread {
             if (isFinishing || isDestroyed) return@runOnUiThread
             status.text = text
-            val detail = reason?.takeIf { it.isNotBlank() }
+            val detail = reason?.takeIf { it.isNotBlank() && !ConnectCopy.hasPortJargon(it) }
+                ?: reason?.takeIf { it.isNotBlank() }?.let { "没检测到电脑，请检查数据线是否支持传数据" }
             if (detail == null) {
                 statusReason.text = ""
                 statusReason.visibility = View.GONE
