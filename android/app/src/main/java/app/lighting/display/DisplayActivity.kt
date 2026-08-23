@@ -2,6 +2,7 @@ package app.lighting.display
 
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Gravity
@@ -20,6 +21,8 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     companion object {
         const val EXTRA_HOST = "host"
         const val EXTRA_PORT = "port"
+        private const val RECONNECT_ATTEMPTS = 7
+        private const val RECONNECT_BUDGET_MS = 12_000L
     }
 
     private lateinit var surface: SurfaceView
@@ -27,12 +30,20 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private lateinit var touchLayer: View
     private var worker: Thread? = null
     @Volatile private var running = false
+    @Volatile private var sessionGen = 0
+    @Volatile private var awaitingManualReconnect = false
     @Volatile private var lit: LitSocket? = null
     private val decoder = VideoDecoder()
     private var audio: AudioPlayer? = null
     private var streamW = 0
     private var streamH = 0
     private val touch = TouchMapper { action, x, y ->
+        if (awaitingManualReconnect) {
+            if (action == TouchMapper.LEFT_UP) {
+                runOnUiThread { startSession() }
+            }
+            return@TouchMapper
+        }
         val sock = lit ?: return@TouchMapper
         try {
             sock.write(LitProtocol.MSG_TOUCH, 0, LitProtocol.touchPayload(action, x, y))
@@ -48,8 +59,10 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         surface = findViewById(R.id.surface)
         status = findViewById(R.id.status)
         touchLayer = findViewById(R.id.touchLayer)
-        status.isClickable = false
-        status.isFocusable = false
+        status.bringToFront()
+        status.setOnClickListener {
+            if (awaitingManualReconnect) startSession()
+        }
         surface.holder.addCallback(this)
         touch.attach(touchLayer, surface)
     }
@@ -90,7 +103,10 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
     private fun startSession() {
         stopSession()
+        val gen = ++sessionGen
         running = true
+        awaitingManualReconnect = false
+        setStatusClickable(false)
         val host = intent.getStringExtra(EXTRA_HOST) ?: "127.0.0.1"
         val port = intent.getIntExtra(EXTRA_PORT, LitProtocol.PORT)
         val metrics = DisplayMetrics()
@@ -100,88 +116,171 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         val refresh = display.refreshRate.toInt().coerceIn(30, 120)
         val caps = DeviceCaps.probe()
         worker = thread(name = "lighting-session") {
-            try {
-                setStatus("连接 $host:$port …")
-                val sock = LitSocket(host, port)
-                lit = sock
-                val hello = LitProtocol.helloJson(
-                    caps = caps,
-                    w = metrics.widthPixels,
-                    h = metrics.heightPixels,
-                    maxFps = refresh,
-                )
-                sock.write(LitProtocol.MSG_HELLO, 0, hello)
-                val cfgMsg = sock.read()
-                if (cfgMsg.type != LitProtocol.MSG_CONFIG) {
-                    throw IllegalStateException("expected config, got ${cfgMsg.type}")
+            var fails = 0
+            var windowStart = 0L
+            while (running && sessionGen == gen) {
+                val label = if (fails == 0) {
+                    "连接 $host:$port …"
+                } else {
+                    "重连 $fails/$RECONNECT_ATTEMPTS …"
                 }
-                val cfg = LitProtocol.parseConfig(cfgMsg.payload)
-                val hevc = cfg.codec.equals("hevc", true) || cfg.codec.equals("h265", true)
-                if (cfg.audioEnabled) {
-                    audio = AudioPlayer(cfg.audioSampleRate, cfg.audioChannels)
-                }
-                setStatus("${cfg.codec} ${cfg.width}×${cfg.height}@${cfg.fps}${if (cfg.audioEnabled) " +音频" else ""} 等待关键帧…")
-                var configured = false
-                while (running) {
-                    val msg = sock.read()
-                    when (msg.type) {
-                        LitProtocol.MSG_VIDEO -> {
-                            val (pts, data) = splitPts(msg.payload)
-                            val isCfg = msg.flags and LitProtocol.FLAG_CODEC_CONFIG != 0
-                            val key = msg.flags and LitProtocol.FLAG_KEYFRAME != 0
-                            if (!configured) {
-                                val canInit = isCfg || isCodecConfigNal(data, hevc)
-                                if (!canInit) continue
-                                decoder.configure(
-                                    cfg.codec,
-                                    cfg.width,
-                                    cfg.height,
-                                    data,
-                                    surface.holder.surface,
-                                )
-                                configured = true
-                                letterboxSurface(cfg.width, cfg.height)
-                                setStatus("${cfg.codec} ${cfg.width}×${cfg.height}@${cfg.fps} ${decoder.activeName}${if (cfg.audioEnabled) " +音频" else ""}  单击/拖动 · 长按右键 · 双指滚动")
-                                if (!isCfg) {
-                                    decoder.offer(data, codecConfig = false, keyframe = true, ptsUs = pts)
-                                }
-                                continue
-                            }
-                            decoder.offer(data, codecConfig = isCfg, keyframe = key, ptsUs = pts)
-                        }
-                        LitProtocol.MSG_AUDIO -> {
-                            val (pts, pcm) = splitPts(msg.payload)
-                            audio?.offer(pcm, pts)
-                        }
-                        LitProtocol.MSG_HEARTBEAT -> sock.write(LitProtocol.MSG_HEARTBEAT)
-                        LitProtocol.MSG_ERROR -> setStatus(String(msg.payload, Charsets.UTF_8))
+                setStatus(label)
+                val reachedVideo = try {
+                    runSessionOnce(host, port, metrics, refresh, caps, gen)
+                } catch (t: Throwable) {
+                    Log.e("Lighting", "session failed", t)
+                    if (running && sessionGen == gen) {
+                        setStatus("断开：${t.message ?: t.javaClass.simpleName}")
                     }
+                    false
+                } finally {
+                    releaseStream()
                 }
-            } catch (t: Throwable) {
-                Log.e("Lighting", "session failed", t)
-                if (running) setStatus("断开：${t.message ?: t.javaClass.simpleName}")
-            } finally {
-                decoder.release()
-                audio?.release()
-                audio = null
-                lit?.close()
-                lit = null
+                if (!running || sessionGen != gen) break
+                if (reachedVideo) {
+                    fails = 0
+                    windowStart = 0L
+                }
+                fails++
+                if (windowStart == 0L) {
+                    windowStart = SystemClock.uptimeMillis()
+                }
+                val spent = SystemClock.uptimeMillis() - windowStart
+                if (fails > RECONNECT_ATTEMPTS || spent >= RECONNECT_BUDGET_MS) {
+                    awaitingManualReconnect = true
+                    setStatus("已断开，点此或点屏幕重连")
+                    setStatusClickable(true)
+                    break
+                }
+                val jitter = (SystemClock.uptimeMillis() % 201).toInt()
+                sleepBackoff(reconnectBackoffMs(fails - 1, jitter), gen)
             }
         }
     }
 
-    private fun stopSession() {
-        touch.cancel()
-        running = false
+    /**
+     * @return true if Config arrived and video started (used to reset retry streak).
+     */
+    private fun runSessionOnce(
+        host: String,
+        port: Int,
+        metrics: DisplayMetrics,
+        refresh: Int,
+        caps: DeviceCaps,
+        gen: Int,
+    ): Boolean {
+        val sock = LitSocket(host, port)
+        lit = sock
+        val hello = LitProtocol.helloJson(
+            caps = caps,
+            w = metrics.widthPixels,
+            h = metrics.heightPixels,
+            maxFps = refresh,
+        )
+        sock.write(LitProtocol.MSG_HELLO, 0, hello)
+        val cfgMsg = sock.read()
+        if (cfgMsg.type != LitProtocol.MSG_CONFIG) {
+            throw IllegalStateException("expected config, got ${cfgMsg.type}")
+        }
+        val cfg = LitProtocol.parseConfig(cfgMsg.payload)
+        val hevc = cfg.codec.equals("hevc", true) || cfg.codec.equals("h265", true)
+        if (cfg.audioEnabled) {
+            audio = AudioPlayer(cfg.audioSampleRate, cfg.audioChannels)
+        }
+        setStatus("${cfg.codec} ${cfg.width}×${cfg.height}@${cfg.fps}${if (cfg.audioEnabled) " +音频" else ""} 等待关键帧…")
+        var configured = false
+        var reachedVideo = false
+        try {
+            while (running && sessionGen == gen) {
+                val msg = sock.read()
+                when (msg.type) {
+                    LitProtocol.MSG_VIDEO -> {
+                        val (pts, data) = splitPts(msg.payload)
+                        val isCfg = msg.flags and LitProtocol.FLAG_CODEC_CONFIG != 0
+                        val key = msg.flags and LitProtocol.FLAG_KEYFRAME != 0
+                        if (!configured || isCfg) {
+                            val canInit = isCfg || isCodecConfigNal(data, hevc)
+                            if (!canInit) continue
+                            decoder.configure(
+                                cfg.codec,
+                                cfg.width,
+                                cfg.height,
+                                data,
+                                surface.holder.surface,
+                            )
+                            configured = true
+                            reachedVideo = true
+                            letterboxSurface(cfg.width, cfg.height)
+                            setStatus("${cfg.codec} ${cfg.width}×${cfg.height}@${cfg.fps} ${decoder.activeName}${if (cfg.audioEnabled) " +音频" else ""}  单击/拖动 · 长按右键 · 双指滚动")
+                            if (!isCfg) {
+                                decoder.offer(data, codecConfig = false, keyframe = true, ptsUs = pts)
+                            }
+                            continue
+                        }
+                        decoder.offer(data, codecConfig = false, keyframe = key, ptsUs = pts)
+                    }
+                    LitProtocol.MSG_AUDIO -> {
+                        val (pts, pcm) = splitPts(msg.payload)
+                        audio?.offer(pcm, pts)
+                    }
+                    LitProtocol.MSG_HEARTBEAT -> sock.write(LitProtocol.MSG_HEARTBEAT)
+                    LitProtocol.MSG_ERROR -> setStatus(String(msg.payload, Charsets.UTF_8))
+                }
+            }
+        } catch (t: Throwable) {
+            if (!running || sessionGen != gen) return reachedVideo
+            if (reachedVideo) {
+                Log.w("Lighting", "socket dropped after video", t)
+                return true
+            }
+            throw t
+        }
+        return reachedVideo
+    }
+
+    private fun releaseStream() {
+        decoder.release()
+        audio?.release()
+        audio = null
         try {
             lit?.close()
         } catch (_: Exception) {
         }
+        lit = null
+    }
+
+    private fun stopSession() {
+        touch.cancel()
+        sessionGen++
+        running = false
+        awaitingManualReconnect = false
+        try {
+            lit?.close()
+        } catch (_: Exception) {
+        }
+        worker?.interrupt()
         worker?.join(400)
         worker = null
-        decoder.release()
-        audio?.release()
-        audio = null
+        releaseStream()
+        setStatusClickable(false)
+    }
+
+    private fun sleepBackoff(ms: Long, gen: Int) {
+        val end = SystemClock.uptimeMillis() + ms
+        while (running && sessionGen == gen && SystemClock.uptimeMillis() < end) {
+            try {
+                Thread.sleep(50)
+            } catch (_: InterruptedException) {
+                return
+            }
+        }
+    }
+
+    private fun setStatusClickable(clickable: Boolean) {
+        runOnUiThread {
+            status.isClickable = clickable
+            status.isFocusable = clickable
+        }
     }
 
     private fun letterboxSurface(width: Int, height: Int) {

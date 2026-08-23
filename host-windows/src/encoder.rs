@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
-use std::io::{BufReader, Read};
+use std::io::BufReader;
+use std::io::Read;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -7,6 +8,9 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
 use crate::displays::DisplayInfo;
+use lighting_host::annexb;
+
+pub use lighting_host::annexb::EncodedPacket;
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -21,22 +25,29 @@ pub struct EncodeSettings {
     pub profile: String, // "main" | "baseline"
 }
 
-#[derive(Debug, Clone)]
-pub struct EncodedPacket {
-    pub data: Vec<u8>,
-    pub keyframe: bool,
-    pub codec_config: bool,
-}
-
 pub struct EncoderSession {
-    child: Child,
+    child: Option<Child>,
     pub rx: Receiver<EncodedPacket>,
 }
 
 impl EncoderSession {
     pub fn stop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    /// Kill ffmpeg without blocking the accept loop on `wait()`.
+    pub fn stop_in_background(mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = std::thread::Builder::new()
+                .name("lighting-ffmpeg-wait".into())
+                .spawn(move || {
+                    let _ = child.wait();
+                });
+        }
     }
 }
 
@@ -99,18 +110,33 @@ pub fn start_encoder(
     });
 
     let (tx, rx) = mpsc::sync_channel(24);
+    let hevc = is_hevc(&settings.codec);
     thread::spawn(move || {
-        if let Err(err) = pump_annexb(stdout, tx) {
+        if let Err(err) = annexb::pump_annexb(stdout, tx, hevc) {
             tracing::warn!("encoder pump ended: {err:#}");
         }
     });
 
-    Ok(EncoderSession { child, rx })
+    Ok(EncoderSession {
+        child: Some(child),
+        rx,
+    })
+}
+
+fn is_hevc(codec: &str) -> bool {
+    codec.eq_ignore_ascii_case("hevc") || codec.eq_ignore_ascii_case("h265")
 }
 
 fn tail(s: &str, n: usize) -> String {
     let lines: Vec<&str> = s.lines().collect();
-    lines.iter().rev().take(n).rev().cloned().collect::<Vec<_>>().join("\n")
+    lines
+        .iter()
+        .rev()
+        .take(n)
+        .rev()
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn build_args(display: &DisplayInfo, settings: &EncodeSettings, encoder: &str) -> Vec<String> {
@@ -193,7 +219,10 @@ pub fn start_encoder_gdigrab(
         "desktop".into(),
         "-an".into(),
         "-vf".into(),
-        format!("format=yuv420p,scale={}:{}:flags=fast_bilinear", settings.width, settings.height),
+        format!(
+            "format=yuv420p,scale={}:{}:flags=fast_bilinear",
+            settings.width, settings.height
+        ),
         "-c:v".into(),
         encoder.to_string(),
     ];
@@ -218,10 +247,16 @@ pub fn start_encoder_gdigrab(
         }
     });
     let (tx, rx) = mpsc::sync_channel(24);
+    let hevc = is_hevc(&settings.codec);
     thread::spawn(move || {
-        let _ = pump_annexb(stdout, tx);
+        if let Err(err) = annexb::pump_annexb(stdout, tx, hevc) {
+            tracing::warn!("encoder pump ended: {err:#}");
+        }
     });
-    Ok(EncoderSession { child, rx })
+    Ok(EncoderSession {
+        child: Some(child),
+        rx,
+    })
 }
 
 fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
@@ -231,68 +266,122 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
     let level = avc_level(settings.width, settings.height, settings.fps).to_string();
     if encoder.contains("nvenc") {
         vec![
-            "-preset".into(), "p1".into(),
-            "-tune".into(), "ll".into(),
-            "-rc".into(), "cbr".into(),
-            "-b:v".into(), br.clone(),
-            "-maxrate".into(), format!("{}k", settings.bitrate_kbps),
-            "-bufsize".into(), buf,
-            "-bf".into(), "0".into(),
-            "-g".into(), gop,
-            "-slices".into(), "1".into(),
-            "-profile:v".into(), settings.profile.clone(),
-            "-level:v".into(), level,
-            "-forced-idr".into(), "1".into(),
-            "-aud".into(), "1".into(),
-            "-delay".into(), "0".into(),
-            "-rc-lookahead".into(), "0".into(),
-            "-zerolatency".into(), "1".into(),
+            "-preset".into(),
+            "p1".into(),
+            "-tune".into(),
+            "ll".into(),
+            "-rc".into(),
+            "cbr".into(),
+            "-b:v".into(),
+            br.clone(),
+            "-maxrate".into(),
+            format!("{}k", settings.bitrate_kbps),
+            "-bufsize".into(),
+            buf,
+            "-bf".into(),
+            "0".into(),
+            "-g".into(),
+            gop,
+            "-slices".into(),
+            "1".into(),
+            "-profile:v".into(),
+            settings.profile.clone(),
+            "-level:v".into(),
+            level,
+            "-forced-idr".into(),
+            "1".into(),
+            "-aud".into(),
+            "1".into(),
+            "-delay".into(),
+            "0".into(),
+            "-rc-lookahead".into(),
+            "0".into(),
+            "-zerolatency".into(),
+            "1".into(),
         ]
     } else if encoder.contains("qsv") {
         vec![
-            "-preset".into(), "veryfast".into(),
-            "-b:v".into(), br,
-            "-maxrate".into(), format!("{}k", settings.bitrate_kbps),
-            "-bufsize".into(), buf,
-            "-bf".into(), "0".into(),
-            "-g".into(), gop,
-            "-profile:v".into(), settings.profile.clone(),
-            "-look_ahead".into(), "0".into(),
+            "-preset".into(),
+            "veryfast".into(),
+            "-b:v".into(),
+            br,
+            "-maxrate".into(),
+            format!("{}k", settings.bitrate_kbps),
+            "-bufsize".into(),
+            buf,
+            "-bf".into(),
+            "0".into(),
+            "-g".into(),
+            gop,
+            "-profile:v".into(),
+            settings.profile.clone(),
+            "-look_ahead".into(),
+            "0".into(),
         ]
     } else if encoder.contains("amf") {
         vec![
-            "-quality".into(), "speed".into(),
-            "-rc".into(), "cbr".into(),
-            "-b:v".into(), br,
-            "-bf".into(), "0".into(),
-            "-g".into(), gop,
-            "-profile:v".into(), settings.profile.clone(),
-            "-usage".into(), "ultralowlatency".into(),
+            "-quality".into(),
+            "speed".into(),
+            "-rc".into(),
+            "cbr".into(),
+            "-b:v".into(),
+            br,
+            "-bf".into(),
+            "0".into(),
+            "-g".into(),
+            gop,
+            "-profile:v".into(),
+            settings.profile.clone(),
+            "-usage".into(),
+            "ultralowlatency".into(),
         ]
     } else if encoder.contains("x265") || encoder.contains("hevc") {
         vec![
-            "-preset".into(), "ultrafast".into(),
-            "-tune".into(), "zerolatency".into(),
-            "-b:v".into(), br,
-            "-maxrate".into(), format!("{}k", settings.bitrate_kbps),
-            "-bufsize".into(), buf,
-            "-bf".into(), "0".into(),
-            "-g".into(), gop,
-            "-pix_fmt".into(), "yuv420p".into(),
+            "-preset".into(),
+            "ultrafast".into(),
+            "-tune".into(),
+            "zerolatency".into(),
+            "-b:v".into(),
+            br,
+            "-maxrate".into(),
+            format!("{}k", settings.bitrate_kbps),
+            "-bufsize".into(),
+            buf,
+            "-bf".into(),
+            "0".into(),
+            "-g".into(),
+            gop,
+            "-pix_fmt".into(),
+            "yuv420p".into(),
         ]
     } else {
         vec![
-            "-preset".into(), "ultrafast".into(),
-            "-tune".into(), "zerolatency".into(),
-            "-b:v".into(), br,
-            "-maxrate".into(), format!("{}k", settings.bitrate_kbps),
-            "-bufsize".into(), buf,
-            "-bf".into(), "0".into(),
-            "-g".into(), gop,
-            "-pix_fmt".into(), "yuv420p".into(),
-            "-profile:v".into(), settings.profile.clone(),
-            "-level:v".into(), level,
-            "-x264-params".into(), format!("repeat-headers=1:scenecut=0:sliced-threads=0:level={}", avc_level(settings.width, settings.height, settings.fps)).into(),
+            "-preset".into(),
+            "ultrafast".into(),
+            "-tune".into(),
+            "zerolatency".into(),
+            "-b:v".into(),
+            br,
+            "-maxrate".into(),
+            format!("{}k", settings.bitrate_kbps),
+            "-bufsize".into(),
+            buf,
+            "-bf".into(),
+            "0".into(),
+            "-g".into(),
+            gop,
+            "-pix_fmt".into(),
+            "yuv420p".into(),
+            "-profile:v".into(),
+            settings.profile.clone(),
+            "-level:v".into(),
+            level,
+            "-x264-params".into(),
+            format!(
+                "repeat-headers=1:scenecut=0:sliced-threads=0:level={}",
+                avc_level(settings.width, settings.height, settings.fps)
+            )
+            .into(),
         ]
     }
 }
@@ -312,158 +401,4 @@ pub fn avc_level(width: u32, height: u32, fps: u32) -> &'static str {
     } else {
         "5.1"
     }
-}
-
-fn pump_annexb(mut stdout: impl Read, tx: mpsc::SyncSender<EncodedPacket>) -> Result<()> {
-    let mut buf = vec![0u8; 64 * 1024];
-    let mut acc = Vec::with_capacity(256 * 1024);
-    let mut au = Vec::new();
-    let mut au_has_vcl = false;
-    let mut au_key = false;
-    let mut sps_pps = Vec::new();
-    let mut sent_cfg = false;
-    let mut drop_until_key = false;
-
-    loop {
-        let n = stdout.read(&mut buf)?;
-        if n == 0 {
-            flush_au(
-                &mut au,
-                &mut au_has_vcl,
-                &mut au_key,
-                &sps_pps,
-                &tx,
-                &mut drop_until_key,
-            );
-            break;
-        }
-        acc.extend_from_slice(&buf[..n]);
-        let nals = split_annexb(&mut acc);
-        for nal in nals {
-            let ty = h264_nal_type(&nal);
-            if ty == 7 || ty == 8 {
-                if ty == 7 {
-                    sps_pps.clear();
-                }
-                sps_pps.extend_from_slice(&nal);
-                continue;
-            }
-            if !sent_cfg && !sps_pps.is_empty() {
-                let _ = tx.send(EncodedPacket {
-                    data: sps_pps.clone(),
-                    keyframe: false,
-                    codec_config: true,
-                });
-                sent_cfg = true;
-            }
-            let is_vcl = matches!(ty, 1 | 5);
-            if ty == 9 || (is_vcl && au_has_vcl) {
-                flush_au(
-                    &mut au,
-                    &mut au_has_vcl,
-                    &mut au_key,
-                    &sps_pps,
-                    &tx,
-                    &mut drop_until_key,
-                );
-            }
-            if ty == 5 {
-                au_key = true;
-            }
-            if is_vcl {
-                au_has_vcl = true;
-            }
-            au.extend_from_slice(&nal);
-        }
-    }
-    Ok(())
-}
-
-fn flush_au(
-    au: &mut Vec<u8>,
-    has_vcl: &mut bool,
-    key: &mut bool,
-    sps_pps: &[u8],
-    tx: &mpsc::SyncSender<EncodedPacket>,
-    drop_until_key: &mut bool,
-) {
-    if au.is_empty() {
-        return;
-    }
-    let is_key = *key;
-    if *drop_until_key && !is_key {
-        au.clear();
-        *has_vcl = false;
-        *key = false;
-        return;
-    }
-    let mut data = Vec::with_capacity(sps_pps.len() + au.len());
-    if is_key && !sps_pps.is_empty() {
-        data.extend_from_slice(sps_pps);
-    }
-    data.append(au);
-    let pkt = EncodedPacket {
-        data,
-        keyframe: is_key,
-        codec_config: false,
-    };
-    match tx.try_send(pkt) {
-        Ok(()) => {
-            *drop_until_key = false;
-        }
-        Err(mpsc::TrySendError::Full(pkt)) => {
-            if pkt.keyframe {
-                let _ = tx.send(pkt);
-                *drop_until_key = false;
-            } else {
-                *drop_until_key = true;
-            }
-        }
-        Err(mpsc::TrySendError::Disconnected(_)) => {}
-    }
-    *has_vcl = false;
-    *key = false;
-}
-
-fn h264_nal_type(nal: &[u8]) -> u8 {
-    // nal: start code + header
-    let i = if nal.len() >= 4 && nal[0] == 0 && nal[1] == 0 && nal[2] == 0 && nal[3] == 1 {
-        4
-    } else if nal.len() >= 3 && nal[0] == 0 && nal[1] == 0 && nal[2] == 1 {
-        3
-    } else {
-        return 0;
-    };
-    nal.get(i).map(|b| b & 0x1F).unwrap_or(0)
-}
-
-/// Split complete NALs from `acc`, leaving a trailing incomplete fragment.
-fn split_annexb(acc: &mut Vec<u8>) -> Vec<Vec<u8>> {
-    let mut starts = Vec::new();
-    let mut i = 0;
-    while i + 3 < acc.len() {
-        if acc[i] == 0 && acc[i + 1] == 0 {
-            if acc[i + 2] == 1 {
-                starts.push(i);
-                i += 3;
-                continue;
-            }
-            if i + 3 < acc.len() && acc[i + 2] == 0 && acc[i + 3] == 1 {
-                starts.push(i);
-                i += 4;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    if starts.len() < 2 {
-        return Vec::new();
-    }
-    let mut nals = Vec::new();
-    for w in starts.windows(2) {
-        nals.push(acc[w[0]..w[1]].to_vec());
-    }
-    let last = *starts.last().unwrap();
-    acc.drain(..last);
-    nals
 }

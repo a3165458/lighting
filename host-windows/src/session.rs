@@ -4,13 +4,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 use crate::adb;
 use crate::displays::{self, DisplayInfo};
-use crate::encoder::{self, EncodeSettings};
+use crate::encoder::{self, EncodeSettings, EncodedPacket};
 use crate::input;
 use crate::protocol::{self, Hello, StreamConfig, FLAG_CODEC_CONFIG, FLAG_KEYFRAME};
+use lighting_host::annexb;
+use lighting_host::session_policy;
 
 #[derive(Clone)]
 pub struct SessionRequest {
@@ -90,15 +92,12 @@ async fn run_session_inner(
     let mut reverse_serial: Option<String> = None;
     if let Some(adb_bin) = adb_path.as_ref() {
         let devices = adb::list_devices(adb_bin).await.unwrap_or_default();
-        let serial = req
-            .device_serial
-            .clone()
-            .or_else(|| {
-                devices
-                    .into_iter()
-                    .find(|d| d.state == "device")
-                    .map(|d| d.serial)
-            });
+        let serial = req.device_serial.clone().or_else(|| {
+            devices
+                .into_iter()
+                .find(|d| d.state == "device")
+                .map(|d| d.serial)
+        });
         if let Some(serial) = serial {
             set_status(&status, "USB", format!("adb reverse {serial}"));
             if let Err(err) = adb::reverse_port(adb_bin, &serial, protocol::PORT).await {
@@ -111,7 +110,11 @@ async fn run_session_inner(
                 reverse_serial = Some(serial);
             }
         } else {
-            set_status(&status, "等待", "未检测到已授权的 Android 设备，可改用局域网 IP");
+            set_status(
+                &status,
+                "等待",
+                "未检测到已授权的 Android 设备，可改用局域网 IP",
+            );
         }
     } else {
         set_status(
@@ -123,7 +126,7 @@ async fn run_session_inner(
 
     set_status(&status, "等待设备", "请在平板上打开 Lighting 并连接");
 
-    let (stop_tx, mut stop_rx) = watch::channel(false);
+    let (stop_tx, stop_rx) = watch::channel(false);
     let stop2 = stop.clone();
     tokio::spawn(async move {
         while !stop2.load(Ordering::Relaxed) {
@@ -132,21 +135,92 @@ async fn run_session_inner(
         let _ = stop_tx.send(true);
     });
 
-    let stream = tokio::select! {
-        _ = stop_rx.changed() => {
-            cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref()).await;
-            anyhow::bail!("已取消");
+    // Accept never stops while the share is running. Incoming reconnects are
+    // parked here during the previous client's teardown (ffmpeg wait / adb).
+    let (conn_tx, mut conn_rx) = mpsc::channel(1);
+    let mut accept_stop = stop_rx.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = accept_stop.changed() => break,
+                accepted = listener.accept() => {
+                    match accepted {
+                        Ok(pair) => {
+                            tokio::select! {
+                                _ = accept_stop.changed() => break,
+                                sent = conn_tx.send(pair) => {
+                                    if sent.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!("accept failed: {err:#}");
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        }
+                    }
+                }
+            }
         }
-        accepted = listener.accept() => {
-            let (s, addr) = accepted?;
-            set_status(&status, "已连接", format!("{addr}"));
-            s
-        }
-    };
+    });
 
-    let result = handle_client(stream, display, ffmpeg, req, status.clone(), stop.clone()).await;
-    cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref()).await;
-    result
+    let mut stop_rx = stop_rx;
+    loop {
+        if !session_policy::continue_accept_loop(stop.load(Ordering::Relaxed)) {
+            cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref()).await;
+            return Ok(());
+        }
+
+        let stream = tokio::select! {
+            _ = stop_rx.changed() => {
+                cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref()).await;
+                return Ok(());
+            }
+            incoming = conn_rx.recv() => {
+                let Some((s, addr)) = incoming else {
+                    cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref()).await;
+                    anyhow::bail!("listen loop ended");
+                };
+                set_status(&status, "已连接", format!("{addr}"));
+                s
+            }
+        };
+
+        match handle_client(
+            stream,
+            display.clone(),
+            ffmpeg.clone(),
+            req.clone(),
+            status.clone(),
+            stop.clone(),
+        )
+        .await
+        {
+            Ok(()) => {
+                tracing::info!("client session ended");
+            }
+            Err(err) => {
+                tracing::warn!("client session ended: {err:#}");
+            }
+        }
+
+        if !session_policy::continue_accept_loop(stop.load(Ordering::Relaxed)) {
+            cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref()).await;
+            return Ok(());
+        }
+
+        // Refresh reverse in the background so USB 127.0.0.1 is restored
+        // without stalling the already-running accept task.
+        if let (Some(adb_bin), Some(serial)) = (adb_path.clone(), reverse_serial.clone()) {
+            tokio::spawn(async move {
+                if let Err(err) = adb::reverse_port(&adb_bin, &serial, protocol::PORT).await {
+                    tracing::warn!("re-apply adb reverse failed: {err:#}");
+                }
+            });
+        }
+        set_status(&status, "等待设备", "上一台已断开，等待重新连接");
+    }
 }
 
 async fn cleanup_reverse(adb: Option<&std::path::PathBuf>, serial: Option<&str>) {
@@ -166,7 +240,9 @@ async fn handle_client(
     stream.set_nodelay(true)?;
     let (mut reader, mut writer) = stream.into_split();
 
-    let hello_msg = protocol::read_message(&mut reader).await.context("读 Hello")?;
+    let hello_msg = protocol::read_message(&mut reader)
+        .await
+        .context("读 Hello")?;
     if hello_msg.ty != protocol::MSG_HELLO {
         anyhow::bail!("首包不是 Hello");
     }
@@ -175,24 +251,26 @@ async fn handle_client(
 
     let codec = pick_codec(&hello, req.prefer_hevc);
     let (dec_w, dec_h, dec_fps, hw) = codec_limit(&hello, &codec);
-    let (mut width, mut height) = if req.match_device && hello.screen_width > 0 && hello.screen_height > 0 {
-        fit_to_device(
-            display.width,
-            display.height,
-            hello.screen_width,
-            hello.screen_height,
-            req.scale,
-            dec_w,
-            dec_h,
-        )
-    } else {
-        let (w, h) = fit_resolution(display.width, display.height, req.max_width, req.max_height);
-        if dec_w > 0 && dec_h > 0 {
-            fit_resolution(w, h, dec_w, dec_h)
+    let (mut width, mut height) =
+        if req.match_device && hello.screen_width > 0 && hello.screen_height > 0 {
+            fit_to_device(
+                display.width,
+                display.height,
+                hello.screen_width,
+                hello.screen_height,
+                req.scale,
+                dec_w,
+                dec_h,
+            )
         } else {
-            (w, h)
-        }
-    };
+            let (w, h) =
+                fit_resolution(display.width, display.height, req.max_width, req.max_height);
+            if dec_w > 0 && dec_h > 0 {
+                fit_resolution(w, h, dec_w, dec_h)
+            } else {
+                (w, h)
+            }
+        };
     let align = hello.alignment.max(2);
     width = (width / align * align).max(align);
     height = (height / align * align).max(align);
@@ -225,7 +303,11 @@ async fn handle_client(
             "{codec} {width}×{height}@{fps} {br} kbps{audio} [{soc}{gsi}{hw}]",
             br = cfg.bitrate_kbps,
             audio = if audio_enabled { " + 音频" } else { "" },
-            soc = if hello.soc.is_empty() { "soc?" } else { &hello.soc },
+            soc = if hello.soc.is_empty() {
+                "soc?"
+            } else {
+                &hello.soc
+            },
             gsi = if hello.gsi { " GSI" } else { "" },
             hw = if hw {
                 format!(" 硬解{dec_w}×{dec_h}@{dec_fps}")
@@ -278,10 +360,12 @@ async fn handle_client(
         }
     }
     let mut session = session.context("no encoder")?;
+    let hevc = codec.eq_ignore_ascii_case("hevc") || codec.eq_ignore_ascii_case("h265");
     let t0 = std::time::Instant::now();
+    let audio_stop = Arc::new(AtomicBool::new(false));
     let (audio_tx, audio_rx) = std::sync::mpsc::sync_channel::<crate::audio::AudioPacket>(48);
     if audio_enabled {
-        match crate::audio::start_loopback(audio_tx, stop.clone(), t0) {
+        match crate::audio::start_loopback(audio_tx, audio_stop.clone(), t0) {
             Ok(()) => tracing::info!("audio loopback started"),
             Err(err) => {
                 tracing::warn!("audio loopback unavailable: {err:#}");
@@ -312,7 +396,8 @@ async fn handle_client(
     while !stop.load(Ordering::Relaxed) {
         while let Ok(pkt) = audio_rx.try_recv() {
             let payload = protocol::with_pts(pkt.pts_us, &pkt.pcm);
-            if let Err(err) = protocol::write_message(&mut writer, protocol::MSG_AUDIO, 0, &payload).await
+            if let Err(err) =
+                protocol::write_message(&mut writer, protocol::MSG_AUDIO, 0, &payload).await
             {
                 tracing::warn!("send audio failed: {err:#}");
                 break;
@@ -320,18 +405,7 @@ async fn handle_client(
         }
         match session.rx.recv_timeout(Duration::from_millis(2)) {
             Ok(pkt) => {
-                let mut flags = 0u8;
-                if pkt.keyframe {
-                    flags |= FLAG_KEYFRAME;
-                }
-                if pkt.codec_config {
-                    flags |= FLAG_CODEC_CONFIG;
-                }
-                let pts = t0.elapsed().as_micros() as u64;
-                let payload = protocol::with_pts(pts, &pkt.data);
-                if let Err(err) =
-                    protocol::write_message(&mut writer, protocol::MSG_VIDEO, flags, &payload).await
-                {
+                if let Err(err) = write_video_packet(&mut writer, t0, &pkt).await {
                     tracing::warn!("send video failed: {err:#}");
                     break;
                 }
@@ -356,31 +430,17 @@ async fn handle_client(
                 tracing::warn!("encoder pipe closed, trying gdigrab once");
                 set_status(&status, "回退", "改用 gdigrab 抓屏");
                 session.stop();
-                session = encoder::start_encoder_gdigrab(
-                    &ffmpeg,
-                    &display,
-                    &settings,
-                    &settings.encoder,
-                )?;
-                // If this also dies, leave the loop on next disconnect.
-                match session.rx.recv_timeout(Duration::from_secs(3)) {
-                    Ok(pkt) => {
-                        let mut flags = 0u8;
-                        if pkt.keyframe {
-                            flags |= FLAG_KEYFRAME;
+                match restart_encoder_with_bootstrap(&ffmpeg, &display, &settings, hevc) {
+                    Ok((new_session, bootstrap)) => {
+                        session = new_session;
+                        if let Err(err) = write_bootstrap(&mut writer, t0, &bootstrap).await {
+                            tracing::warn!("send bootstrap after encoder restart failed: {err:#}");
+                            break;
                         }
-                        if pkt.codec_config {
-                            flags |= FLAG_CODEC_CONFIG;
-                        }
-                        protocol::write_message(
-                            &mut writer,
-                            protocol::MSG_VIDEO,
-                            flags,
-                            &protocol::with_pts(t0.elapsed().as_micros() as u64, &pkt.data),
-                        )
-                            .await?;
+                        set_status(&status, "编码", "gdigrab 已重发 codec-config + IDR");
                     }
-                    Err(_) => {
+                    Err(err) => {
+                        tracing::warn!("gdigrab 回退失败: {err:#}");
                         set_status(&status, "错误", "gdigrab 回退也失败，请查看日志");
                         break;
                     }
@@ -389,10 +449,53 @@ async fn handle_client(
         }
     }
 
-    session.stop();
-    let _ = writer.shutdown().await;
+    audio_stop.store(true, Ordering::Relaxed);
     reader_task.abort();
+    let _ = writer.shutdown().await;
+    session.stop_in_background();
     Ok(())
+}
+
+fn video_flags(pkt: &EncodedPacket) -> u8 {
+    let mut flags = 0u8;
+    if pkt.keyframe {
+        flags |= FLAG_KEYFRAME;
+    }
+    if pkt.codec_config {
+        flags |= FLAG_CODEC_CONFIG;
+    }
+    flags
+}
+
+async fn write_video_packet<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut W,
+    t0: std::time::Instant,
+    pkt: &EncodedPacket,
+) -> Result<()> {
+    let payload = protocol::with_pts(t0.elapsed().as_micros() as u64, &pkt.data);
+    protocol::write_message(writer, protocol::MSG_VIDEO, video_flags(pkt), &payload).await
+}
+
+async fn write_bootstrap<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut W,
+    t0: std::time::Instant,
+    packets: &[EncodedPacket],
+) -> Result<()> {
+    for pkt in packets {
+        write_video_packet(writer, t0, pkt).await?;
+    }
+    Ok(())
+}
+
+fn restart_encoder_with_bootstrap(
+    ffmpeg: &std::path::PathBuf,
+    display: &DisplayInfo,
+    settings: &EncodeSettings,
+    hevc: bool,
+) -> Result<(encoder::EncoderSession, Vec<EncodedPacket>)> {
+    let session = encoder::start_encoder_gdigrab(ffmpeg, display, settings, &settings.encoder)?;
+    let bootstrap = annexb::recv_bootstrap(&session.rx, Duration::from_secs(3), hevc)?;
+    Ok((session, bootstrap))
 }
 
 fn codec_limit(hello: &Hello, codec: &str) -> (u32, u32, u32, bool) {
@@ -419,7 +522,12 @@ fn pick_codec(hello: &Hello, prefer_hevc: bool) -> String {
     let avc_ok = has("avc") || has("h264") || hello.avc_limit.is_some();
     let hevc_ok = has("hevc") || has("h265") || hello.hevc_limit.is_some();
     let avc_score = if avc_ok {
-        codec_score(hello.avc_limit.as_ref(), hello.decoder_max_width, hello.decoder_max_height, hello.decoder_max_fps)
+        codec_score(
+            hello.avc_limit.as_ref(),
+            hello.decoder_max_width,
+            hello.decoder_max_height,
+            hello.decoder_max_fps,
+        )
     } else {
         0
     };
@@ -427,7 +535,11 @@ fn pick_codec(hello: &Hello, prefer_hevc: bool) -> String {
         hello
             .hevc_limit
             .as_ref()
-            .map(|l| (l.width as u64).saturating_mul(l.height as u64).saturating_mul(l.fps.max(24) as u64))
+            .map(|l| {
+                (l.width as u64)
+                    .saturating_mul(l.height as u64)
+                    .saturating_mul(l.fps.max(24) as u64)
+            })
             .unwrap_or(0)
     } else {
         0
@@ -456,7 +568,9 @@ fn codec_score(limit: Option<&crate::protocol::CodecLimit>, fw: u32, fh: u32, ff
                 .saturating_mul(l.fps.max(24) as u64);
         }
     }
-    (fw as u64).saturating_mul(fh as u64).saturating_mul(ffps.max(24) as u64)
+    (fw as u64)
+        .saturating_mul(fh as u64)
+        .saturating_mul(ffps.max(24) as u64)
 }
 
 fn adapted_fps(req_fps: u32, hello_max: u32, dec_fps: u32, hw: bool) -> u32 {
@@ -617,5 +731,22 @@ mod tests {
         assert_eq!(crate::encoder::avc_level(1280, 720, 60), "3.2");
         assert_eq!(crate::encoder::avc_level(2560, 1440, 60), "5.0");
     }
-}
 
+    #[test]
+    fn video_flags_mark_config_and_idr() {
+        let cfg = EncodedPacket {
+            data: vec![0, 0, 0, 1, 0x67],
+            keyframe: false,
+            codec_config: true,
+        };
+        let idr = EncodedPacket {
+            data: vec![0, 0, 0, 1, 0x65],
+            keyframe: true,
+            codec_config: false,
+        };
+        assert_eq!(video_flags(&cfg), FLAG_CODEC_CONFIG);
+        assert_eq!(video_flags(&idr), FLAG_KEYFRAME);
+        assert!(session_policy::continue_accept_loop(false));
+        assert!(!session_policy::continue_accept_loop(true));
+    }
+}
