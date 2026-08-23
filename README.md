@@ -84,7 +84,15 @@ D:\Lighting\.runtime\gradle-8.9\bin\gradle.bat -p android assembleDebug
 4. 电脑点「开始共享」（只插一台已授权设备时会自动选中）
 5. 设备上打开 Lighting，点「USB 一键连接」
 
-不需要填写地址或端口。局域网测试请在两边的「高级」里填写电脑 IP。
+不需要填写地址或端口。局域网测试时，在电脑端点「高级设置」、在平板右上角点设置图标，填写电脑 IP。
+
+连过一次之后，平板首页的「连接历史」可以一键重连同一台电脑。
+
+只跑客户端的单元测试（不需要设备）：
+
+```bash
+gradle -p android testDebugUnitTest
+```
 
 ## 第一期能力
 

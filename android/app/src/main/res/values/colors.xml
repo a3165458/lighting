@@ -1,13 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="bg">#F7F7F9</color>
-    <color name="card">#FFFFFF</color>
-    <color name="text">#181725</color>
-    <color name="muted">#787687</color>
-    <color name="border">#E4E2EB</color>
-    <color name="accent">#6A50F9</color>
-    <color name="accent_soft">#EDEAFE</color>
-    <color name="ok">#3EA876</color>
-    <color name="warn">#D69E2E</color>
-    <color name="err">#D65454</color>
+    <color name="bg">#0A0B10</color>
+    <color name="surface">#15171F</color>
+    <color name="surface_high">#1D2029</color>
+    <color name="stroke">#262A36</color>
+
+    <color name="text">#F3F4F8</color>
+    <color name="text_muted">#9AA0B0</color>
+    <color name="text_dim">#6C7382</color>
+
+    <color name="accent">#7C5CFF</color>
+    <color name="accent_dim">#A794FF</color>
+    <color name="accent_wash">#2A2350</color>
+
+    <color name="danger">#FF9A9A</color>
+    <color name="ok">#4ADE80</color>
 </resources>

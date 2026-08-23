@@ -2,6 +2,8 @@ package app.lighting.display
 
 import java.io.EOFException
 import java.net.ConnectException
+import java.net.Inet4Address
+import java.net.NetworkInterface
 import java.net.NoRouteToHostException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
@@ -31,11 +33,29 @@ object ConnectCopy {
     fun connectingLabel(host: String): String =
         if (isUsbHost(host)) "正在通过 USB 连接…" else "正在连接电脑…"
 
-    fun capsCard(caps: DeviceCaps): String {
-        val title = listOf(caps.manufacturer, caps.model)
+    /** Shown on the waiting screen so the user can compare it with the PC. */
+    fun localAddressLabel(): String = try {
+        NetworkInterface.getNetworkInterfaces()
+            ?.toList()
+            ?.asSequence()
+            ?.filter { it.isUp && !it.isLoopback }
+            ?.flatMap { it.inetAddresses.toList().asSequence() }
+            ?.filterIsInstance<Inet4Address>()
+            ?.mapNotNull { it.hostAddress }
+            ?.firstOrNull { !it.startsWith("127.") }
+            ?: "未连接网络（USB 仍可用）"
+    } catch (_: Throwable) {
+        "未连接网络（USB 仍可用）"
+    }
+
+    fun deviceLabel(caps: DeviceCaps): String =
+        listOf(caps.manufacturer, caps.model)
             .filter { it.isNotBlank() }
             .joinToString(" ")
             .ifBlank { "本机" }
+
+    fun capsCard(caps: DeviceCaps): String {
+        val title = deviceLabel(caps)
         val avc = if (caps.avc != null) "AVC 硬解" else "AVC 软解"
         val hevc = if (caps.hevc != null) "HEVC 硬解" else "HEVC 无硬解"
         return "$title\n$avc · $hevc"

@@ -242,6 +242,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
             throw IllegalStateException("expected config, got ${cfgMsg.type}")
         }
         val cfg = LitProtocol.parseConfig(cfgMsg.payload)
+        ConnectHistory.remember(this, cfg.hostName, host, port)
         val hevc = cfg.codec.equals("hevc", true) || cfg.codec.equals("h265", true)
         if (cfg.audioEnabled) {
             audio = AudioPlayer(cfg.audioSampleRate, cfg.audioChannels)
