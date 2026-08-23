@@ -21,6 +21,16 @@ pub fn jitter_backoff_ms(base_ms: u64, jitter_ms: u64, max_jitter_ms: u64) -> u6
     base_ms.saturating_add(jitter_ms.min(max_jitter_ms))
 }
 
+/// Smooth heartbeat round-trips so the latency tile does not flicker on a single
+/// slow reply. `prev` 0 means "no sample yet", so the first reading is taken raw.
+pub fn smooth_latency_ms(prev: u32, sample: u32) -> u32 {
+    if prev == 0 {
+        sample
+    } else {
+        (prev.saturating_mul(3) + sample) / 4
+    }
+}
+
 /// I/O / pipe failures from a dropped tablet must not tear down the share.
 pub fn is_client_disconnect(err: &str) -> bool {
     let e = err.to_ascii_lowercase();
@@ -51,6 +61,14 @@ mod tests {
         assert!(reconnect_backoff_ms(0) < reconnect_backoff_ms(4));
         assert_eq!(jitter_backoff_ms(650, 80, 200), 730);
         assert_eq!(jitter_backoff_ms(650, 999, 200), 850);
+    }
+
+    #[test]
+    fn latency_settles_instead_of_jumping() {
+        assert_eq!(smooth_latency_ms(0, 28), 28);
+        assert_eq!(smooth_latency_ms(28, 28), 28);
+        let spiked = smooth_latency_ms(28, 400);
+        assert!(spiked > 28 && spiked < 400);
     }
 
     #[test]

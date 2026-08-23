@@ -85,6 +85,17 @@ pub struct StreamConfig {
     pub audio_sample_rate: u32,
     #[serde(default = "default_audio_channels")]
     pub audio_channels: u32,
+    /// Shown in the tablet's connection history so the user recognizes the PC.
+    #[serde(default)]
+    pub host_name: String,
+}
+
+pub fn host_name() -> String {
+    std::env::var("COMPUTERNAME")
+        .ok()
+        .map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "这台电脑".into())
 }
 
 fn default_audio_rate() -> u32 {

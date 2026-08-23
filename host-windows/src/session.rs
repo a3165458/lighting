@@ -37,14 +37,40 @@ pub struct SessionStatus {
     pub frames: u64,
     pub bitrate_kbps: u32,
     pub transport: String,
+    pub client_name: String,
+    pub client_addr: String,
+    pub codec: String,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    /// Heartbeat round-trip, smoothed. 0 until the client answers once.
+    pub latency_ms: u32,
+    /// TCP repairs loss below us, so this stays 0; kept for a future UDP path.
+    pub loss_permille: u32,
+    pub bytes_sent: u64,
+    pub connected_secs: u64,
+}
+
+/// Interaction switches the user can flip while the share is live.
+pub struct Controls {
+    pub touch: AtomicBool,
+}
+
+impl Default for Controls {
+    fn default() -> Self {
+        Self {
+            touch: AtomicBool::new(true),
+        }
+    }
 }
 
 pub async fn run_session(
     req: SessionRequest,
     status: Arc<Mutex<SessionStatus>>,
     stop: Arc<AtomicBool>,
+    controls: Arc<Controls>,
 ) {
-    let result = run_session_inner(req, status.clone(), stop).await;
+    let result = run_session_inner(req, status.clone(), stop, controls).await;
     if let Err(err) = result {
         tracing::error!("{err:#}");
         if let Ok(mut s) = status.lock() {
@@ -82,28 +108,13 @@ fn set_bitrate(status: &Arc<Mutex<SessionStatus>>, bitrate_kbps: u32) {
     }
 }
 
-pub fn display_phase(phase: &str) -> String {
-    match phase {
-        "" => "空闲".into(),
-        "启动" | "启动中" => "监听".into(),
-        "USB" | "USB 警告" | "等待" => "等待设备".into(),
-        "回退" => "编码".into(),
-        other => other.to_string(),
-    }
-}
+const HEADER_BYTES: usize = 12;
+const PTS_BYTES: usize = 8;
 
-pub fn metrics_line(frames: u64, bitrate_kbps: u32) -> String {
-    let frames_s = if frames > 0 {
-        frames.to_string()
-    } else {
-        "—".into()
-    };
-    let br_s = if bitrate_kbps > 0 {
-        bitrate_kbps.to_string()
-    } else {
-        "—".into()
-    };
-    format!("已发送 {frames_s} 帧 · {br_s} kbps")
+fn add_bytes(status: &Arc<Mutex<SessionStatus>>, payload_len: usize) {
+    if let Ok(mut s) = status.lock() {
+        s.bytes_sent += (payload_len + HEADER_BYTES) as u64;
+    }
 }
 
 pub fn live_transport(running: bool, transport: &str) -> Option<&str> {
@@ -121,12 +132,29 @@ fn clear_share_metrics(status: &mut SessionStatus) {
     if status.phase != "错误" {
         status.detail.clear();
     }
+    clear_peer_metrics(status);
+}
+
+/// Reset everything tied to one tablet so a stale device name or latency never
+/// outlives its session.
+fn clear_peer_metrics(status: &mut SessionStatus) {
+    status.client_name.clear();
+    status.client_addr.clear();
+    status.codec.clear();
+    status.width = 0;
+    status.height = 0;
+    status.fps = 0;
+    status.latency_ms = 0;
+    status.loss_permille = 0;
+    status.bytes_sent = 0;
+    status.connected_secs = 0;
 }
 
 async fn run_session_inner(
     req: SessionRequest,
     status: Arc<Mutex<SessionStatus>>,
     stop: Arc<AtomicBool>,
+    controls: Arc<Controls>,
 ) -> Result<()> {
     set_status(&status, "启动", "正在枚举显示器");
     let displays = displays::list_displays()?;
@@ -239,6 +267,10 @@ async fn run_session_inner(
                     cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref()).await;
                     anyhow::bail!("listen loop ended");
                 };
+                if let Ok(mut st) = status.lock() {
+                    clear_peer_metrics(&mut st);
+                    st.client_addr = addr.to_string();
+                }
                 set_status(&status, "已连接", format!("{addr}"));
                 s
             }
@@ -251,6 +283,7 @@ async fn run_session_inner(
             req.clone(),
             status.clone(),
             stop.clone(),
+            controls.clone(),
         )
         .await
         {
@@ -276,6 +309,9 @@ async fn run_session_inner(
                 }
             });
         }
+        if let Ok(mut st) = status.lock() {
+            clear_peer_metrics(&mut st);
+        }
         set_status(&status, "等待设备", "上一台已断开，等待重新连接");
     }
 }
@@ -293,6 +329,7 @@ async fn handle_client(
     req: SessionRequest,
     status: Arc<Mutex<SessionStatus>>,
     stop: Arc<AtomicBool>,
+    controls: Arc<Controls>,
 ) -> Result<()> {
     stream.set_nodelay(true)?;
     let (mut reader, mut writer) = stream.into_split();
@@ -305,6 +342,9 @@ async fn handle_client(
     }
     let hello: Hello = serde_json::from_slice(&hello_msg.payload).context("解析 Hello")?;
     tracing::info!("hello: {:?}", hello);
+    if let Ok(mut s) = status.lock() {
+        s.client_name = hello.device.trim().to_string();
+    }
 
     let codec = pick_codec(&hello, req.prefer_hevc);
     let (dec_w, dec_h, dec_fps, hw) = codec_limit(&hello, &codec);
@@ -349,9 +389,16 @@ async fn handle_client(
         audio_enabled,
         audio_sample_rate: 48000,
         audio_channels: 2,
+        host_name: protocol::host_name(),
     };
     let payload = serde_json::to_vec(&cfg)?;
     protocol::write_message(&mut writer, protocol::MSG_CONFIG, 0, &payload).await?;
+    if let Ok(mut s) = status.lock() {
+        s.codec = codec.clone();
+        s.width = width;
+        s.height = height;
+        s.fps = fps;
+    }
 
     set_status(
         &status,
@@ -433,6 +480,10 @@ async fn handle_client(
 
     let display_for_input = display.clone();
     let stop_read = stop.clone();
+    let ping_sent: Arc<Mutex<Option<std::time::Instant>>> = Arc::new(Mutex::new(None));
+    let ping_reply = ping_sent.clone();
+    let status_read = status.clone();
+    let controls_read = controls.clone();
     let reader_task = tokio::spawn(async move {
         loop {
             if stop_read.load(Ordering::Relaxed) {
@@ -440,17 +491,30 @@ async fn handle_client(
             }
             match protocol::read_message(&mut reader).await {
                 Ok(msg) if msg.ty == protocol::MSG_TOUCH => {
+                    if !controls_read.touch.load(Ordering::Relaxed) {
+                        continue;
+                    }
                     if let Ok(ev) = protocol::TouchEvent::parse(&msg.payload) {
                         input::inject_touch(&display_for_input, ev);
                     }
                 }
-                Ok(msg) if msg.ty == protocol::MSG_HEARTBEAT => {}
+                Ok(msg) if msg.ty == protocol::MSG_HEARTBEAT => {
+                    let rtt = ping_reply
+                        .lock()
+                        .ok()
+                        .and_then(|mut slot| slot.take())
+                        .map(|sent| sent.elapsed().as_millis().min(9_999) as u32);
+                    if let (Some(rtt), Ok(mut s)) = (rtt, status_read.lock()) {
+                        s.latency_ms = session_policy::smooth_latency_ms(s.latency_ms, rtt);
+                    }
+                }
                 Ok(_) => {}
                 Err(_) => break,
             }
         }
     });
 
+    let mut last_ping = std::time::Instant::now();
     while !stop.load(Ordering::Relaxed) {
         while let Ok(pkt) = audio_rx.try_recv() {
             let payload = protocol::with_pts(pkt.pts_us, &pkt.pcm);
@@ -460,6 +524,18 @@ async fn handle_client(
                 tracing::warn!("send audio failed: {err:#}");
                 break;
             }
+            add_bytes(&status, payload.len());
+        }
+        if last_ping.elapsed() >= Duration::from_millis(1_000) {
+            last_ping = std::time::Instant::now();
+            if protocol::write_message(&mut writer, protocol::MSG_HEARTBEAT, 0, &[])
+                .await
+                .is_ok()
+            {
+                if let Ok(mut slot) = ping_sent.lock() {
+                    slot.get_or_insert_with(std::time::Instant::now);
+                }
+            }
         }
         match session.rx.recv_timeout(Duration::from_millis(2)) {
             Ok(pkt) => {
@@ -467,6 +543,7 @@ async fn handle_client(
                     tracing::warn!("send video failed: {err:#}");
                     break;
                 }
+                let mut sent = pkt.data.len() + PTS_BYTES + HEADER_BYTES;
                 while let Ok(ap) = audio_rx.try_recv() {
                     let audio_payload = protocol::with_pts(ap.pts_us, &ap.pcm);
                     if protocol::write_message(&mut writer, protocol::MSG_AUDIO, 0, &audio_payload)
@@ -475,9 +552,12 @@ async fn handle_client(
                     {
                         break;
                     }
+                    sent += audio_payload.len() + HEADER_BYTES;
                 }
                 if let Ok(mut s) = status.lock() {
                     s.frames += 1;
+                    s.bytes_sent += sent as u64;
+                    s.connected_secs = t0.elapsed().as_secs();
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
@@ -759,6 +839,15 @@ mod tests {
     }
 
     #[test]
+    fn weak_hevc_tablet_stays_on_avc() {
+        // Retail 2020-class pad: AVC 1080p60 hardware, HEVC only 720p30.
+        let mut h = qcom_gsi();
+        h.gsi = false;
+        assert_eq!(pick_codec(&h, true), "avc");
+        assert_eq!(pick_codec(&h, false), "avc");
+    }
+
+    #[test]
     fn hevc_wins_when_clearly_higher_res() {
         let mut h = qcom_gsi();
         h.gsi = false;
@@ -778,31 +867,6 @@ mod tests {
         assert_eq!(adapted_fps(60, 60, 60, false), 45);
         assert_eq!(adapted_fps(120, 60, 60, true), 60);
         assert_eq!(adapted_fps(60, 60, 30, true), 30);
-    }
-
-    #[test]
-    fn display_phase_normalizes_share_states() {
-        assert_eq!(display_phase(""), "空闲");
-        assert_eq!(display_phase("启动"), "监听");
-        assert_eq!(display_phase("启动中"), "监听");
-        assert_eq!(display_phase("监听"), "监听");
-        assert_eq!(display_phase("USB"), "等待设备");
-        assert_eq!(display_phase("USB 警告"), "等待设备");
-        assert_eq!(display_phase("等待"), "等待设备");
-        assert_eq!(display_phase("等待设备"), "等待设备");
-        assert_eq!(display_phase("已连接"), "已连接");
-        assert_eq!(display_phase("编码"), "编码");
-        assert_eq!(display_phase("回退"), "编码");
-        assert_eq!(display_phase("错误"), "错误");
-        assert_eq!(display_phase("已停止"), "已停止");
-    }
-
-    #[test]
-    fn metrics_line_shows_frames_and_bitrate() {
-        assert_eq!(metrics_line(0, 0), "已发送 — 帧 · — kbps");
-        assert_eq!(metrics_line(12, 0), "已发送 12 帧 · — kbps");
-        assert_eq!(metrics_line(0, 18000), "已发送 — 帧 · 18000 kbps");
-        assert_eq!(metrics_line(90, 18000), "已发送 90 帧 · 18000 kbps");
     }
 
     #[test]

@@ -1,0 +1,454 @@
+//! Beginner-facing copy and number formatting for the host window.
+//!
+//! Lives in the library (not next to the egui widgets) so the wording that
+//! shields users from ports, adb and socket errors stays unit-tested on any
+//! platform, including the Linux CI box that cannot link eframe.
+
+/// Semantic color of a status line. The egui layer maps these to the palette.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Tone {
+    Ok,
+    Warn,
+    Bad,
+    Info,
+    #[default]
+    Muted,
+}
+
+/// Normalize the internal phase names into the handful the window shows.
+pub fn display_phase(phase: &str) -> String {
+    match phase {
+        "" => "空闲".into(),
+        "启动" | "启动中" => "监听".into(),
+        "USB" | "USB 警告" | "等待" => "等待设备".into(),
+        "回退" => "编码".into(),
+        other => other.to_string(),
+    }
+}
+
+pub fn metrics_line(frames: u64, bitrate_kbps: u32) -> String {
+    let frames_s = if frames > 0 {
+        frames.to_string()
+    } else {
+        "—".into()
+    };
+    let br_s = if bitrate_kbps > 0 {
+        bitrate_kbps.to_string()
+    } else {
+        "—".into()
+    };
+    format!("已发送 {frames_s} 帧 · {br_s} kbps")
+}
+
+pub fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    const TB: f64 = GB * 1024.0;
+    let b = bytes as f64;
+    let (value, unit) = if b < KB {
+        return format!("{bytes} B");
+    } else if b < MB {
+        (b / KB, "KB")
+    } else if b < GB {
+        (b / MB, "MB")
+    } else if b < TB {
+        (b / GB, "GB")
+    } else {
+        (b / TB, "TB")
+    };
+    let decimals = if value < 10.0 {
+        2
+    } else if value < 100.0 {
+        1
+    } else {
+        0
+    };
+    format!("{value:.decimals$} {unit}")
+}
+
+pub fn format_duration(secs: u64) -> String {
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    format!("{h:02}:{m:02}:{s:02}")
+}
+
+pub fn latency_text(latency_ms: u32) -> String {
+    if latency_ms == 0 {
+        "—".into()
+    } else {
+        format!("≈ {latency_ms} ms")
+    }
+}
+
+pub fn loss_text(running: bool, loss_permille: u32) -> String {
+    if !running {
+        return "—".into();
+    }
+    if loss_permille == 0 {
+        return "0%".into();
+    }
+    format!("{:.1}%", loss_permille as f32 / 10.0)
+}
+
+pub fn codec_text(live_codec: &str, prefer_hevc: bool) -> String {
+    let live = live_codec.trim().to_lowercase();
+    let hevc = if live.is_empty() {
+        prefer_hevc
+    } else {
+        live.contains("hevc") || live.contains("h265")
+    };
+    if hevc {
+        "HEVC（推荐）".into()
+    } else {
+        "AVC（兼容）".into()
+    }
+}
+
+pub fn transport_text(running: bool, transport: &str) -> String {
+    if !running {
+        return "自适应优化".into();
+    }
+    if transport.contains("已就绪") {
+        "USB 直连".into()
+    } else if transport.contains("adb") || transport.contains("未检测") {
+        "局域网".into()
+    } else {
+        "自适应优化".into()
+    }
+}
+
+/// Loopback means the stream rides the USB tunnel, so show that instead of an
+/// address the user never typed.
+pub fn client_display_addr(addr: &str) -> String {
+    let raw = addr.trim();
+    let host = if let Some(end) = raw.find(']') {
+        raw[1..end].to_string()
+    } else if raw.matches(':').count() == 1 {
+        raw.split(':').next().unwrap_or(raw).to_string()
+    } else {
+        raw.to_string()
+    };
+    if host.is_empty()
+        || host == "::1"
+        || host == "localhost"
+        || host.starts_with("127.")
+        || host.starts_with("::ffff:127.")
+    {
+        return "USB 直连".into();
+    }
+    host
+}
+
+pub fn peer_name(name: &str) -> String {
+    let name = name.trim();
+    if name.is_empty() {
+        "平板".into()
+    } else {
+        name.to_string()
+    }
+}
+
+pub fn connection_title(running: bool, phase: &str, client_name: &str) -> String {
+    if is_streaming(phase) {
+        return format!("已连接：{}", peer_name(client_name));
+    }
+    if running {
+        "等待平板连接".into()
+    } else {
+        "未开始共享".into()
+    }
+}
+
+pub fn is_streaming(phase: &str) -> bool {
+    matches!(phase, "已连接" | "编码" | "回退" | "共享中")
+}
+
+pub fn share_button_label(running: bool) -> String {
+    if running {
+        "停止共享".into()
+    } else {
+        "开始共享".into()
+    }
+}
+
+/// Footer health line: one glance answer to "is this working right now?".
+pub fn health_text(running: bool, phase: &str, latency_ms: u32) -> (String, Tone) {
+    if phase == "错误" {
+        return ("连接异常，请看上面的提示".into(), Tone::Bad);
+    }
+    if is_streaming(phase) {
+        return match latency_ms {
+            0..=60 => ("连接良好".into(), Tone::Ok),
+            61..=140 => ("连接一般".into(), Tone::Warn),
+            _ => ("网络较慢，可降低画质".into(), Tone::Warn),
+        };
+    }
+    if running {
+        return ("等待平板连接".into(), Tone::Info);
+    }
+    ("未开始共享".into(), Tone::Muted)
+}
+
+pub fn humanize_transport(raw: &str) -> (String, Tone) {
+    if raw.contains("已就绪") {
+        ("USB 已就绪".into(), Tone::Ok)
+    } else if raw.contains("失败") {
+        ("请换数据线，并确认已点允许 USB 调试".into(), Tone::Warn)
+    } else if raw.contains("未找到 adb") {
+        (
+            "未检测到 USB 驱动。请换数据线，或在高级里用局域网连接".into(),
+            Tone::Warn,
+        )
+    } else if raw.contains("未检测") {
+        ("未检测到设备。请检查数据线是否支持传数据".into(), Tone::Warn)
+    } else {
+        (raw.to_string(), Tone::Muted)
+    }
+}
+
+pub fn human_detail_text(phase: &str, detail: &str) -> String {
+    let detail = detail.trim();
+    if detail.is_empty() {
+        return String::new();
+    }
+    let lower = detail.to_lowercase();
+    if phase == "错误" {
+        return human_last_error(detail);
+    }
+    // The connected detail is the peer socket address, which the card already
+    // renders in friendly form.
+    if phase == "已连接" {
+        return "平板已连上".into();
+    }
+    // While encoding, the detail carries the negotiated pipeline; the metric
+    // tiles show that already, so only surface the self-healing fallback.
+    if phase == "编码" || phase == "回退" {
+        if detail.contains("gdigrab") {
+            return "画面已自动恢复".into();
+        }
+        return String::new();
+    }
+    if looks_like_bind_or_port(detail) {
+        return String::new();
+    }
+    if lower.contains("adb reverse 失败") {
+        return "请换数据线，或检查是否弹出 USB 调试允许".into();
+    }
+    if lower.contains("adb reverse") {
+        return String::new();
+    }
+    if detail.contains("请在平板") {
+        return "请在平板点「USB 一键连接」".into();
+    }
+    if detail.contains("未检测到已授权") {
+        return "未检测到设备。请打开 USB 调试并点允许，或换一根能传数据的线".into();
+    }
+    if detail.contains("未找到 adb") {
+        return "未检测到 USB 驱动。请换数据线，或在高级里用局域网连接".into();
+    }
+    if looks_technical(detail) {
+        return String::new();
+    }
+    detail.to_string()
+}
+
+pub fn human_last_error(raw: &str) -> String {
+    let lower = raw.to_lowercase();
+    if raw.contains("找不到 adb") || lower.contains("adb.exe") {
+        return "未检测到 USB 驱动。请安装平台工具，或换一根能传数据的线。".into();
+    }
+    if raw.contains("没有可用显示器") {
+        return "没有可用显示器".into();
+    }
+    if looks_like_bind_or_port(raw) {
+        return "无法开始共享，请稍后重试".into();
+    }
+    raw.lines().next().unwrap_or(raw).to_string()
+}
+
+pub fn looks_like_bind_or_port(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("17400")
+        || lower.contains("0.0.0.0")
+        || lower.contains("127.0.0.1")
+        || lower.contains("connection refused")
+        || text.contains("绑定")
+}
+
+pub fn looks_technical(text: &str) -> bool {
+    looks_like_bind_or_port(text) || text.contains("adb reverse") || text.contains("tcp:")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_phase_normalizes_share_states() {
+        assert_eq!(display_phase(""), "空闲");
+        assert_eq!(display_phase("启动"), "监听");
+        assert_eq!(display_phase("启动中"), "监听");
+        assert_eq!(display_phase("监听"), "监听");
+        assert_eq!(display_phase("USB"), "等待设备");
+        assert_eq!(display_phase("USB 警告"), "等待设备");
+        assert_eq!(display_phase("等待"), "等待设备");
+        assert_eq!(display_phase("等待设备"), "等待设备");
+        assert_eq!(display_phase("已连接"), "已连接");
+        assert_eq!(display_phase("编码"), "编码");
+        assert_eq!(display_phase("回退"), "编码");
+        assert_eq!(display_phase("错误"), "错误");
+        assert_eq!(display_phase("已停止"), "已停止");
+    }
+
+    #[test]
+    fn metrics_line_shows_frames_and_bitrate() {
+        assert_eq!(metrics_line(0, 0), "已发送 — 帧 · — kbps");
+        assert_eq!(metrics_line(12, 0), "已发送 12 帧 · — kbps");
+        assert_eq!(metrics_line(0, 18000), "已发送 — 帧 · 18000 kbps");
+        assert_eq!(metrics_line(90, 18000), "已发送 90 帧 · 18000 kbps");
+    }
+
+    #[test]
+    fn bytes_read_like_a_download_counter() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(900), "900 B");
+        assert_eq!(format_bytes(1_342_177_280), "1.25 GB");
+        assert_eq!(format_bytes(5 * 1024 * 1024), "5.00 MB");
+        assert_eq!(format_bytes(512 * 1024 * 1024), "512 MB");
+    }
+
+    #[test]
+    fn duration_is_zero_padded() {
+        assert_eq!(format_duration(0), "00:00:00");
+        assert_eq!(format_duration(765), "00:12:45");
+        assert_eq!(format_duration(3_725), "01:02:05");
+    }
+
+    #[test]
+    fn latency_and_loss_stay_blank_before_data() {
+        assert_eq!(latency_text(0), "—");
+        assert_eq!(latency_text(28), "≈ 28 ms");
+        assert_eq!(loss_text(false, 0), "—");
+        assert_eq!(loss_text(true, 0), "0%");
+        assert_eq!(loss_text(true, 25), "2.5%");
+    }
+
+    #[test]
+    fn codec_text_prefers_live_negotiation() {
+        assert_eq!(codec_text("hevc", false), "HEVC（推荐）");
+        assert_eq!(codec_text("avc", true), "AVC（兼容）");
+        assert_eq!(codec_text("", true), "HEVC（推荐）");
+        assert_eq!(codec_text("", false), "AVC（兼容）");
+    }
+
+    #[test]
+    fn transport_text_hides_adb_jargon() {
+        assert_eq!(
+            transport_text(true, "USB · adb reverse 已就绪（R52N）"),
+            "USB 直连"
+        );
+        assert_eq!(
+            transport_text(true, "未找到 adb · 仅局域网可用（平板填电脑 IP）"),
+            "局域网"
+        );
+        assert_eq!(transport_text(false, "USB · adb reverse 已就绪"), "自适应优化");
+    }
+
+    #[test]
+    fn loopback_peer_shows_as_usb() {
+        assert_eq!(client_display_addr("127.0.0.1:53812"), "USB 直连");
+        assert_eq!(client_display_addr("[::1]:53812"), "USB 直连");
+        assert_eq!(client_display_addr("192.168.1.105:53812"), "192.168.1.105");
+        assert_eq!(client_display_addr(""), "USB 直连");
+    }
+
+    #[test]
+    fn connection_title_tracks_phase() {
+        assert_eq!(
+            connection_title(true, "编码", "Google Pixel Tablet"),
+            "已连接：Google Pixel Tablet"
+        );
+        assert_eq!(connection_title(true, "编码", ""), "已连接：平板");
+        assert_eq!(connection_title(true, "等待设备", ""), "等待平板连接");
+        assert_eq!(connection_title(false, "已停止", ""), "未开始共享");
+    }
+
+    #[test]
+    fn health_text_reacts_to_latency() {
+        assert_eq!(health_text(true, "编码", 28).0, "连接良好");
+        assert_eq!(health_text(true, "编码", 90).0, "连接一般");
+        assert_eq!(health_text(true, "编码", 400).1, Tone::Warn);
+        assert_eq!(health_text(true, "等待设备", 0).1, Tone::Info);
+        assert_eq!(health_text(false, "已停止", 0).1, Tone::Muted);
+        assert_eq!(health_text(true, "错误", 0).1, Tone::Bad);
+    }
+
+    #[test]
+    fn share_button_toggles_copy() {
+        assert_eq!(share_button_label(false), "开始共享");
+        assert_eq!(share_button_label(true), "停止共享");
+    }
+
+    #[test]
+    fn transport_copy_never_leaks_adb() {
+        assert_eq!(
+            humanize_transport("USB · adb reverse 已就绪（R52N）"),
+            ("USB 已就绪".into(), Tone::Ok)
+        );
+        assert_eq!(
+            humanize_transport("USB · adb reverse 失败，可改用 Wi-Fi（平板填电脑 IP）").1,
+            Tone::Warn
+        );
+        assert!(!humanize_transport("USB · adb reverse 失败").0.contains("adb"));
+        assert!(!humanize_transport("未找到 adb · 仅局域网可用").0.contains("adb ·"));
+    }
+
+    #[test]
+    fn detail_copy_stays_human() {
+        assert_eq!(human_detail_text("监听", "绑定 0.0.0.0:17400"), "");
+        assert_eq!(
+            human_detail_text("等待设备", "正在执行 adb reverse（R52N）"),
+            ""
+        );
+        assert_eq!(
+            human_detail_text("等待设备", "adb reverse 失败，仍可走局域网：boom"),
+            "请换数据线，或检查是否弹出 USB 调试允许"
+        );
+        assert_eq!(
+            human_detail_text("等待设备", "请在平板上打开 Lighting 并连接"),
+            "请在平板点「USB 一键连接」"
+        );
+        assert_eq!(human_detail_text("已连接", "192.168.1.105:53812"), "平板已连上");
+        assert_eq!(human_detail_text("已连接", "127.0.0.1:53812"), "平板已连上");
+        assert_eq!(
+            human_detail_text("编码", "avc 1920×1080@60 18000 kbps + 音频 [qcom 硬解]"),
+            ""
+        );
+        assert_eq!(
+            human_detail_text("编码", "gdigrab 已重发 codec-config + IDR"),
+            "画面已自动恢复"
+        );
+        assert_eq!(
+            human_detail_text("错误", "绑定端口: Address already in use"),
+            "无法开始共享，请稍后重试"
+        );
+    }
+
+    #[test]
+    fn last_error_copy_stays_human() {
+        assert_eq!(
+            human_last_error("找不到 adb.exe，请安装 platform-tools"),
+            "未检测到 USB 驱动。请安装平台工具，或换一根能传数据的线。"
+        );
+        assert_eq!(human_last_error("没有可用显示器"), "没有可用显示器");
+        assert_eq!(
+            human_last_error("绑定端口: os error 10048"),
+            "无法开始共享，请稍后重试"
+        );
+        assert!(looks_like_bind_or_port("connection refused"));
+        assert!(looks_technical("adb reverse tcp:17400"));
+        assert!(!looks_technical("没有可用显示器"));
+    }
+}
