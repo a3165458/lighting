@@ -10,6 +10,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 
 class MainActivity : AppCompatActivity() {
+    companion object {
+        private const val DEFAULT_HOST = "127.0.0.1"
+    }
+
     private lateinit var host: EditText
     private lateinit var port: EditText
     private lateinit var capsInfo: TextView
@@ -31,6 +35,9 @@ class MainActivity : AppCompatActivity() {
         port = findViewById(R.id.portInput)
         capsInfo = findViewById(R.id.capsInfo)
         connectError = findViewById(R.id.connectError)
+        findViewById<TextView>(R.id.hint).text =
+            "USB：保持 127.0.0.1:${LitProtocol.PORT}（电脑会做 adb reverse）。请先开启本机 USB 调试。\n" +
+                "Wi-Fi：填电脑局域网 IP，端口仍为 ${LitProtocol.PORT}。"
         applyDefaults()
         Thread({
             val text = try {
@@ -46,8 +53,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun applyDefaults() {
+        host.hint = DEFAULT_HOST
+        port.hint = LitProtocol.PORT.toString()
         if (host.text.isNullOrBlank()) {
-            host.setText("127.0.0.1")
+            host.setText(DEFAULT_HOST)
         }
         if (port.text.isNullOrBlank()) {
             port.setText(LitProtocol.PORT.toString())
@@ -56,7 +65,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun launchDisplay() {
         applyDefaults()
-        val hostText = host.text.toString().trim().ifBlank { "127.0.0.1" }
+        val hostText = host.text.toString().trim().ifBlank { DEFAULT_HOST }
         val portNum = port.text.toString().trim().toIntOrNull()
         if (portNum == null || portNum !in 1..65535) {
             showError("端口无效，请填 1–65535（默认 ${LitProtocol.PORT}）。")
