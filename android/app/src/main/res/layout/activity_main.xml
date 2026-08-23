@@ -1,10 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/bg"
     android:fillViewport="true"
-    android:padding="20dp">
+    android:paddingLeft="20dp"
+    android:paddingTop="16dp"
+    android:paddingRight="20dp"
+    android:paddingBottom="24dp"
+    android:scrollbars="none">
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -17,101 +22,155 @@
             android:gravity="center_vertical"
             android:orientation="horizontal">
 
-            <LinearLayout
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:orientation="vertical">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="Lighting 副屏"
-                    android:textColor="@color/text"
-                    android:textSize="26sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:text="把平板变成电脑的第二块屏"
-                    android:textColor="@color/muted"
-                    android:textSize="14sp" />
-            </LinearLayout>
+            <ImageView
+                android:layout_width="26dp"
+                android:layout_height="26dp"
+                android:contentDescription="Lighting"
+                android:src="@drawable/ic_monitor" />
 
             <TextView
-                android:id="@+id/usbChip"
-                android:layout_width="wrap_content"
+                android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:background="@drawable/panel_card"
-                android:paddingLeft="12dp"
-                android:paddingTop="6dp"
-                android:paddingRight="12dp"
-                android:paddingBottom="6dp"
-                android:text="USB"
-                android:textColor="@color/accent"
-                android:textSize="12sp"
+                android:layout_marginStart="10dp"
+                android:layout_weight="1"
+                android:text="Lighting 副屏"
+                android:textColor="@color/text"
+                android:textSize="19sp"
                 android:textStyle="bold" />
+
+            <ImageView
+                android:id="@+id/settingsButton"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="@drawable/row_ripple"
+                android:contentDescription="高级设置"
+                android:padding="8dp"
+                android:src="@drawable/ic_settings" />
         </LinearLayout>
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="20dp"
-            android:background="@drawable/panel_card"
-            android:orientation="vertical">
+            android:layout_marginTop="16dp"
+            android:background="@drawable/card_surface"
+            android:gravity="center_horizontal"
+            android:orientation="vertical"
+            android:paddingLeft="20dp"
+            android:paddingTop="26dp"
+            android:paddingRight="20dp"
+            android:paddingBottom="22dp">
 
             <TextView
+                android:id="@+id/readyTitle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="开始"
+                android:text="准备就绪，等待连接"
                 android:textColor="@color/text"
-                android:textSize="16sp"
+                android:textSize="21sp"
                 android:textStyle="bold" />
 
             <TextView
+                android:id="@+id/readyHint"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="插上数据线，电脑点「开始共享」，这边再点下面按钮。"
-                android:textColor="@color/muted"
-                android:textSize="14sp" />
+                android:layout_marginTop="8dp"
+                android:gravity="center_horizontal"
+                android:lineSpacingExtra="2dp"
+                android:text="请在电脑上打开 Lighting 副屏并点击「开始共享」"
+                android:textColor="@color/text_muted"
+                android:textSize="13sp" />
 
-            <Button
-                android:id="@+id/connectButton"
-                android:layout_width="match_parent"
-                android:layout_height="52dp"
-                android:layout_marginTop="16dp"
-                android:background="@drawable/btn_primary"
-                android:text="USB 一键连接"
-                android:textColor="@android:color/white"
-                android:textSize="16sp"
-                android:textStyle="bold" />
+            <app.lighting.display.PulseRingView
+                android:id="@+id/pulse"
+                android:layout_width="168dp"
+                android:layout_height="168dp"
+                android:layout_marginTop="18dp"
+                android:contentDescription="USB 一键连接" />
 
-            <TextView
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:text="请先打开 USB 调试并点允许。充电线不行，需要能传数据的线。"
-                android:textColor="@color/muted"
-                android:textSize="12sp" />
+                android:layout_marginTop="20dp"
+                android:gravity="center_horizontal"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="设备名："
+                    android:textColor="@color/text_muted"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/deviceName"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="本机"
+                    android:textColor="@color/text"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:gravity="center_horizontal"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="网络："
+                    android:textColor="@color/text_muted"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/localAddress"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="正在检测…"
+                    android:textColor="@color/accent_dim"
+                    android:textSize="13sp" />
+            </LinearLayout>
         </LinearLayout>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/connectButton"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:layout_marginTop="16dp"
+            android:text="USB 一键连接"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFFFF"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            app:backgroundTint="@color/accent"
+            app:cornerRadius="16dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center_horizontal"
+            android:text="插上数据线，电脑点「开始共享」，这边再点上面的按钮。"
+            android:textColor="@color/text_dim"
+            android:textSize="12sp" />
 
         <LinearLayout
             android:id="@+id/errorBox"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:background="@drawable/panel_card"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/card_surface"
             android:orientation="vertical"
+            android:padding="16dp"
             android:visibility="gone">
 
             <TextView
                 android:id="@+id/connectError"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:textColor="@color/err"
+                android:textColor="@color/danger"
                 android:textSize="14sp"
                 android:textStyle="bold" />
 
@@ -120,7 +179,8 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="6dp"
-                android:textColor="@color/muted"
+                android:lineSpacingExtra="2dp"
+                android:textColor="@color/text_muted"
                 android:textSize="13sp"
                 android:visibility="gone" />
 
@@ -128,11 +188,11 @@
                 android:id="@+id/errorDetailToggle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
+                android:layout_marginTop="10dp"
                 android:paddingTop="4dp"
                 android:paddingBottom="4dp"
                 android:text="详情 ▸"
-                android:textColor="@color/accent"
+                android:textColor="@color/text_dim"
                 android:textSize="12sp" />
 
             <TextView
@@ -141,23 +201,278 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="2dp"
                 android:fontFamily="monospace"
-                android:textColor="@color/muted"
+                android:textColor="@color/text_dim"
                 android:textSize="11sp"
                 android:visibility="gone" />
         </LinearLayout>
 
         <LinearLayout
+            android:id="@+id/advancedPanel"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:background="@drawable/panel_card"
-            android:orientation="vertical">
+            android:layout_marginTop="16dp"
+            android:background="@drawable/card_surface"
+            android:orientation="vertical"
+            android:padding="18dp"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="高级设置"
+                android:textColor="@color/text"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:lineSpacingExtra="2dp"
+                android:text="局域网连接：填写电脑的地址，电脑需已点「开始共享」。USB 请直接用上面的一键连接。"
+                android:textColor="@color/text_muted"
+                android:textSize="12.5sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text="主机"
+                android:textColor="@color/text_muted"
+                android:textSize="12sp" />
+
+            <EditText
+                android:id="@+id/hostInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:autofillHints="no"
+                android:hint="电脑的局域网 IP"
+                android:inputType="textUri"
+                android:textColor="@color/text"
+                android:textColorHint="@color/text_dim"
+                android:textSize="14sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="端口"
+                android:textColor="@color/text_muted"
+                android:textSize="12sp" />
+
+            <EditText
+                android:id="@+id/portInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:autofillHints="no"
+                android:hint="默认端口"
+                android:inputType="number"
+                android:textColor="@color/text"
+                android:textColorHint="@color/text_dim"
+                android:textSize="14sp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/lanConnectButton"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="16dp"
+                android:text="局域网连接"
+                android:textAllCaps="false"
+                android:textColor="@color/accent_dim"
+                android:textSize="14sp"
+                app:backgroundTint="@color/surface_high"
+                app:cornerRadius="14dp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/card_surface"
+            android:orientation="vertical"
+            android:padding="18dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="连接指南"
+                android:textColor="@color/text"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="22dp"
+                    android:layout_height="22dp"
+                    android:background="@drawable/step_dot"
+                    android:gravity="center"
+                    android:text="1"
+                    android:textColor="@color/accent_dim"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="12dp"
+                    android:layout_weight="1"
+                    android:text="用能传数据的线把平板连到电脑，或让两台设备在同一 Wi-Fi 网络"
+                    android:textColor="@color/text_muted"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="22dp"
+                    android:layout_height="22dp"
+                    android:background="@drawable/step_dot"
+                    android:gravity="center"
+                    android:text="2"
+                    android:textColor="@color/accent_dim"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="12dp"
+                    android:layout_weight="1"
+                    android:text="在电脑端点击「开始共享」"
+                    android:textColor="@color/text_muted"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="22dp"
+                    android:layout_height="22dp"
+                    android:background="@drawable/step_dot"
+                    android:gravity="center"
+                    android:text="3"
+                    android:textColor="@color/accent_dim"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="12dp"
+                    android:layout_weight="1"
+                    android:text="点「USB 一键连接」，成功后自动显示电脑画面"
+                    android:textColor="@color/text_muted"
+                    android:textSize="13sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/card_surface"
+            android:orientation="vertical"
+            android:paddingLeft="18dp"
+            android:paddingTop="18dp"
+            android:paddingRight="18dp"
+            android:paddingBottom="10dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="连接历史"
+                android:textColor="@color/text"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/historyEmpty"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:layout_marginBottom="8dp"
+                android:text="还没有连接记录。连上一次后，这里可以一键重连。"
+                android:textColor="@color/text_dim"
+                android:textSize="12.5sp" />
+
+            <LinearLayout
+                android:id="@+id/historyList"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:orientation="vertical" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:gravity="center"
+            android:orientation="horizontal">
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:text="遇到问题？"
+                android:textColor="@color/text_dim"
+                android:textSize="12.5sp" />
+
+            <TextView
+                android:id="@+id/helpToggle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingLeft="2dp"
+                android:paddingTop="6dp"
+                android:paddingRight="6dp"
+                android:paddingBottom="6dp"
+                android:text="查看帮助文档"
+                android:textColor="@color/accent_dim"
+                android:textSize="12.5sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/helpPanel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:background="@drawable/card_surface"
+            android:orientation="vertical"
+            android:padding="18dp"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:lineSpacingExtra="3dp"
+                android:text="连不上？先打开「开发者选项 → USB 调试」，在弹窗里点允许。充电线不行，需要能传数据的线。\n仍然不行时，把电脑和平板放到同一 Wi-Fi，在高级设置里填写电脑地址。"
+                android:textColor="@color/text_muted"
+                android:textSize="12.5sp" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginTop="14dp"
+                android:background="@color/stroke" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
                 android:text="本机解码"
-                android:textColor="@color/muted"
+                android:textColor="@color/text_dim"
                 android:textSize="12sp" />
 
             <TextView
@@ -167,79 +482,8 @@
                 android:layout_marginTop="4dp"
                 android:lineSpacingExtra="2dp"
                 android:text="正在检测…"
-                android:textColor="@color/text"
-                android:textSize="13sp" />
-        </LinearLayout>
-
-        <TextView
-            android:id="@+id/advancedToggle"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:paddingTop="8dp"
-            android:paddingBottom="8dp"
-            android:text="高级 ▸"
-            android:textColor="@color/muted"
-            android:textSize="14sp" />
-
-        <LinearLayout
-            android:id="@+id/advancedPanel"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:background="@drawable/panel_card"
-            android:orientation="vertical"
-            android:visibility="gone">
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="局域网：填写电脑 IP，电脑需已点「开始共享」。"
-                android:textColor="@color/muted"
-                android:textSize="13sp" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:text="主机"
-                android:textColor="@color/muted"
+                android:textColor="@color/text_muted"
                 android:textSize="12sp" />
-
-            <EditText
-                android:id="@+id/hostInput"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:hint="电脑的局域网 IP"
-                android:inputType="textUri"
-                android:textColor="@color/text"
-                android:textColorHint="@color/muted" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:text="端口"
-                android:textColor="@color/muted"
-                android:textSize="12sp" />
-
-            <EditText
-                android:id="@+id/portInput"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:hint="默认端口"
-                android:inputType="number"
-                android:textColor="@color/text"
-                android:textColorHint="@color/muted" />
-
-            <Button
-                android:id="@+id/lanConnectButton"
-                android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:layout_marginTop="12dp"
-                android:background="@drawable/btn_ghost"
-                android:text="局域网连接"
-                android:textColor="@color/text"
-                android:textSize="15sp" />
         </LinearLayout>
     </LinearLayout>
 </ScrollView>
