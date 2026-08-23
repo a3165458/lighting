@@ -1,0 +1,18 @@
+target/
+**/*.rs.bk
+.runtime/
+.idea/
+.vscode/
+*.log
+logs/
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.cxx/
+*.iml
+.DS_Store
+Thumbs.db
+*.apk
