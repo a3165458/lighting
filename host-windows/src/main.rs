@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use eframe::egui;
-use session::{display_phase, metrics_line, SessionRequest, SessionStatus};
+use session::{display_phase, live_transport, metrics_line, SessionRequest, SessionStatus};
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
 
 fn enable_dpi_awareness() {
@@ -232,6 +232,12 @@ impl LightingApp {
     fn stop_session(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         self.running = false;
+        if let Ok(mut s) = self.status.lock() {
+            s.transport.clear();
+            s.bitrate_kbps = 0;
+            s.frames = 0;
+            s.detail.clear();
+        }
     }
 }
 
@@ -304,7 +310,7 @@ impl eframe::App for LightingApp {
                     });
             }
             ui.colored_label(
-                transport_color(&snap.transport, &self.adb_path, &self.devices),
+                transport_color(&snap.transport, snap.running, &self.adb_path, &self.devices),
                 transport_line(&snap, &self.adb_path, &self.devices),
             );
 
@@ -350,19 +356,22 @@ impl eframe::App for LightingApp {
                 ui.strong("阶段");
                 ui.colored_label(phase_color(&phase), &phase);
             });
-            if !snap.detail.is_empty() {
-                ui.label(&snap.detail);
-            }
-            if snap.frames > 0 || snap.bitrate_kbps > 0 {
-                ui.label(metrics_line(snap.frames, snap.bitrate_kbps));
-            }
+            ui.label(if snap.detail.is_empty() {
+                "—"
+            } else {
+                snap.detail.as_str()
+            });
+            ui.label(metrics_line(snap.frames, snap.bitrate_kbps));
             if !self.last_error.is_empty() {
                 ui.colored_label(egui::Color32::from_rgb(220, 80, 80), &self.last_error);
             }
 
             ui.add_space(12.0);
             ui.weak("扩展屏：winget install VirtualDrivers.Virtual-Display-Driver ，然后在 Windows 显示设置里设为「扩展」并选这块虚拟屏。");
-            ui.weak("USB：电脑执行 adb reverse 后，平板连接 127.0.0.1:17400。平板触控：单击/拖动、长按右键、双指滚动。");
+            ui.weak(format!(
+                "USB：电脑执行 adb reverse 后，平板连接 127.0.0.1:{}。平板触控：单击/拖动、长按右键、双指滚动。",
+                protocol::PORT
+            ));
         });
     }
 }
@@ -378,10 +387,9 @@ fn phase_color(phase: &str) -> egui::Color32 {
 }
 
 fn transport_line(snap: &SessionStatus, adb_path: &str, devices: &[adb::AdbDevice]) -> String {
-    if !snap.transport.is_empty() {
-        return snap.transport.clone();
-    }
-    idle_transport(adb_path, devices)
+    live_transport(snap.running, &snap.transport)
+        .map(str::to_string)
+        .unwrap_or_else(|| idle_transport(adb_path, devices))
 }
 
 fn idle_transport(adb_path: &str, devices: &[adb::AdbDevice]) -> String {
@@ -396,12 +404,15 @@ fn idle_transport(adb_path: &str, devices: &[adb::AdbDevice]) -> String {
     }
 }
 
-fn transport_color(transport: &str, adb_path: &str, devices: &[adb::AdbDevice]) -> egui::Color32 {
-    let text = if transport.is_empty() {
-        idle_transport(adb_path, devices)
-    } else {
-        transport.to_string()
-    };
+fn transport_color(
+    transport: &str,
+    running: bool,
+    adb_path: &str,
+    devices: &[adb::AdbDevice],
+) -> egui::Color32 {
+    let text = live_transport(running, transport)
+        .map(str::to_string)
+        .unwrap_or_else(|| idle_transport(adb_path, devices));
     if text.contains("已就绪") || text.contains("已检测") {
         egui::Color32::from_rgb(90, 200, 120)
     } else if text.contains("失败") || text.contains("未找到 adb") {

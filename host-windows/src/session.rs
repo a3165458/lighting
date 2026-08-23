@@ -51,12 +51,14 @@ pub async fn run_session(
             s.running = false;
             s.phase = "错误".into();
             s.detail = format!("{err:#}");
+            clear_share_metrics(&mut s);
         }
     } else if let Ok(mut s) = status.lock() {
         s.running = false;
         if s.phase != "错误" {
             s.phase = "已停止".into();
         }
+        clear_share_metrics(&mut s);
     }
 }
 
@@ -91,11 +93,33 @@ pub fn display_phase(phase: &str) -> String {
 }
 
 pub fn metrics_line(frames: u64, bitrate_kbps: u32) -> String {
-    match (frames > 0, bitrate_kbps > 0) {
-        (true, true) => format!("已发送 {frames} 帧 · {bitrate_kbps} kbps"),
-        (true, false) => format!("已发送 {frames} 帧"),
-        (false, true) => format!("{bitrate_kbps} kbps"),
-        (false, false) => String::new(),
+    let frames_s = if frames > 0 {
+        frames.to_string()
+    } else {
+        "—".into()
+    };
+    let br_s = if bitrate_kbps > 0 {
+        bitrate_kbps.to_string()
+    } else {
+        "—".into()
+    };
+    format!("已发送 {frames_s} 帧 · {br_s} kbps")
+}
+
+pub fn live_transport(running: bool, transport: &str) -> Option<&str> {
+    if running && !transport.is_empty() {
+        Some(transport)
+    } else {
+        None
+    }
+}
+
+fn clear_share_metrics(status: &mut SessionStatus) {
+    status.transport.clear();
+    status.bitrate_kbps = 0;
+    status.frames = 0;
+    if status.phase != "错误" {
+        status.detail.clear();
     }
 }
 
@@ -775,10 +799,21 @@ mod tests {
 
     #[test]
     fn metrics_line_shows_frames_and_bitrate() {
-        assert_eq!(metrics_line(0, 0), "");
-        assert_eq!(metrics_line(12, 0), "已发送 12 帧");
-        assert_eq!(metrics_line(0, 18000), "18000 kbps");
+        assert_eq!(metrics_line(0, 0), "已发送 — 帧 · — kbps");
+        assert_eq!(metrics_line(12, 0), "已发送 12 帧 · — kbps");
+        assert_eq!(metrics_line(0, 18000), "已发送 — 帧 · 18000 kbps");
         assert_eq!(metrics_line(90, 18000), "已发送 90 帧 · 18000 kbps");
+    }
+
+    #[test]
+    fn live_transport_only_while_running() {
+        assert_eq!(
+            live_transport(true, "USB · adb reverse 已就绪"),
+            Some("USB · adb reverse 已就绪")
+        );
+        assert_eq!(live_transport(false, "USB · adb reverse 已就绪"), None);
+        assert_eq!(live_transport(true, ""), None);
+        assert_eq!(live_transport(false, ""), None);
     }
 
     #[test]

@@ -21,7 +21,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:text="USB 数据线连接电脑，先在电脑点「开始共享」。局域网测试则填电脑 IP。"
+            android:text="USB 数据线连接电脑，请先开启本机 USB 调试，再在电脑点「开始共享」。局域网测试则填电脑 IP。"
             android:textSize="14sp" />
 
         <LinearLayout
@@ -46,8 +46,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:hint="127.0.0.1"
-                    android:inputType="textUri"
-                    android:text="127.0.0.1" />
+                    android:inputType="textUri" />
             </LinearLayout>
 
             <LinearLayout
@@ -66,9 +65,7 @@
                     android:id="@+id/portInput"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:hint="17400"
-                    android:inputType="number"
-                    android:text="17400" />
+                    android:inputType="number" />
             </LinearLayout>
         </LinearLayout>
 
@@ -95,7 +92,6 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="USB：保持 127.0.0.1:17400（电脑会做 adb reverse）。\nWi-Fi：填电脑局域网 IP，端口仍为 17400。"
             android:textSize="13sp" />
 
         <LinearLayout
