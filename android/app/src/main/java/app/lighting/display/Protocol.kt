@@ -5,6 +5,7 @@ import org.json.JSONObject
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.EOFException
+import java.net.InetSocketAddress
 import java.net.Socket
 
 object LitProtocol {
@@ -137,10 +138,11 @@ data class StreamConfig(
     val audioChannels: Int = 2,
 )
 
-class LitSocket(host: String, port: Int) : AutoCloseable {
-    val socket: Socket = Socket(host, port).apply {
+class LitSocket(host: String, port: Int, connectTimeoutMs: Int = 1_500) : AutoCloseable {
+    val socket: Socket = Socket().apply {
         tcpNoDelay = true
         keepAlive = true
+        connect(InetSocketAddress(host, port), connectTimeoutMs)
     }
     val input = DataInputStream(socket.getInputStream())
     val output = DataOutputStream(socket.getOutputStream())
@@ -162,3 +164,15 @@ class LitSocket(host: String, port: Int) : AutoCloseable {
 }
 
 fun isEof(t: Throwable): Boolean = t is EOFException || t.message?.contains("Broken pipe", true) == true
+
+/** `failIndex` 0 = first retry after a drop. Includes caller-supplied jitter (0–200ms). */
+fun reconnectBackoffMs(failIndex: Int, jitterMs: Int): Long {
+    val base = when {
+        failIndex <= 0 -> 650L
+        failIndex == 1 -> 900L
+        failIndex == 2 -> 1300L
+        failIndex == 3 -> 1800L
+        else -> 2400L
+    }
+    return base + jitterMs.coerceIn(0, 200)
+}

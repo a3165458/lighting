@@ -21,8 +21,8 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     companion object {
         const val EXTRA_HOST = "host"
         const val EXTRA_PORT = "port"
-        private const val RECONNECT_ATTEMPTS = 5
-        private val RECONNECT_BACKOFF_MS = longArrayOf(250, 500, 1000, 1500, 2000)
+        private const val RECONNECT_ATTEMPTS = 7
+        private const val RECONNECT_BUDGET_MS = 12_000L
     }
 
     private lateinit var surface: SurfaceView
@@ -117,6 +117,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         val caps = DeviceCaps.probe()
         worker = thread(name = "lighting-session") {
             var fails = 0
+            var windowStart = 0L
             while (running && sessionGen == gen) {
                 val label = if (fails == 0) {
                     "连接 $host:$port …"
@@ -138,16 +139,21 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 if (!running || sessionGen != gen) break
                 if (reachedVideo) {
                     fails = 0
+                    windowStart = 0L
                 }
                 fails++
-                if (fails > RECONNECT_ATTEMPTS) {
+                if (windowStart == 0L) {
+                    windowStart = SystemClock.uptimeMillis()
+                }
+                val spent = SystemClock.uptimeMillis() - windowStart
+                if (fails > RECONNECT_ATTEMPTS || spent >= RECONNECT_BUDGET_MS) {
                     awaitingManualReconnect = true
                     setStatus("已断开，点此或点屏幕重连")
                     setStatusClickable(true)
                     break
                 }
-                val backoff = RECONNECT_BACKOFF_MS[(fails - 1).coerceIn(0, RECONNECT_BACKOFF_MS.lastIndex)]
-                sleepBackoff(backoff, gen)
+                val jitter = (SystemClock.uptimeMillis() % 201).toInt()
+                sleepBackoff(reconnectBackoffMs(fails - 1, jitter), gen)
             }
         }
     }
