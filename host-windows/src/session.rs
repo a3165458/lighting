@@ -535,6 +535,10 @@ async fn handle_client(
                 if let Ok(mut slot) = ping_sent.lock() {
                     slot.get_or_insert_with(std::time::Instant::now);
                 }
+                // Keeps the footer clock ticking even if the encoder stalls.
+                if let Ok(mut s) = status.lock() {
+                    s.connected_secs = t0.elapsed().as_secs();
+                }
             }
         }
         match session.rx.recv_timeout(Duration::from_millis(2)) {
