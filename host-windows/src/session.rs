@@ -35,6 +35,8 @@ pub struct SessionStatus {
     pub phase: String,
     pub detail: String,
     pub frames: u64,
+    pub bitrate_kbps: u32,
+    pub transport: String,
 }
 
 pub async fn run_session(
@@ -66,6 +68,37 @@ fn set_status(status: &Arc<Mutex<SessionStatus>>, phase: &str, detail: impl Into
     }
 }
 
+fn set_transport(status: &Arc<Mutex<SessionStatus>>, transport: impl Into<String>) {
+    if let Ok(mut s) = status.lock() {
+        s.transport = transport.into();
+    }
+}
+
+fn set_bitrate(status: &Arc<Mutex<SessionStatus>>, bitrate_kbps: u32) {
+    if let Ok(mut s) = status.lock() {
+        s.bitrate_kbps = bitrate_kbps;
+    }
+}
+
+pub fn display_phase(phase: &str) -> String {
+    match phase {
+        "" => "空闲".into(),
+        "启动" | "启动中" => "监听".into(),
+        "USB" | "USB 警告" | "等待" => "等待设备".into(),
+        "回退" => "编码".into(),
+        other => other.to_string(),
+    }
+}
+
+pub fn metrics_line(frames: u64, bitrate_kbps: u32) -> String {
+    match (frames > 0, bitrate_kbps > 0) {
+        (true, true) => format!("已发送 {frames} 帧 · {bitrate_kbps} kbps"),
+        (true, false) => format!("已发送 {frames} 帧"),
+        (false, true) => format!("{bitrate_kbps} kbps"),
+        (false, false) => String::new(),
+    }
+}
+
 async fn run_session_inner(
     req: SessionRequest,
     status: Arc<Mutex<SessionStatus>>,
@@ -90,6 +123,7 @@ async fn run_session_inner(
 
     let adb_path = adb::find_adb().ok();
     let mut reverse_serial: Option<String> = None;
+    let mut wait_detail = "请在平板上打开 Lighting 并连接".to_string();
     if let Some(adb_bin) = adb_path.as_ref() {
         let devices = adb::list_devices(adb_bin).await.unwrap_or_default();
         let serial = req.device_serial.clone().or_else(|| {
@@ -99,32 +133,31 @@ async fn run_session_inner(
                 .map(|d| d.serial)
         });
         if let Some(serial) = serial {
-            set_status(&status, "USB", format!("adb reverse {serial}"));
-            if let Err(err) = adb::reverse_port(adb_bin, &serial, protocol::PORT).await {
-                set_status(
-                    &status,
-                    "USB 警告",
-                    format!("adb reverse 失败（仍可走局域网）: {err:#}"),
-                );
-            } else {
-                reverse_serial = Some(serial);
-            }
-        } else {
             set_status(
                 &status,
-                "等待",
-                "未检测到已授权的 Android 设备，可改用局域网 IP",
+                "等待设备",
+                format!("正在执行 adb reverse（{serial}）"),
             );
+            if let Err(err) = adb::reverse_port(adb_bin, &serial, protocol::PORT).await {
+                set_transport(
+                    &status,
+                    "USB · adb reverse 失败，可改用 Wi-Fi（平板填电脑 IP）",
+                );
+                wait_detail = format!("adb reverse 失败，仍可走局域网：{err:#}");
+            } else {
+                reverse_serial = Some(serial.clone());
+                set_transport(&status, format!("USB · adb reverse 已就绪（{serial}）"));
+            }
+        } else {
+            set_transport(&status, "USB · 未检测到已授权设备，可走 Wi-Fi（填电脑 IP）");
+            wait_detail = "未检测到已授权设备，平板可填电脑 IP".into();
         }
     } else {
-        set_status(
-            &status,
-            "等待",
-            "未找到 adb，USB 不可用。平板可填电脑 IP 用 Wi-Fi 测试",
-        );
+        set_transport(&status, "未找到 adb · 仅局域网可用（平板填电脑 IP）");
+        wait_detail = "未找到 adb，平板可填电脑 IP 用 Wi-Fi 测试".into();
     }
 
-    set_status(&status, "等待设备", "请在平板上打开 Lighting 并连接");
+    set_status(&status, "等待设备", wait_detail);
 
     let (stop_tx, stop_rx) = watch::channel(false);
     let stop2 = stop.clone();
@@ -316,6 +349,7 @@ async fn handle_client(
             }
         ),
     );
+    set_bitrate(&status, cfg.bitrate_kbps);
 
     let settings = EncodeSettings {
         width,
@@ -420,9 +454,6 @@ async fn handle_client(
                 }
                 if let Ok(mut s) = status.lock() {
                     s.frames += 1;
-                    if s.frames % 60 == 0 {
-                        s.detail = format!("已发送 {} 帧", s.frames);
-                    }
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
@@ -723,6 +754,31 @@ mod tests {
         assert_eq!(adapted_fps(60, 60, 60, false), 45);
         assert_eq!(adapted_fps(120, 60, 60, true), 60);
         assert_eq!(adapted_fps(60, 60, 30, true), 30);
+    }
+
+    #[test]
+    fn display_phase_normalizes_share_states() {
+        assert_eq!(display_phase(""), "空闲");
+        assert_eq!(display_phase("启动"), "监听");
+        assert_eq!(display_phase("启动中"), "监听");
+        assert_eq!(display_phase("监听"), "监听");
+        assert_eq!(display_phase("USB"), "等待设备");
+        assert_eq!(display_phase("USB 警告"), "等待设备");
+        assert_eq!(display_phase("等待"), "等待设备");
+        assert_eq!(display_phase("等待设备"), "等待设备");
+        assert_eq!(display_phase("已连接"), "已连接");
+        assert_eq!(display_phase("编码"), "编码");
+        assert_eq!(display_phase("回退"), "编码");
+        assert_eq!(display_phase("错误"), "错误");
+        assert_eq!(display_phase("已停止"), "已停止");
+    }
+
+    #[test]
+    fn metrics_line_shows_frames_and_bitrate() {
+        assert_eq!(metrics_line(0, 0), "");
+        assert_eq!(metrics_line(12, 0), "已发送 12 帧");
+        assert_eq!(metrics_line(0, 18000), "18000 kbps");
+        assert_eq!(metrics_line(90, 18000), "已发送 90 帧 · 18000 kbps");
     }
 
     #[test]

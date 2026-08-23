@@ -1,11 +1,15 @@
 package app.lighting.display
 
+import android.content.Context
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
+import android.util.AttributeSet
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
@@ -13,6 +17,7 @@ import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import kotlin.concurrent.thread
@@ -21,26 +26,38 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     companion object {
         const val EXTRA_HOST = "host"
         const val EXTRA_PORT = "port"
+        const val EXTRA_ERROR = "error"
         private const val RECONNECT_ATTEMPTS = 7
         private const val RECONNECT_BUDGET_MS = 12_000L
+        private const val HUD_HIDE_MS = 2800L
     }
 
     private lateinit var surface: SurfaceView
     private lateinit var status: TextView
+    private lateinit var statusReason: TextView
+    private lateinit var statusBar: PassThroughBar
     private lateinit var touchLayer: View
+    private lateinit var reconnectLayer: View
     private var worker: Thread? = null
     @Volatile private var running = false
     @Volatile private var sessionGen = 0
-    @Volatile private var awaitingManualReconnect = false
+    @Volatile private var awaitingManual = false
     @Volatile private var lit: LitSocket? = null
+    @Volatile private var everVideo = false
+    @Volatile private var lastError: String? = null
     private val decoder = VideoDecoder()
     private var audio: AudioPlayer? = null
     private var streamW = 0
     private var streamH = 0
+    private val hideHud = Runnable {
+        if (!awaitingManual) {
+            statusBar.visibility = View.GONE
+        }
+    }
     private val touch = TouchMapper { action, x, y ->
-        if (awaitingManualReconnect) {
+        if (awaitingManual) {
             if (action == TouchMapper.LEFT_UP) {
-                runOnUiThread { startSession() }
+                runOnUiThread { requestManualReconnect() }
             }
             return@TouchMapper
         }
@@ -58,11 +75,20 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         hideSystemUi()
         surface = findViewById(R.id.surface)
         status = findViewById(R.id.status)
+        statusReason = findViewById(R.id.statusReason)
+        statusBar = findViewById(R.id.statusBar)
         touchLayer = findViewById(R.id.touchLayer)
-        status.bringToFront()
-        status.setOnClickListener {
-            if (awaitingManualReconnect) startSession()
-        }
+        reconnectLayer = findViewById(R.id.reconnectLayer)
+        status.isClickable = false
+        status.isFocusable = false
+        statusReason.isClickable = false
+        statusReason.isFocusable = false
+        statusBar.consumeTouches = false
+        statusBar.isClickable = false
+        statusBar.isFocusable = false
+        reconnectLayer.isClickable = false
+        reconnectLayer.isFocusable = false
+        reconnectLayer.setOnClickListener(null)
         surface.holder.addCallback(this)
         touch.attach(touchLayer, surface)
     }
@@ -97,17 +123,29 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     }
 
     override fun onDestroy() {
+        statusBar.removeCallbacks(hideHud)
         stopSession()
         super.onDestroy()
+    }
+
+    override fun finish() {
+        if (!everVideo && !lastError.isNullOrBlank()) {
+            setResult(RESULT_OK, Intent().putExtra(EXTRA_ERROR, lastError))
+        }
+        super.finish()
+    }
+
+    private fun requestManualReconnect() {
+        if (!awaitingManual) return
+        startSession()
     }
 
     private fun startSession() {
         stopSession()
         val gen = ++sessionGen
         running = true
-        awaitingManualReconnect = false
-        setStatusClickable(false)
-        val host = intent.getStringExtra(EXTRA_HOST) ?: "127.0.0.1"
+        showManualReconnect(false)
+        val host = intent.getStringExtra(EXTRA_HOST)?.ifBlank { null } ?: "127.0.0.1"
         val port = intent.getIntExtra(EXTRA_PORT, LitProtocol.PORT)
         val metrics = DisplayMetrics()
         @Suppress("DEPRECATION")
@@ -119,18 +157,14 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
             var fails = 0
             var windowStart = 0L
             while (running && sessionGen == gen) {
-                val label = if (fails == 0) {
-                    "连接 $host:$port …"
-                } else {
-                    "重连 $fails/$RECONNECT_ATTEMPTS …"
-                }
-                setStatus(label)
+                setHud(if (fails == 0) "连接中…" else "重连中", reason = null, keep = true)
                 val reachedVideo = try {
                     runSessionOnce(host, port, metrics, refresh, caps, gen)
                 } catch (t: Throwable) {
                     Log.e("Lighting", "session failed", t)
+                    lastError = describeConnectError(t, host, port)
                     if (running && sessionGen == gen) {
-                        setStatus("断开：${t.message ?: t.javaClass.simpleName}")
+                        setHud("重连中", reason = lastError, keep = true)
                     }
                     false
                 } finally {
@@ -140,6 +174,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 if (reachedVideo) {
                     fails = 0
                     windowStart = 0L
+                    lastError = null
                 }
                 fails++
                 if (windowStart == 0L) {
@@ -147,9 +182,8 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 }
                 val spent = SystemClock.uptimeMillis() - windowStart
                 if (fails > RECONNECT_ATTEMPTS || spent >= RECONNECT_BUDGET_MS) {
-                    awaitingManualReconnect = true
-                    setStatus("已断开，点此或点屏幕重连")
-                    setStatusClickable(true)
+                    setHud("已断开 · 点此重连", reason = lastError, keep = true)
+                    showManualReconnect(true)
                     break
                 }
                 val jitter = (SystemClock.uptimeMillis() % 201).toInt()
@@ -187,7 +221,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         if (cfg.audioEnabled) {
             audio = AudioPlayer(cfg.audioSampleRate, cfg.audioChannels)
         }
-        setStatus("${cfg.codec} ${cfg.width}×${cfg.height}@${cfg.fps}${if (cfg.audioEnabled) " +音频" else ""} 等待关键帧…")
+        setHud("${cfg.codec} ${cfg.width}×${cfg.height} 等待关键帧…", reason = null, keep = true)
         var configured = false
         var reachedVideo = false
         try {
@@ -210,8 +244,10 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                             )
                             configured = true
                             reachedVideo = true
+                            everVideo = true
+                            lastError = null
                             letterboxSurface(cfg.width, cfg.height)
-                            setStatus("${cfg.codec} ${cfg.width}×${cfg.height}@${cfg.fps} ${decoder.activeName}${if (cfg.audioEnabled) " +音频" else ""}  单击/拖动 · 长按右键 · 双指滚动")
+                            setHud("${cfg.codec} ${cfg.width}×${cfg.height}@${cfg.fps}", reason = null, keep = false)
                             if (!isCfg) {
                                 decoder.offer(data, codecConfig = false, keyframe = true, ptsUs = pts)
                             }
@@ -224,13 +260,18 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                         audio?.offer(pcm, pts)
                     }
                     LitProtocol.MSG_HEARTBEAT -> sock.write(LitProtocol.MSG_HEARTBEAT)
-                    LitProtocol.MSG_ERROR -> setStatus(String(msg.payload, Charsets.UTF_8))
+                    LitProtocol.MSG_ERROR -> {
+                        val remote = String(msg.payload, Charsets.UTF_8)
+                        lastError = remote
+                        setHud(remote, reason = null, keep = true)
+                    }
                 }
             }
         } catch (t: Throwable) {
             if (!running || sessionGen != gen) return reachedVideo
             if (reachedVideo) {
                 Log.w("Lighting", "socket dropped after video", t)
+                lastError = describeConnectError(t, host, port)
                 return true
             }
             throw t
@@ -253,7 +294,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         touch.cancel()
         sessionGen++
         running = false
-        awaitingManualReconnect = false
+        awaitingManual = false
         try {
             lit?.close()
         } catch (_: Exception) {
@@ -262,7 +303,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         worker?.join(400)
         worker = null
         releaseStream()
-        setStatusClickable(false)
+        showManualReconnect(false)
     }
 
     private fun sleepBackoff(ms: Long, gen: Int) {
@@ -276,10 +317,31 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         }
     }
 
-    private fun setStatusClickable(clickable: Boolean) {
+    private fun showManualReconnect(enabled: Boolean) {
+        awaitingManual = enabled
         runOnUiThread {
-            status.isClickable = clickable
-            status.isFocusable = clickable
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            statusBar.consumeTouches = enabled
+            statusBar.isClickable = enabled
+            statusBar.isFocusable = enabled
+            status.isClickable = false
+            status.isFocusable = false
+            statusReason.isClickable = false
+            statusReason.isFocusable = false
+            reconnectLayer.visibility = if (enabled) View.VISIBLE else View.GONE
+            reconnectLayer.isClickable = enabled
+            reconnectLayer.isFocusable = enabled
+            if (enabled) {
+                statusBar.setOnClickListener { requestManualReconnect() }
+                reconnectLayer.setOnClickListener { requestManualReconnect() }
+            } else {
+                statusBar.setOnClickListener(null)
+                reconnectLayer.setOnClickListener(null)
+                statusBar.isClickable = false
+                statusBar.isFocusable = false
+                reconnectLayer.isClickable = false
+                reconnectLayer.isFocusable = false
+            }
         }
     }
 
@@ -313,7 +375,36 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         }
     }
 
-    private fun setStatus(text: String) {
-        runOnUiThread { status.text = text }
+    private fun setHud(text: String, reason: String?, keep: Boolean) {
+        runOnUiThread {
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            status.text = text
+            val detail = reason?.takeIf { it.isNotBlank() }
+            if (detail == null) {
+                statusReason.text = ""
+                statusReason.visibility = View.GONE
+            } else {
+                statusReason.text = detail
+                statusReason.visibility = View.VISIBLE
+            }
+            statusBar.visibility = View.VISIBLE
+            statusBar.removeCallbacks(hideHud)
+            if (!keep) {
+                statusBar.postDelayed(hideHud, HUD_HIDE_MS)
+            }
+        }
+    }
+}
+
+/** Top HUD that lets touches reach the video touch layer unless manual reconnect is armed. */
+class PassThroughBar @JvmOverloads constructor(
+    context: Context,
+    attrs: AttributeSet? = null,
+) : LinearLayout(context, attrs) {
+    var consumeTouches = false
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (!consumeTouches) return false
+        return super.dispatchTouchEvent(ev)
     }
 }
