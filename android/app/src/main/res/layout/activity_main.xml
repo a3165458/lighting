@@ -21,59 +21,105 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:text="USB 数据线连接电脑（Type-C / USB-A / Micro-USB 均可）。请先在电脑上点「开始共享」，并开启本机 USB 调试。"
+            android:text="USB 数据线连接电脑，先在电脑点「开始共享」。局域网测试则填电脑 IP。"
             android:textSize="14sp" />
 
-        <TextView
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="20dp"
-            android:text="主机地址" />
+            android:orientation="horizontal">
 
-        <EditText
-            android:id="@+id/hostInput"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="127.0.0.1"
-            android:inputType="textUri"
-            android:text="127.0.0.1" />
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="3"
+                android:orientation="vertical">
 
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:text="端口" />
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="主机" />
 
-        <EditText
-            android:id="@+id/portInput"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:inputType="number"
-            android:text="17400" />
+                <EditText
+                    android:id="@+id/hostInput"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="127.0.0.1"
+                    android:inputType="textUri"
+                    android:text="127.0.0.1" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:layout_weight="2"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="端口" />
+
+                <EditText
+                    android:id="@+id/portInput"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:hint="17400"
+                    android:inputType="number"
+                    android:text="17400" />
+            </LinearLayout>
+        </LinearLayout>
 
         <Button
             android:id="@+id/connectButton"
             android:layout_width="match_parent"
             android:layout_height="56dp"
-            android:layout_marginTop="24dp"
+            android:layout_marginTop="20dp"
             android:text="连接并成为副屏"
             android:textSize="16sp" />
+
+        <TextView
+            android:id="@+id/connectError"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:background="@drawable/panel_card"
+            android:textColor="#FFB4B4"
+            android:textSize="13sp"
+            android:visibility="gone" />
 
         <TextView
             android:id="@+id/hint"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="USB：保持 127.0.0.1。电脑与平板需已执行 adb reverse。\n局域网测试：填电脑的局域网 IP。"
+            android:text="USB：保持 127.0.0.1:17400（电脑会做 adb reverse）。\nWi-Fi：填电脑局域网 IP，端口仍为 17400。"
             android:textSize="13sp" />
 
-        <TextView
-            android:id="@+id/capsInfo"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="20dp"
-            android:fontFamily="monospace"
-            android:text="正在检测本机解码能力…"
-            android:textSize="12sp" />
+            android:background="@drawable/panel_card"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="本机解码能力"
+                android:textStyle="bold"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/capsInfo"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:lineSpacingExtra="3dp"
+                android:text="正在检测…"
+                android:textSize="13sp" />
+        </LinearLayout>
     </LinearLayout>
 </ScrollView>

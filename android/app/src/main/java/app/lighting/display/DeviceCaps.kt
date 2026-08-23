@@ -28,12 +28,27 @@ data class DeviceCaps(
     val hevc: CodecLimit?,
 ) {
     fun summary(): String {
-        val avcLine = avc?.let { "AVC 硬解 ${it.width}×${it.height}@${it.fps}\n${it.name}" }
-            ?: "AVC 仅软解（上限 ${decoderMaxWidth}×${decoderMaxHeight}@${decoderMaxFps}）"
-        val hevcLine = hevc?.let { "HEVC 硬解 ${it.width}×${it.height}@${it.fps}" }
-            ?: "HEVC 无硬解"
-        val gsiMark = if (gsi) " · GSI" else ""
-        return "$manufacturer $model\n芯片 $soc$gsiMark · 对齐 ${alignment}px\n$avcLine\n$hevcLine"
+        val title = listOf(manufacturer, model).filter { it.isNotBlank() }.joinToString(" ").ifBlank { "本机" }
+        val chip = socDisplayName() + if (gsi) " · GSI" else ""
+        val avcLine = avc?.let { "AVC    ${it.width}×${it.height}@${it.fps} 硬解" }
+            ?: "AVC    软解 ${decoderMaxWidth}×${decoderMaxHeight}@${decoderMaxFps}"
+        val hevcLine = hevc?.let { "HEVC  ${it.width}×${it.height}@${it.fps} 硬解" }
+            ?: "HEVC  无硬解"
+        return "$title\n芯片   $chip\n$avcLine\n$hevcLine"
+    }
+
+    fun socDisplayName(): String = when (soc) {
+        "qcom" -> "高通"
+        "mtk" -> "联发科"
+        "exynos" -> "Exynos"
+        "hisi" -> "麒麟"
+        "tensor" -> "Tensor"
+        "unisoc" -> "紫光展锐"
+        "amlogic" -> "Amlogic"
+        "rockchip" -> "瑞芯微"
+        "allwinner" -> "全志"
+        "unknown" -> "未知"
+        else -> soc
     }
 
     data class CodecLimit(

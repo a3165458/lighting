@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use eframe::egui;
-use session::{SessionRequest, SessionStatus};
+use session::{display_phase, metrics_line, SessionRequest, SessionStatus};
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
 
 fn enable_dpi_awareness() {
@@ -126,10 +126,7 @@ impl LightingApp {
     fn new() -> Self {
         let rt = tokio::runtime::Runtime::new().expect("tokio");
         let displays = displays::list_displays().unwrap_or_default();
-        let selected_display = displays
-            .iter()
-            .position(|d| !d.primary)
-            .unwrap_or(0);
+        let selected_display = displays.iter().position(|d| !d.primary).unwrap_or(0);
         let mut app = Self {
             rt,
             displays,
@@ -241,7 +238,12 @@ impl LightingApp {
 impl eframe::App for LightingApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
-        let snap = self.status.lock().ok().map(|s| s.clone()).unwrap_or_default();
+        let snap = self
+            .status
+            .lock()
+            .ok()
+            .map(|s| s.clone())
+            .unwrap_or_default();
         if self.running && !snap.running && snap.phase == "错误" {
             self.running = false;
         }
@@ -287,12 +289,7 @@ impl eframe::App for LightingApp {
             if !self.adb_path.is_empty() {
                 ui.weak(format!("adb：{}", self.adb_path));
             }
-            if self.devices.is_empty() {
-                ui.colored_label(
-                    egui::Color32::from_rgb(230, 180, 80),
-                    "未找到设备。可先不插线，平板填写电脑 IP 做局域网测试。",
-                );
-            } else {
+            if !self.devices.is_empty() {
                 egui::ComboBox::from_id_salt("device")
                     .selected_text(
                         self.devices
@@ -306,6 +303,10 @@ impl eframe::App for LightingApp {
                         }
                     });
             }
+            ui.colored_label(
+                transport_color(&snap.transport, &self.adb_path, &self.devices),
+                transport_line(&snap, &self.adb_path, &self.devices),
+            );
 
             ui.add_space(8.0);
             ui.separator();
@@ -344,11 +345,17 @@ impl eframe::App for LightingApp {
 
             ui.add_space(10.0);
             ui.separator();
-            ui.label(format!("状态：{}", if snap.phase.is_empty() { "空闲" } else { &snap.phase }));
+            let phase = display_phase(&snap.phase);
+            ui.horizontal(|ui| {
+                ui.strong("阶段");
+                ui.colored_label(phase_color(&phase), &phase);
+            });
             if !snap.detail.is_empty() {
                 ui.label(&snap.detail);
             }
-            ui.label(format!("已发送帧：{}", snap.frames));
+            if snap.frames > 0 || snap.bitrate_kbps > 0 {
+                ui.label(metrics_line(snap.frames, snap.bitrate_kbps));
+            }
             if !self.last_error.is_empty() {
                 ui.colored_label(egui::Color32::from_rgb(220, 80, 80), &self.last_error);
             }
@@ -357,5 +364,51 @@ impl eframe::App for LightingApp {
             ui.weak("扩展屏：winget install VirtualDrivers.Virtual-Display-Driver ，然后在 Windows 显示设置里设为「扩展」并选这块虚拟屏。");
             ui.weak("USB：电脑执行 adb reverse 后，平板连接 127.0.0.1:17400。平板触控：单击/拖动、长按右键、双指滚动。");
         });
+    }
+}
+
+fn phase_color(phase: &str) -> egui::Color32 {
+    match phase {
+        "编码" | "已连接" => egui::Color32::from_rgb(90, 200, 120),
+        "错误" => egui::Color32::from_rgb(220, 80, 80),
+        "已停止" | "空闲" => egui::Color32::from_rgb(170, 170, 170),
+        "监听" | "等待设备" => egui::Color32::from_rgb(230, 190, 80),
+        _ => egui::Color32::from_rgb(200, 200, 200),
+    }
+}
+
+fn transport_line(snap: &SessionStatus, adb_path: &str, devices: &[adb::AdbDevice]) -> String {
+    if !snap.transport.is_empty() {
+        return snap.transport.clone();
+    }
+    idle_transport(adb_path, devices)
+}
+
+fn idle_transport(adb_path: &str, devices: &[adb::AdbDevice]) -> String {
+    if adb_path.is_empty() {
+        return "USB：未找到 adb · 平板可填电脑 IP 走 Wi-Fi".into();
+    }
+    let ready = devices.iter().filter(|d| d.state == "device").count();
+    if ready == 0 {
+        "USB：未检测到已授权设备 · 可走 Wi-Fi（填电脑局域网 IP）".into()
+    } else {
+        format!("USB：已检测到 {ready} 台设备 · 开始共享后自动 adb reverse")
+    }
+}
+
+fn transport_color(transport: &str, adb_path: &str, devices: &[adb::AdbDevice]) -> egui::Color32 {
+    let text = if transport.is_empty() {
+        idle_transport(adb_path, devices)
+    } else {
+        transport.to_string()
+    };
+    if text.contains("已就绪") || text.contains("已检测") {
+        egui::Color32::from_rgb(90, 200, 120)
+    } else if text.contains("失败") || text.contains("未找到 adb") {
+        egui::Color32::from_rgb(230, 180, 80)
+    } else if text.contains("未检测") {
+        egui::Color32::from_rgb(230, 180, 80)
+    } else {
+        egui::Color32::GRAY
     }
 }
