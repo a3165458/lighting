@@ -1,0 +1,39 @@
+name: Build Windows host
+
+on:
+  push:
+    branches: [main, "cursor/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: host-windows
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: host-windows
+
+      - name: Build release exe
+        run: cargo build --release
+
+      - name: Upload lighting-host.exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighting-host-windows
+          path: host-windows/target/release/lighting-host.exe
+          if-no-files-found: error
