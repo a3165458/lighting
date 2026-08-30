@@ -1,0 +1,50 @@
+name: Build Electron Windows UI
+
+on:
+  push:
+    branches: [main, "cursor/**"]
+    paths:
+      - "host-ui/**"
+      - ".github/workflows/build-electron-win.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "host-ui/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  electron-win:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: host-ui
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: host-ui/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Build Windows packages
+        run: npm run electron:build:win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Upload exe artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighting-electron-windows
+          path: |
+            host-ui/release/*.exe
+            host-ui/release/latest.yml
+          if-no-files-found: error
