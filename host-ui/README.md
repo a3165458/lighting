@@ -1,32 +1,23 @@
-# React + TypeScript + Vite
+# Lighting 副屏 — Desktop UI
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React + TypeScript + Tailwind CSS 实现的桌面客户端界面原型。
 
-Currently, two official plugins are available:
+## 开发
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+cd host-ui
+npm install
+npm run dev
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+打开终端提示的本地地址（默认 `http://localhost:5173`）。
+
+## 设计 Token
+
+所有视觉数值集中在 `src/styles/tokens.css`，经 `src/index.css` 的 `@theme` 映射到 Tailwind。组件应使用 token / 语义类，避免随意硬编码间距与颜色。
+
+## 结构
+
+- `components/layout` — AppShell / Sidebar / BottomActionBar / StatusBar
+- `components/sections` — Hero / ConnectionCard / DisplaySettings / InteractionSettings / PerformancePanel
+- `components/ui` — Button / SliderControl / ToggleSwitch / Dropdown / SettingRow / PerformanceCard

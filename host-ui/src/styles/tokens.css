@@ -1,0 +1,122 @@
+/**
+ * Lighting 副屏 — Design Tokens
+ * Single source of truth. Components must consume these tokens
+ * (via CSS vars / Tailwind theme), not invent ad-hoc values.
+ */
+
+:root {
+  /* ── Colors: surfaces ── */
+  --color-bg: #f6f7fc;
+  --color-bg-gradient-from: #fafbff;
+  --color-bg-gradient-to: #f5f3ff;
+  --color-card: rgba(255, 255, 255, 0.82);
+  --color-card-soft: rgba(255, 255, 255, 0.65);
+  --color-sidebar: rgba(255, 255, 255, 0.6);
+  --color-action-bar: rgba(255, 255, 255, 0.88);
+  --color-status-bar: rgba(248, 249, 255, 0.92);
+  --color-border: rgba(120, 110, 180, 0.1);
+  --color-track: #e8e8f2;
+  --color-thumb-border: #d8d4ff;
+  --color-toggle-off: #dadce7;
+
+  /* ── Colors: brand ── */
+  --color-brand: #6c4eff;
+  --color-brand-hover: #765aff;
+  --color-brand-mid: #8357ff;
+  --color-brand-light: #9a5fff;
+  --color-brand-soft: rgba(108, 78, 255, 0.1);
+  --color-brand-softer: rgba(108, 78, 255, 0.08);
+
+  /* ── Colors: text ── */
+  --color-text: #181b2a;
+  --color-text-secondary: #6f7488;
+  --color-text-muted: #a2a6b6;
+  --color-text-status: #8a8fa3;
+
+  /* ── Colors: semantic ── */
+  --color-warning: #f59e0b;
+  --color-success: #4caf50;
+  --color-danger: #ff654f;
+
+  /* ── Spacing (4px base) ── */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* Layout aliases */
+  --space-page: var(--space-6);
+  --space-sidebar-width: 240px;
+  --space-main-x: var(--space-8);
+  --space-card-gap: var(--space-5);
+  --space-card-pad: var(--space-6);
+  --space-title-gap: var(--space-2);
+  --space-icon-gap: 10px;
+  --space-form-gap: var(--space-5);
+  --space-nav-pad-x: var(--space-4);
+  --space-nav-gap: var(--space-2);
+
+  /* ── Radius ── */
+  --radius-icon: 10px;
+  --radius-control: 12px;
+  --radius-card: 16px;
+  --radius-card-lg: 20px;
+  --radius-window: 18px;
+  --radius-full: 9999px;
+
+  /* ── Shadow ── */
+  --shadow-card: 0 8px 30px rgba(55, 44, 110, 0.06);
+  --shadow-card-hover: 0 12px 36px rgba(55, 44, 110, 0.1);
+  --shadow-button: 0 8px 20px rgba(108, 78, 255, 0.28);
+
+  /* ── Blur ── */
+  --blur-glass: 18px;
+  --blur-action: 20px;
+
+  /* ── Typography ── */
+  --font-sans: "Inter", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-md: 16px;
+  --text-lg: 18px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+  --text-3xl: 30px;
+  --font-regular: 400;
+  --font-semibold: 600;
+  --font-bold: 700;
+  --leading-tight: 1.25;
+  --leading-normal: 1.5;
+
+  /* ── Sizing (layout) ── */
+  --size-window-w: 1440px;
+  --size-window-h: 900px;
+  --size-window-min-w: 1280px;
+  --size-window-min-h: 720px;
+  --size-hero-h: 170px;
+  --size-connection-h: 120px;
+  --size-nav-item-h: 48px;
+  --size-setting-row-h: 48px;
+  --size-interaction-row-h: 56px;
+  --size-perf-card-h: 130px;
+  --size-action-bar-h: 72px;
+  --size-status-bar-h: 36px;
+  --size-btn-primary-w: 170px;
+  --size-btn-primary-h: 52px;
+  --size-btn-main-w: 480px;
+  --size-icon-sm: 16px;
+  --size-icon-md: 20px;
+  --size-icon-lg: 42px;
+  --size-dot: 8px;
+
+  /* ── Motion ── */
+  --duration-fast: 180ms;
+  --ease-standard: ease;
+  --disabled-opacity: 0.45;
+}
