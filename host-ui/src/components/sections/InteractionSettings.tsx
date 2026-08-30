@@ -1,15 +1,18 @@
 import { Keyboard, MousePointer2 } from 'lucide-react'
 import { SettingRow } from '@/components/ui/SettingRow'
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch'
-import type { AppSettings } from '@/lib/mock'
+import type { HostSettingsPatch, HostState } from '@/lib/host'
 
 type Props = {
-  settings: AppSettings
-  onChange: (patch: Partial<AppSettings>) => void
+  host: HostState
+  onChange: (patch: HostSettingsPatch) => void
   disabled?: boolean
 }
 
-export function InteractionSettings({ settings, onChange, disabled }: Props) {
+export function InteractionSettings({ host, onChange, disabled }: Props) {
+  const touch = host.settings?.touchRelay ?? true
+  const keyboard = host.settings?.keyboardRelay ?? true
+
   return (
     <section className="glass-card p-[var(--space-card-pad)]" aria-label="控制与交互">
       <header className="mb-4">
@@ -24,7 +27,7 @@ export function InteractionSettings({ settings, onChange, disabled }: Props) {
           description="将平板触控同步回传到电脑"
           control={
             <ToggleSwitch
-              checked={settings.touchRelay}
+              checked={touch}
               onChange={(touchRelay) => onChange({ touchRelay })}
               disabled={disabled}
               ariaLabel="触控回传"
@@ -38,7 +41,7 @@ export function InteractionSettings({ settings, onChange, disabled }: Props) {
           description="平板键盘输入自动回传"
           control={
             <ToggleSwitch
-              checked={settings.keyboardRelay}
+              checked={keyboard}
               onChange={(keyboardRelay) => onChange({ keyboardRelay })}
               disabled={disabled}
               ariaLabel="键盘输入回传"

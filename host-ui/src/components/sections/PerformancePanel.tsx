@@ -1,8 +1,21 @@
 import { Activity } from 'lucide-react'
 import { PerformanceCard } from '@/components/ui/PerformanceCard'
-import { PERFORMANCE_METRICS } from '@/lib/mock'
+import { buildPerformanceMetrics } from '@/lib/format'
+import type { HostState } from '@/lib/host'
 
-export function PerformancePanel() {
+type Props = {
+  host: HostState
+}
+
+export function PerformancePanel({ host }: Props) {
+  const metrics = buildPerformanceMetrics({
+    transport: host.transport,
+    codec: host.codec,
+    latencyMs: host.latencyMs,
+    lossPermille: host.lossPermille,
+    sharing: host.sharing,
+  })
+
   return (
     <section className="glass-card p-[var(--space-card-pad)]" aria-label="传输与性能">
       <header className="mb-5 flex items-center gap-3">
@@ -13,7 +26,7 @@ export function PerformancePanel() {
       </header>
 
       <div className="grid grid-cols-2 gap-4">
-        {PERFORMANCE_METRICS.map((metric) => (
+        {metrics.map((metric) => (
           <PerformanceCard key={metric.id} metric={metric} />
         ))}
       </div>

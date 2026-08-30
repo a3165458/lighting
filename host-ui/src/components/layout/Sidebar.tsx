@@ -1,6 +1,6 @@
 import { Home, Info, Keyboard, Settings } from 'lucide-react'
-import type { NavId } from '@/lib/mock'
-import { NAV_ITEMS } from '@/lib/mock'
+import type { NavId } from '@/lib/format'
+import { NAV_ITEMS } from '@/lib/format'
 import { cn } from '@/lib/cn'
 
 const ICONS = {

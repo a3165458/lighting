@@ -1,18 +1,27 @@
-import { AlertTriangle, Play, Square, Tablet } from 'lucide-react'
+import { AlertTriangle, Download, Play, Square, Tablet } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
-import type { SessionState } from '@/lib/mock'
+import type { HostState } from '@/lib/host'
 import { cn } from '@/lib/cn'
 
 type Props = {
-  session: SessionState
+  host: HostState
+  busy?: boolean
   onToggleShare: () => void
+  onInstallClient: () => void
 }
 
-export function ConnectionCard({ session, onToggleShare }: Props) {
-  const title = session.sharing ? '正在共享' : '未开始共享'
-  const subtitle = session.sharing
-    ? '画面正在传输到你的 Android 设备'
+export function ConnectionCard({ host, busy, onToggleShare, onInstallClient }: Props) {
+  const title = host.sharing ? '正在共享' : '未开始共享'
+  const subtitle = host.sharing
+    ? host.detail || '画面正在传输到你的 Android 设备'
     : '请连接你的设备，点击开始共享'
+
+  const toneClass =
+    host.usbTone === 'ok'
+      ? 'text-success'
+      : host.usbTone === 'bad'
+        ? 'text-danger'
+        : 'text-warning'
 
   return (
     <section
@@ -28,7 +37,7 @@ export function ConnectionCard({ session, onToggleShare }: Props) {
         <span
           className={cn(
             'absolute -right-0.5 -bottom-0.5 size-3.5 rounded-full border-2 border-white',
-            session.sharing ? 'bg-success' : 'bg-warning',
+            host.sharing ? 'bg-success' : host.deviceDetected ? 'bg-success' : 'bg-warning',
           )}
         />
       </div>
@@ -36,21 +45,35 @@ export function ConnectionCard({ session, onToggleShare }: Props) {
       <div className="min-w-0 flex-1">
         <h2 className="text-lg font-bold text-text">{title}</h2>
         <p className="mt-1 text-base text-text-secondary">{subtitle}</p>
-        {!session.deviceDetected && !session.sharing && (
-          <p className="mt-2 flex items-center gap-2 text-sm font-medium text-warning">
+        {host.usbHint && (
+          <p className={cn('mt-2 flex items-center gap-2 text-sm font-medium', toneClass)}>
             <AlertTriangle className="size-4 shrink-0" strokeWidth={2} />
-            未检测到设备，请检查设备及网络连接
+            {host.usbHint}
           </p>
         )}
-        {session.deviceDetected && !session.sharing && (
-          <p className="mt-2 text-sm font-medium text-success">已检测到设备，可以开始共享</p>
+        {host.lastError && (
+          <p className="mt-1 text-sm text-danger">{host.lastError}</p>
+        )}
+        {host.clientAppMissing && host.canInstallApk && (
+          <div className="mt-3">
+            <Button
+              variant="outline"
+              disabled={busy || host.installInflight}
+              onClick={onInstallClient}
+              icon={<Download className="size-4" />}
+              className="h-9 px-4 text-sm"
+            >
+              {host.installInflight ? '安装中…' : '安装到平板'}
+            </Button>
+          </div>
         )}
       </div>
 
       <Button
         onClick={onToggleShare}
+        disabled={busy || !host.connected}
         icon={
-          session.sharing ? (
+          host.sharing ? (
             <Square className="size-4 fill-current" />
           ) : (
             <Play className="size-4 fill-current" />
@@ -58,7 +81,7 @@ export function ConnectionCard({ session, onToggleShare }: Props) {
         }
         className="h-[var(--size-btn-primary-h)] w-[var(--size-btn-primary-w)] text-md"
       >
-        {session.sharing ? '停止共享' : '开始共享'}
+        {host.sharing ? '停止共享' : '开始共享'}
       </Button>
     </section>
   )

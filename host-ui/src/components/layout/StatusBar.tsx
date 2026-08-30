@@ -1,9 +1,14 @@
-import type { SessionState } from '@/lib/mock'
-import { formatBytes, formatDuration } from '@/lib/mock'
+import { formatBytes, formatDuration } from '@/lib/format'
 import { cn } from '@/lib/cn'
 
+export type ShellSession = {
+  sharing: boolean
+  bytesSent: number
+  elapsedSecs: number
+}
+
 type Props = {
-  session: SessionState
+  session: ShellSession
 }
 
 export function StatusBar({ session }: Props) {

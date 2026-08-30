@@ -1,5 +1,5 @@
 import { Link2, Target, Video, Zap, type LucideIcon } from 'lucide-react'
-import type { PerformanceMetric } from '@/lib/mock'
+import type { PerformanceMetric } from '@/lib/format'
 import { cn } from '@/lib/cn'
 
 const ICONS: Record<PerformanceMetric['icon'], LucideIcon> = {
