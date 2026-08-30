@@ -3,6 +3,7 @@ const { spawn } = require('node:child_process')
 const fs = require('node:fs')
 const path = require('node:path')
 const { app } = require('electron')
+const bootstrap = require('./bootstrap.cjs')
 
 const DEFAULT_PORT = 17401
 const PORT_ENV = 'LIGHTING_IPC_PORT'
@@ -24,7 +25,7 @@ class HostIpcClient {
   async ensureConnected() {
     if (this.socket && this.connected) return
     await this.startHostIfNeeded()
-    await this.connectWithRetry(20, 250)
+    await this.connectWithRetry(30, 300)
   }
 
   hostCandidates() {
@@ -34,8 +35,17 @@ class HostIpcClient {
       : null
     const nearApp = app.isPackaged
       ? path.join(path.dirname(process.execPath), 'lighting-host.exe')
-      : path.resolve(__dirname, '..', '..', 'host-windows', 'target', 'release', 'lighting-host.exe')
-    const nearDev = path.resolve(
+      : null
+    const nearDevRelease = path.resolve(
+      __dirname,
+      '..',
+      '..',
+      'host-windows',
+      'target',
+      'release',
+      'lighting-host.exe',
+    )
+    const nearDevDebug = path.resolve(
       __dirname,
       '..',
       '..',
@@ -44,7 +54,10 @@ class HostIpcClient {
       'debug',
       'lighting-host.exe',
     )
-    return [fromEnv, resources, nearApp, nearDev].filter(Boolean)
+    const nearResourcesDev = path.resolve(__dirname, '..', 'resources', 'lighting-host.exe')
+    return [fromEnv, resources, nearApp, nearResourcesDev, nearDevRelease, nearDevDebug].filter(
+      Boolean,
+    )
   }
 
   async startHostIfNeeded() {
@@ -59,19 +72,22 @@ class HostIpcClient {
     })
     if (!exe) {
       throw new Error(
-        'lighting-host.exe not found. Build host-windows first, or set LIGHTING_HOST_PATH.',
+        '未找到主机组件 lighting-host.exe。请使用官方便携包，或先运行打包脚本。',
       )
     }
 
     if (this.child && !this.child.killed) return
 
+    const env = {
+      ...bootstrap.runtimeEnv(),
+      [PORT_ENV]: String(this.port),
+    }
+
     this.child = spawn(exe, ['--ipc-only'], {
       windowsHide: true,
       stdio: 'ignore',
-      env: {
-        ...process.env,
-        [PORT_ENV]: String(this.port),
-      },
+      env,
+      cwd: path.dirname(exe),
     })
     this.child.on('exit', () => {
       this.child = null
@@ -109,7 +125,7 @@ class HostIpcClient {
         await new Promise((r) => setTimeout(r, delayMs))
       }
     }
-    throw lastErr || new Error('IPC connect failed')
+    throw lastErr || new Error('无法连接本地主机服务')
   }
 
   connect() {
@@ -129,7 +145,7 @@ class HostIpcClient {
         this.connected = false
         this.socket = null
         for (const [, p] of this.pending) {
-          p.reject(new Error('IPC disconnected'))
+          p.reject(new Error('与主机断开连接'))
         }
         this.pending.clear()
       })
@@ -158,7 +174,7 @@ class HostIpcClient {
       if (!pending) continue
       this.pending.delete(msg.id)
       if (msg.ok) pending.resolve(msg.result)
-      else pending.reject(new Error(msg.error || 'IPC error'))
+      else pending.reject(new Error(msg.error || '主机返回错误'))
     }
   }
 
@@ -167,7 +183,7 @@ class HostIpcClient {
       () =>
         new Promise((resolve, reject) => {
           if (!this.socket) {
-            reject(new Error('IPC not connected'))
+            reject(new Error('尚未连接主机'))
             return
           }
           const id = this.nextId++
@@ -185,7 +201,8 @@ class HostIpcClient {
 
   async getState() {
     try {
-      return await this.invoke('getState')
+      const state = await this.invoke('getState')
+      return { ...state, connected: true }
     } catch (err) {
       return {
         connected: false,
@@ -226,7 +243,11 @@ class HostIpcClient {
     }
     this.socket = null
     if (this.child && !this.child.killed) {
-      this.child.kill()
+      try {
+        this.child.kill()
+      } catch {
+        /* ignore */
+      }
     }
     this.child = null
   }

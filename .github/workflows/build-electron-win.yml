@@ -63,7 +63,8 @@ jobs:
       - name: Upload exe artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: lighting-electron-windows
+          name: Lighting副屏-一键版
           path: |
-            host-ui/release/*.exe
+            host-ui/release/*便携版.exe
+            host-ui/release/*安装包.exe
           if-no-files-found: error

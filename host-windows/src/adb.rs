@@ -83,6 +83,11 @@ fn adb_candidates() -> Vec<PathBuf> {
         push(p);
     }
 
+    if let Ok(runtime) = std::env::var("LIGHTING_RUNTIME_DIR") {
+        push(PathBuf::from(&runtime).join("platform-tools").join("adb.exe"));
+        push(PathBuf::from(&runtime).join("adb.exe"));
+    }
+
     for key in ["ANDROID_HOME", "ANDROID_SDK_ROOT"] {
         if let Ok(root) = std::env::var(key) {
             push(PathBuf::from(root).join("platform-tools").join("adb.exe"));

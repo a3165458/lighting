@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import { AppShell } from '@/components/layout/AppShell'
 import { Hero } from '@/components/sections/Hero'
+import { BootstrapBanner } from '@/components/sections/BootstrapBanner'
 import { ConnectionCard } from '@/components/sections/ConnectionCard'
 import { DisplaySettings } from '@/components/sections/DisplaySettings'
 import { InteractionSettings } from '@/components/sections/InteractionSettings'
 import { PerformancePanel } from '@/components/sections/PerformancePanel'
-import { NAV_ITEMS, type NavId } from '@/lib/format'
+import type { NavId } from '@/lib/format'
 import {
   DISCONNECTED_STATE,
   hasHostBridge,
@@ -78,7 +79,6 @@ export default function App() {
   const patchSettings = useCallback(
     async (patch: HostSettingsPatch) => {
       if (!window.lightingHost) return
-      // Optimistic local update for snappy sliders.
       setHost((prev) => ({
         ...prev,
         settings: prev.settings
@@ -129,9 +129,19 @@ export default function App() {
     }
   }, [applyState, busy])
 
+  const retryBootstrap = useCallback(async () => {
+    if (!window.lightingHost?.retryBootstrap) return
+    setBusy(true)
+    try {
+      await window.lightingHost.retryBootstrap()
+      await refresh()
+    } finally {
+      setBusy(false)
+    }
+  }, [refresh])
+
   const sessionForShell = {
     sharing: host.sharing,
-    deviceDetected: host.deviceDetected,
     bytesSent: host.bytesSent,
     elapsedSecs: host.connectedSecs,
   }
@@ -148,6 +158,7 @@ export default function App() {
       {nav === 'home' && (
         <div className="flex flex-col gap-[var(--space-card-gap)]">
           <Hero />
+          <BootstrapBanner boot={host.bootstrap} onRetry={() => void retryBootstrap()} />
           <ConnectionCard
             host={host}
             busy={busy}
@@ -178,8 +189,8 @@ export default function App() {
           title="通用设置"
           body={
             host.connected
-              ? `已连接主机 v${host.hostVersion || '—'}. IPC 端口由 lighting-host 提供。`
-              : '尚未连接到 lighting-host.exe。请先编译主机，或设置 LIGHTING_HOST_PATH。'
+              ? `已连接主机 v${host.hostVersion || '—'}。首次启动会自动准备 adb / ffmpeg。`
+              : '正在连接本地主机，或首次启动正在下载运行组件…'
           }
         />
       )}
@@ -189,12 +200,9 @@ export default function App() {
       {nav === 'about' && (
         <Placeholder
           title="关于我们"
-          body="Lighting 副屏 — 将 Android 平板 / 手机变成 Windows 电脑扩展屏。"
+          body="Lighting 副屏 — 将 Android 平板 / 手机变成 Windows 电脑扩展屏。双击便携版即可使用。"
         />
       )}
-
-      {/* keep NAV_ITEMS referenced for tree-shaking clarity */}
-      <span className="hidden">{NAV_ITEMS.length}</span>
     </AppShell>
   )
 }

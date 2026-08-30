@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('lightingDesktop', {
 
 contextBridge.exposeInMainWorld('lightingHost', {
   getState: () => ipcRenderer.invoke('host:getState'),
+  getBootstrap: () => ipcRenderer.invoke('host:getBootstrap'),
+  retryBootstrap: () => ipcRenderer.invoke('host:retryBootstrap'),
   refresh: () => ipcRenderer.invoke('host:refresh'),
   startShare: () => ipcRenderer.invoke('host:startShare'),
   stopShare: () => ipcRenderer.invoke('host:stopShare'),

@@ -30,6 +30,16 @@ export type HostDevice = {
   clientInstalled?: boolean | null
 }
 
+export type BootstrapStatus = {
+  ready: boolean
+  runtimeDir: string
+  adbPath: string | null
+  ffmpegPath: string | null
+  phase: string
+  detail: string
+  error: string
+}
+
 export type HostState = {
   connected: boolean
   sharing: boolean
@@ -57,6 +67,7 @@ export type HostState = {
   settings: HostSettings | null
   lastError: string
   hostVersion: string
+  bootstrap?: BootstrapStatus
 }
 
 export type HostSettingsPatch = Partial<{
@@ -75,6 +86,8 @@ export type HostSettingsPatch = Partial<{
 
 export type LightingHostApi = {
   getState: () => Promise<HostState>
+  getBootstrap?: () => Promise<BootstrapStatus>
+  retryBootstrap?: () => Promise<BootstrapStatus>
   refresh: () => Promise<HostState>
   startShare: () => Promise<HostState>
   stopShare: () => Promise<HostState>
@@ -82,6 +95,7 @@ export type LightingHostApi = {
   installClient: () => Promise<HostState>
   ping: () => Promise<{ pong: boolean }>
 }
+
 
 declare global {
   interface Window {
@@ -109,8 +123,8 @@ export const DISCONNECTED_STATE: HostState = {
   lossPermille: 0,
   bytesSent: 0,
   connectedSecs: 0,
-  usbHint: '未连接到 Lighting 主机。请先编译 lighting-host.exe',
-  usbTone: 'warn',
+  usbHint: '正在准备一键运行环境…',
+  usbTone: 'info',
   deviceDetected: false,
   clientAppMissing: false,
   canInstallApk: false,

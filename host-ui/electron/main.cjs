@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, shell } = require('electron')
 const path = require('node:path')
 const { HostIpcClient } = require('./hostIpc.cjs')
+const bootstrap = require('./bootstrap.cjs')
 
 const isDev = !app.isPackaged
 const WINDOW_WIDTH = 1440
@@ -11,6 +12,8 @@ const MIN_HEIGHT = 720
 /** @type {BrowserWindow | null} */
 let mainWindow = null
 const host = new HostIpcClient()
+/** @type {Promise<unknown> | null} */
+let bootPromise = null
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -51,11 +54,15 @@ function createWindow() {
   })
 }
 
+async function bootPipeline() {
+  await bootstrap.ensureRuntime()
+  await host.ensureConnected()
+}
+
 app.whenReady().then(() => {
   createWindow()
-  // Warm up host IPC in background; UI will retry via getState.
-  void host.ensureConnected().catch((err) => {
-    console.warn('[lighting-host]', err.message || err)
+  bootPromise = bootPipeline().catch((err) => {
+    console.warn('[lighting-bootstrap]', err.message || err)
   })
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -93,10 +100,60 @@ ipcMain.handle('window:isMaximized', () => {
   return Boolean(mainWindow?.isMaximized())
 })
 
-ipcMain.handle('host:getState', async () => host.getState())
+ipcMain.handle('host:getBootstrap', async () => bootstrap.getStatus())
+
+ipcMain.handle('host:getState', async () => {
+  if (bootPromise) {
+    try {
+      await bootPromise
+    } catch {
+      /* status exposed via bootstrap */
+    }
+  }
+  const boot = bootstrap.getStatus()
+  if (!boot.ready) {
+    return {
+      connected: false,
+      sharing: false,
+      phase: boot.phase,
+      detail: boot.detail,
+      transport: '',
+      clientName: '',
+      clientAddr: '',
+      codec: '',
+      frames: 0,
+      bitrateKbps: 0,
+      latencyMs: 0,
+      lossPermille: 0,
+      bytesSent: 0,
+      connectedSecs: 0,
+      usbHint: boot.error || boot.detail || '正在准备运行环境…',
+      usbTone: boot.phase === 'error' ? 'bad' : 'info',
+      deviceDetected: false,
+      clientAppMissing: false,
+      canInstallApk: false,
+      installInflight: false,
+      multiDevice: false,
+      displays: [],
+      devices: [],
+      settings: null,
+      lastError: boot.error || '',
+      hostVersion: '',
+      bootstrap: boot,
+    }
+  }
+  const state = await host.getState()
+  return { ...state, bootstrap: boot }
+})
+
 ipcMain.handle('host:refresh', async () => host.invoke('refresh'))
 ipcMain.handle('host:startShare', async () => host.invoke('startShare'))
 ipcMain.handle('host:stopShare', async () => host.invoke('stopShare'))
 ipcMain.handle('host:setSettings', async (_e, patch) => host.invoke('setSettings', patch))
 ipcMain.handle('host:installClient', async () => host.invoke('installClient'))
 ipcMain.handle('host:ping', async () => host.invoke('ping'))
+ipcMain.handle('host:retryBootstrap', async () => {
+  bootPromise = bootPipeline()
+  await bootPromise
+  return bootstrap.getStatus()
+})
