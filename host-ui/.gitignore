@@ -11,6 +11,7 @@ node_modules
 dist
 dist-ssr
 release
+resources/lighting-host.exe
 *.local
 
 # Editor directories and files

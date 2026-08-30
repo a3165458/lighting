@@ -5,13 +5,14 @@ import { BottomActionBar } from '@/components/layout/BottomActionBar'
 import { StatusBar } from '@/components/layout/StatusBar'
 import { TitleBar } from '@/components/layout/TitleBar'
 import { isElectronShell } from '@/lib/desktop'
-import type { NavId, SessionState } from '@/lib/mock'
+import type { NavId } from '@/lib/format'
+import type { ShellSession } from '@/components/layout/StatusBar'
 import { cn } from '@/lib/cn'
 
 type Props = {
   activeNav: NavId
   onNavigate: (id: NavId) => void
-  session: SessionState
+  session: ShellSession
   onToggleShare: () => void
   onAdvanced: () => void
   onAbout: () => void

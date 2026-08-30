@@ -1,6 +1,6 @@
 # Lighting 副屏 — Desktop UI (React + Electron)
 
-## 网页预览
+## 网页预览（无主机）
 
 ```bash
 cd host-ui
@@ -8,38 +8,40 @@ npm install
 npm run dev
 ```
 
-## Electron 桌面壳（Windows exe）
+浏览器模式下没有 `lightingHost` 桥，界面会显示未连接主机。
 
-开发（热更新）：
+## Electron + 本地 IPC（推荐）
 
-```bash
-npm run electron:dev
-```
-
-本机打 Windows 包（需在 Windows 上执行，或用 CI）：
+1. 先编 Windows 主机：
 
 ```powershell
-cd D:\Lighting
-.\scripts\build-electron-win.ps1
+.\scripts\build-windows.ps1
+# -> host-windows\target\release\lighting-host.exe
 ```
 
-或：
+2. 开 Electron 壳（会自动拉起 `--ipc-only` 主机）：
 
 ```powershell
 cd host-ui
 npm install
-npm run electron:build:win
+npm run electron:dev
 ```
 
-产物在 `host-ui/release/`：
+3. 打安装包 / 便携包（会尝试打包同目录的 `lighting-host.exe`）：
 
-- `Lighting-*-portable.exe` — 绿色免安装
-- `Lighting-*-win-x64.exe` — NSIS 安装包
+```powershell
+.\scripts\build-electron-win.ps1
+```
 
-也可以从 GitHub Actions 产物 `lighting-electron-windows` 下载。
+产物：`host-ui\release\Lighting-*-portable.exe`
 
-> 说明：当前 Electron 壳包装的是 **UI 原型**（mock 交互）。真正抓屏 / ADB / 编码仍在 `host-windows` 的 `lighting-host.exe`。后续可把两边通过本地 IPC 打通。
+可选环境变量：
+
+- `LIGHTING_HOST_PATH` — 指定主机 exe
+- `LIGHTING_IPC_PORT` — 默认 `17401`
+
+协议说明：`protocol/HOST_IPC.md`
 
 ## Design tokens
 
-`src/styles/tokens.css` 是视觉单一来源；组件应使用 token，避免随意硬编码。
+`src/styles/tokens.css` 是视觉单一来源。

@@ -5,13 +5,13 @@ import { ConnectionCard } from '@/components/sections/ConnectionCard'
 import { DisplaySettings } from '@/components/sections/DisplaySettings'
 import { InteractionSettings } from '@/components/sections/InteractionSettings'
 import { PerformancePanel } from '@/components/sections/PerformancePanel'
+import { NAV_ITEMS, type NavId } from '@/lib/format'
 import {
-  INITIAL_SESSION,
-  INITIAL_SETTINGS,
-  type AppSettings,
-  type NavId,
-  type SessionState,
-} from '@/lib/mock'
+  DISCONNECTED_STATE,
+  hasHostBridge,
+  type HostSettingsPatch,
+  type HostState,
+} from '@/lib/host'
 
 function Placeholder({ title, body }: { title: string; body: string }) {
   return (
@@ -24,60 +24,151 @@ function Placeholder({ title, body }: { title: string; body: string }) {
 
 export default function App() {
   const [nav, setNav] = useState<NavId>('home')
-  const [settings, setSettings] = useState<AppSettings>(INITIAL_SETTINGS)
-  const [session, setSession] = useState<SessionState>(INITIAL_SESSION)
+  const [host, setHost] = useState<HostState>(DISCONNECTED_STATE)
+  const [busy, setBusy] = useState(false)
 
-  const patchSettings = useCallback((patch: Partial<AppSettings>) => {
-    setSettings((prev) => ({ ...prev, ...patch }))
+  const applyState = useCallback((state: HostState) => {
+    setHost(state)
   }, [])
 
-  const toggleShare = useCallback(() => {
-    setSession((prev) => {
-      if (prev.sharing) {
-        return { ...prev, sharing: false }
-      }
-      return {
-        ...prev,
-        sharing: true,
-        deviceDetected: true,
-        elapsedSecs: 0,
-        bytesSent: 0,
-      }
-    })
-  }, [])
+  const refresh = useCallback(async () => {
+    if (!hasHostBridge() || !window.lightingHost) {
+      setHost(DISCONNECTED_STATE)
+      return
+    }
+    try {
+      const state = await window.lightingHost.getState()
+      applyState(state)
+    } catch (err) {
+      setHost({
+        ...DISCONNECTED_STATE,
+        usbHint: String((err as Error).message || err),
+      })
+    }
+  }, [applyState])
 
   useEffect(() => {
-    if (!session.sharing) return
+    void refresh()
     const id = window.setInterval(() => {
-      setSession((prev) => ({
-        ...prev,
-        elapsedSecs: prev.elapsedSecs + 1,
-        bytesSent: prev.bytesSent + 48_000 + Math.floor(Math.random() * 12_000),
-      }))
-    }, 1000)
+      void refresh()
+    }, 500)
     return () => window.clearInterval(id)
-  }, [session.sharing])
+  }, [refresh])
+
+  const toggleShare = useCallback(async () => {
+    if (!window.lightingHost || busy) return
+    setBusy(true)
+    try {
+      const state = host.sharing
+        ? await window.lightingHost.stopShare()
+        : await window.lightingHost.startShare()
+      applyState(state)
+    } catch (err) {
+      setHost((prev) => ({
+        ...prev,
+        lastError: String((err as Error).message || err),
+        usbHint: String((err as Error).message || err),
+        usbTone: 'bad',
+      }))
+    } finally {
+      setBusy(false)
+    }
+  }, [applyState, busy, host.sharing])
+
+  const patchSettings = useCallback(
+    async (patch: HostSettingsPatch) => {
+      if (!window.lightingHost) return
+      // Optimistic local update for snappy sliders.
+      setHost((prev) => ({
+        ...prev,
+        settings: prev.settings
+          ? {
+              ...prev.settings,
+              ...(patch.selectedDisplay !== undefined
+                ? { selectedDisplay: patch.selectedDisplay }
+                : {}),
+              ...(patch.qualityPct !== undefined ? { qualityPct: patch.qualityPct } : {}),
+              ...(patch.fps !== undefined ? { fps: patch.fps } : {}),
+              ...(patch.bitrateKbps !== undefined ? { bitrateKbps: patch.bitrateKbps } : {}),
+              ...(patch.sendAudio !== undefined ? { sendAudio: patch.sendAudio } : {}),
+              ...(patch.touchRelay !== undefined ? { touchRelay: patch.touchRelay } : {}),
+              ...(patch.keyboardRelay !== undefined
+                ? { keyboardRelay: patch.keyboardRelay }
+                : {}),
+            }
+          : prev.settings,
+      }))
+      try {
+        const state = await window.lightingHost.setSettings(patch)
+        applyState(state)
+      } catch (err) {
+        setHost((prev) => ({
+          ...prev,
+          lastError: String((err as Error).message || err),
+        }))
+      }
+    },
+    [applyState],
+  )
+
+  const installClient = useCallback(async () => {
+    if (!window.lightingHost || busy) return
+    setBusy(true)
+    try {
+      const state = await window.lightingHost.installClient()
+      applyState(state)
+    } catch (err) {
+      setHost((prev) => ({
+        ...prev,
+        lastError: String((err as Error).message || err),
+        usbHint: String((err as Error).message || err),
+        usbTone: 'bad',
+      }))
+    } finally {
+      setBusy(false)
+    }
+  }, [applyState, busy])
+
+  const sessionForShell = {
+    sharing: host.sharing,
+    deviceDetected: host.deviceDetected,
+    bytesSent: host.bytesSent,
+    elapsedSecs: host.connectedSecs,
+  }
 
   return (
     <AppShell
       activeNav={nav}
       onNavigate={setNav}
-      session={session}
-      onToggleShare={toggleShare}
+      session={sessionForShell}
+      onToggleShare={() => void toggleShare()}
       onAdvanced={() => setNav('settings')}
       onAbout={() => setNav('about')}
     >
       {nav === 'home' && (
         <div className="flex flex-col gap-[var(--space-card-gap)]">
           <Hero />
-          <ConnectionCard session={session} onToggleShare={toggleShare} />
+          <ConnectionCard
+            host={host}
+            busy={busy}
+            onToggleShare={() => void toggleShare()}
+            onInstallClient={() => void installClient()}
+          />
 
           <div className="grid grid-cols-1 gap-[var(--space-card-gap)] xl:grid-cols-[3fr_2fr]">
             <div className="flex flex-col gap-[var(--space-card-gap)]">
-              <DisplaySettings settings={settings} onChange={patchSettings} />
-              <InteractionSettings settings={settings} onChange={patchSettings} />
+              <DisplaySettings
+                host={host}
+                onChange={(patch) => void patchSettings(patch)}
+                disabled={!host.connected || host.sharing}
+              />
+              <InteractionSettings
+                host={host}
+                onChange={(patch) => void patchSettings(patch)}
+                disabled={!host.connected}
+              />
             </div>
-            <PerformancePanel />
+            <PerformancePanel host={host} />
           </div>
         </div>
       )}
@@ -85,7 +176,11 @@ export default function App() {
       {nav === 'settings' && (
         <Placeholder
           title="通用设置"
-          body="网络偏好、启动选项与通知等通用配置将放在这里。"
+          body={
+            host.connected
+              ? `已连接主机 v${host.hostVersion || '—'}. IPC 端口由 lighting-host 提供。`
+              : '尚未连接到 lighting-host.exe。请先编译主机，或设置 LIGHTING_HOST_PATH。'
+          }
         />
       )}
       {nav === 'shortcuts' && (
@@ -97,6 +192,9 @@ export default function App() {
           body="Lighting 副屏 — 将 Android 平板 / 手机变成 Windows 电脑扩展屏。"
         />
       )}
+
+      {/* keep NAV_ITEMS referenced for tree-shaking clarity */}
+      <span className="hidden">{NAV_ITEMS.length}</span>
     </AppShell>
   )
 }

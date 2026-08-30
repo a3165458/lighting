@@ -3,15 +3,23 @@ import { Dropdown } from '@/components/ui/Dropdown'
 import { SettingRow } from '@/components/ui/SettingRow'
 import { SliderControl } from '@/components/ui/SliderControl'
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch'
-import { DISPLAY_OPTIONS, type AppSettings } from '@/lib/mock'
+import type { HostSettingsPatch, HostState } from '@/lib/host'
 
 type Props = {
-  settings: AppSettings
-  onChange: (patch: Partial<AppSettings>) => void
+  host: HostState
+  onChange: (patch: HostSettingsPatch) => void
   disabled?: boolean
 }
 
-export function DisplaySettings({ settings, onChange, disabled }: Props) {
+export function DisplaySettings({ host, onChange, disabled }: Props) {
+  const settings = host.settings
+  const displays = host.displays.map((d) => ({ id: d.id, label: d.label }))
+  const displayId = String(settings?.selectedDisplay ?? 0)
+  const quality = settings?.qualityPct ?? 100
+  const fps = settings?.fps ?? 60
+  const bitrate = settings?.bitrateKbps ?? 25000
+  const audioSync = settings?.sendAudio ?? true
+
   return (
     <section className="glass-card p-[var(--space-card-pad)]" aria-label="扩展屏设置">
       <header className="mb-5 flex items-center gap-3">
@@ -28,10 +36,14 @@ export function DisplaySettings({ settings, onChange, disabled }: Props) {
           control={
             <div className="w-[280px] max-w-full">
               <Dropdown
-                value={settings.displayId}
-                options={DISPLAY_OPTIONS}
-                onChange={(displayId) => onChange({ displayId })}
-                disabled={disabled}
+                value={displayId}
+                options={
+                  displays.length > 0
+                    ? displays
+                    : [{ id: '0', label: '未检测到显示器' }]
+                }
+                onChange={(id) => onChange({ selectedDisplay: Number(id) })}
+                disabled={disabled || displays.length === 0}
                 ariaLabel="选择显示器"
               />
             </div>
@@ -41,15 +53,15 @@ export function DisplaySettings({ settings, onChange, disabled }: Props) {
         <SettingRow
           icon={Gauge}
           label="画质"
-          valueSlot={`${settings.quality}%`}
+          valueSlot={`${quality}%`}
           control={
             <div className="w-[200px]">
               <SliderControl
-                value={settings.quality}
+                value={quality}
                 min={40}
                 max={100}
                 step={5}
-                onChange={(quality) => onChange({ quality })}
+                onChange={(qualityPct) => onChange({ qualityPct })}
                 disabled={disabled}
                 ariaLabel="画质"
               />
@@ -60,15 +72,15 @@ export function DisplaySettings({ settings, onChange, disabled }: Props) {
         <SettingRow
           icon={Waves}
           label="帧率"
-          valueSlot={`${settings.fps} fps`}
+          valueSlot={`${fps} fps`}
           control={
             <div className="w-[200px]">
               <SliderControl
-                value={settings.fps}
+                value={fps}
                 min={30}
                 max={120}
                 step={5}
-                onChange={(fps) => onChange({ fps })}
+                onChange={(next) => onChange({ fps: next })}
                 disabled={disabled}
                 ariaLabel="帧率"
               />
@@ -79,15 +91,15 @@ export function DisplaySettings({ settings, onChange, disabled }: Props) {
         <SettingRow
           icon={Gauge}
           label="码率"
-          valueSlot={`${settings.bitrate} kbps`}
+          valueSlot={`${bitrate} kbps`}
           control={
             <div className="w-[200px]">
               <SliderControl
-                value={settings.bitrate}
+                value={bitrate}
                 min={5000}
                 max={50000}
                 step={1000}
-                onChange={(bitrate) => onChange({ bitrate })}
+                onChange={(bitrateKbps) => onChange({ bitrateKbps })}
                 disabled={disabled}
                 ariaLabel="码率"
               />
@@ -100,8 +112,8 @@ export function DisplaySettings({ settings, onChange, disabled }: Props) {
           label="系统声音同步"
           control={
             <ToggleSwitch
-              checked={settings.audioSync}
-              onChange={(audioSync) => onChange({ audioSync })}
+              checked={audioSync}
+              onChange={(sendAudio) => onChange({ sendAudio })}
               disabled={disabled}
               ariaLabel="系统声音同步"
             />

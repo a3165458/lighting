@@ -74,6 +74,13 @@
     },
     "portable": {
       "artifactName": "Lighting-${version}-portable.exe"
-    }
+    },
+    "extraResources": [
+      {
+        "from": "resources/",
+        "to": ".",
+        "filter": ["lighting-host.exe"]
+      }
+    ]
   }
 }
