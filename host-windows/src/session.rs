@@ -453,6 +453,16 @@ async fn handle_client(
     }
 
     let display_for_input = display.clone();
+    let (touch_tx, touch_rx) = std::sync::mpsc::channel::<protocol::TouchEvent>();
+    let input_display = display_for_input.clone();
+    std::thread::Builder::new()
+        .name("lighting-input".into())
+        .spawn(move || {
+            while let Ok(ev) = touch_rx.recv() {
+                input::inject_touch(&input_display, ev);
+            }
+        })
+        .ok();
     let stop_read = stop.clone();
     let ping_sent: Arc<Mutex<Option<std::time::Instant>>> = Arc::new(Mutex::new(None));
     let ping_reply = ping_sent.clone();
@@ -466,10 +476,17 @@ async fn handle_client(
             match protocol::read_message(&mut reader).await {
                 Ok(msg) if msg.ty == protocol::MSG_TOUCH => {
                     if !controls_read.touch.load(Ordering::Relaxed) {
+                        tracing::warn!("touch ignored: relay disabled");
                         continue;
                     }
-                    if let Ok(ev) = protocol::TouchEvent::parse(&msg.payload) {
-                        input::inject_touch(&display_for_input, ev);
+                    match protocol::TouchEvent::parse(&msg.payload) {
+                        Ok(ev) => {
+                            tracing::info!("host got touch action={} x={} y={}", ev.action, ev.x, ev.y);
+                            if touch_tx.send(ev).is_err() {
+                                tracing::warn!("touch queue closed");
+                            }
+                        }
+                        Err(err) => tracing::warn!("bad touch payload: {err:#}"),
                     }
                 }
                 Ok(msg) if msg.ty == protocol::MSG_HEARTBEAT => {

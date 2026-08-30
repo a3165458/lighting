@@ -2,6 +2,22 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
+/// Android applicationId — must match `android/app/build.gradle.kts`.
+pub const CLIENT_PACKAGE: &str = "app.lighting.display";
+
+/// Hide the console window that Windows would otherwise flash for each adb.exe.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+fn adb_command(adb: &Path) -> Command {
+    let mut cmd = Command::new(adb);
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 pub fn find_adb() -> Result<PathBuf> {
     for candidate in adb_candidates() {
         if candidate.is_file() {
@@ -12,6 +28,47 @@ pub fn find_adb() -> Result<PathBuf> {
     anyhow::bail!(
         "找不到 adb.exe。本机常见位置未加入 PATH。可把 platform-tools 加到系统 PATH，或把 adb.exe 放到仓库 .runtime\\android-sdk\\platform-tools\\"
     )
+}
+
+/// Look for a shippable APK next to the host or in the local android build tree.
+pub fn find_bundled_apk() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for name in [
+                "Lighting.apk",
+                "lighting.apk",
+                "app-debug.apk",
+                "app-release.apk",
+            ] {
+                candidates.push(dir.join(name));
+            }
+            candidates.push(
+                dir.join("..")
+                    .join("..")
+                    .join("..")
+                    .join("android")
+                    .join("app")
+                    .join("build")
+                    .join("outputs")
+                    .join("apk")
+                    .join("debug")
+                    .join("app-debug.apk"),
+            );
+        }
+    }
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("android")
+            .join("app")
+            .join("build")
+            .join("outputs")
+            .join("apk")
+            .join("debug")
+            .join("app-debug.apk"),
+    );
+    candidates.into_iter().find(|p| p.is_file())
 }
 
 fn adb_candidates() -> Vec<PathBuf> {
@@ -34,7 +91,6 @@ fn adb_candidates() -> Vec<PathBuf> {
 
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            // target/release/lighting-host.exe → repo/.runtime/...
             push(dir.join("adb.exe"));
             push(dir.join("platform-tools").join("adb.exe"));
             push(
@@ -99,6 +155,8 @@ fn adb_candidates() -> Vec<PathBuf> {
 pub struct AdbDevice {
     pub serial: String,
     pub state: String,
+    /// `Some(true/false)` after a package probe; `None` if not probed.
+    pub client_installed: Option<bool>,
 }
 
 impl AdbDevice {
@@ -108,7 +166,7 @@ impl AdbDevice {
 }
 
 pub async fn list_devices(adb: &Path) -> Result<Vec<AdbDevice>> {
-    let output = Command::new(adb)
+    let output = adb_command(adb)
         .arg("devices")
         .output()
         .await
@@ -124,15 +182,62 @@ pub async fn list_devices(adb: &Path) -> Result<Vec<AdbDevice>> {
         let serial = parts.next().unwrap_or_default().to_string();
         let state = parts.next().unwrap_or("unknown").to_string();
         if !serial.is_empty() {
-            devices.push(AdbDevice { serial, state });
+            devices.push(AdbDevice {
+                serial,
+                state,
+                client_installed: None,
+            });
+        }
+    }
+    for device in &mut devices {
+        if device.state == "device" {
+            device.client_installed =
+                Some(package_installed(adb, &device.serial, CLIENT_PACKAGE).await);
         }
     }
     Ok(devices)
 }
 
+/// `adb shell pm path <package>` — empty stdout means not installed.
+pub async fn package_installed(adb: &Path, serial: &str, package: &str) -> bool {
+    let output = adb_command(adb)
+        .args(["-s", serial, "shell", "pm", "path", package])
+        .output()
+        .await;
+    match output {
+        Ok(out) if out.status.success() => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            stdout.lines().any(|l| l.trim().starts_with("package:"))
+        }
+        _ => false,
+    }
+}
+
+pub async fn install_apk(adb: &Path, serial: &str, apk: &Path) -> Result<()> {
+    let output = adb_command(adb)
+        .args(["-s", serial, "install", "-r"])
+        .arg(apk)
+        .output()
+        .await
+        .context("adb install")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        anyhow::bail!(
+            "安装失败: {}",
+            if !stderr.trim().is_empty() {
+                stderr.trim().to_string()
+            } else {
+                stdout.trim().to_string()
+            }
+        );
+    }
+    Ok(())
+}
+
 pub async fn reverse_port(adb: &Path, serial: &str, port: u16) -> Result<()> {
     let spec = format!("tcp:{port}");
-    let output = Command::new(adb)
+    let output = adb_command(adb)
         .args(["-s", serial, "reverse", &spec, &spec])
         .output()
         .await
@@ -148,7 +253,7 @@ pub async fn reverse_port(adb: &Path, serial: &str, port: u16) -> Result<()> {
 
 pub async fn remove_reverse(adb: &Path, serial: &str, port: u16) -> Result<()> {
     let spec = format!("tcp:{port}");
-    let _ = Command::new(adb)
+    let _ = adb_command(adb)
         .args(["-s", serial, "reverse", "--remove", &spec])
         .output()
         .await;

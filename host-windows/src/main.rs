@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod adb;
 mod audio;
 mod displays;
@@ -35,11 +37,9 @@ fn log_writer() -> BoxMakeWriter {
         .append(true)
         .open(&path)
     {
-        Ok(file) => {
-            eprintln!("Lighting 日志: {}", path.display());
-            BoxMakeWriter::new(std::sync::Mutex::new(file))
-        }
-        Err(_) => BoxMakeWriter::new(std::io::stderr),
+        Ok(file) => BoxMakeWriter::new(std::sync::Mutex::new(file)),
+        // No console in release GUI builds — fall back to a sink rather than stderr.
+        Err(_) => BoxMakeWriter::new(std::io::sink),
     }
 }
 
@@ -56,8 +56,11 @@ fn main() -> eframe::Result<()> {
 
     let native = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([560.0, 860.0])
-            .with_min_inner_size([470.0, 560.0])
+            .with_inner_size([560.0, 1024.0])
+            .with_min_inner_size([540.0, 920.0])
+            .with_decorations(false)
+            .with_transparent(false)
+            .with_resizable(true)
             .with_title("Lighting 副屏"),
         ..Default::default()
     };
@@ -83,6 +86,14 @@ struct LightingApp {
     last_error: String,
     adb_path: String,
     last_poll: Instant,
+    /// Background `adb devices` result — never block the UI thread on adb.
+    pending_devices: Arc<Mutex<Option<Result<Vec<adb::AdbDevice>, String>>>>,
+    device_refresh_inflight: bool,
+    /// One-shot notice after APK install attempt.
+    pending_notice: Arc<Mutex<Option<(Tone, String)>>>,
+    install_inflight: bool,
+    apk_available: bool,
+    notice: Option<(Tone, String)>,
 }
 
 impl LightingApp {
@@ -105,9 +116,15 @@ impl LightingApp {
             running: false,
             last_error: String::new(),
             adb_path: String::new(),
-            last_poll: Instant::now(),
+            last_poll: Instant::now() - Duration::from_secs(10),
+            pending_devices: Arc::new(Mutex::new(None)),
+            device_refresh_inflight: false,
+            pending_notice: Arc::new(Mutex::new(None)),
+            install_inflight: false,
+            apk_available: adb::find_bundled_apk().is_some(),
+            notice: None,
         };
-        app.refresh_devices();
+        app.request_device_refresh();
         app
     }
 
@@ -123,7 +140,99 @@ impl LightingApp {
         }
     }
 
-    fn refresh_devices(&mut self) {
+    fn apply_pending_devices(&mut self) {
+        let result = match self.pending_devices.lock() {
+            Ok(mut slot) => slot.take(),
+            Err(_) => None,
+        };
+        if let Some(result) = result {
+            self.device_refresh_inflight = false;
+            match result {
+                Ok(list) => {
+                    self.devices = list;
+                    self.select_usb_device();
+                    if self.last_error.contains("adb") || self.last_error.contains("找不到") {
+                        self.last_error.clear();
+                    }
+                }
+                Err(err) => self.last_error = err,
+            }
+        }
+
+        let install_notice = if let Ok(mut slot) = self.pending_notice.lock() {
+            slot.take()
+        } else {
+            None
+        };
+        if let Some(notice) = install_notice {
+            self.install_inflight = false;
+            self.notice = Some(notice);
+            // Re-probe so the hint flips once the package appears.
+            self.request_device_refresh();
+        }
+        // Drop install notices once the package is confirmed on the device.
+        if !self.client_app_missing() && !self.install_inflight {
+            self.notice = None;
+        }
+        self.apk_available = adb::find_bundled_apk().is_some();
+    }
+
+    fn primary_ready_device(&self) -> Option<&adb::AdbDevice> {
+        self.devices
+            .get(self.settings.selected_device)
+            .filter(|d| d.state == "device")
+            .or_else(|| self.devices.iter().find(|d| d.state == "device"))
+    }
+
+    fn client_app_missing(&self) -> bool {
+        self.primary_ready_device()
+            .and_then(|d| d.client_installed)
+            .is_some_and(|installed| !installed)
+    }
+
+    fn request_install_client(&mut self) {
+        if self.install_inflight {
+            return;
+        }
+        let Some(apk) = adb::find_bundled_apk() else {
+            self.notice = Some((
+                Tone::Warn,
+                "电脑这边还没有 APK 文件。请把 Lighting.apk 放到程序同目录后再试".into(),
+            ));
+            return;
+        };
+        let Some(serial) = self.primary_ready_device().map(|d| d.serial.clone()) else {
+            self.notice = Some((Tone::Warn, "请先用数据线连接平板并打开 USB 调试".into()));
+            return;
+        };
+        let adb = match adb::find_adb() {
+            Ok(p) => p,
+            Err(err) => {
+                self.notice = Some((Tone::Bad, format!("{err:#}")));
+                return;
+            }
+        };
+        self.install_inflight = true;
+        self.notice = Some((Tone::Info, ui_text::client_app_installing_hint()));
+        let pending = self.pending_notice.clone();
+        self.rt.spawn(async move {
+            let notice = match adb::install_apk(&adb, &serial, &apk).await {
+                Ok(()) => (Tone::Ok, ui_text::client_app_installed_ok()),
+                Err(err) => (
+                    Tone::Bad,
+                    format!("安装失败：{err:#}。也可把 APK 拷到平板里手动安装"),
+                ),
+            };
+            if let Ok(mut slot) = pending.lock() {
+                *slot = Some(notice);
+            }
+        });
+    }
+
+    fn request_device_refresh(&mut self) {
+        if self.device_refresh_inflight {
+            return;
+        }
         let adb = match adb::find_adb() {
             Ok(p) => {
                 self.adb_path = p.display().to_string();
@@ -136,16 +245,16 @@ impl LightingApp {
                 return;
             }
         };
-        match self.rt.block_on(adb::list_devices(&adb)) {
-            Ok(list) => {
-                self.devices = list;
-                self.select_usb_device();
-                if self.last_error.contains("adb") || self.last_error.contains("找不到") {
-                    self.last_error.clear();
-                }
+        self.device_refresh_inflight = true;
+        let pending = self.pending_devices.clone();
+        self.rt.spawn(async move {
+            let result = adb::list_devices(&adb)
+                .await
+                .map_err(|err| format!("{err:#}"));
+            if let Ok(mut slot) = pending.lock() {
+                *slot = Some(result);
             }
-            Err(err) => self.last_error = format!("{err:#}"),
-        }
+        });
     }
 
     fn select_usb_device(&mut self) {
@@ -171,7 +280,7 @@ impl LightingApp {
             return;
         }
         self.last_poll = Instant::now();
-        self.refresh_devices();
+        self.request_device_refresh();
     }
 
     fn start(&mut self) {
@@ -260,6 +369,9 @@ impl LightingApp {
         if let Some(raw) = live_transport(snap.running, &snap.transport) {
             return ui_text::humanize_transport(raw);
         }
+        if let Some((tone, text)) = &self.notice {
+            return (text.clone(), *tone);
+        }
         let ready = self.ready_devices();
         let pending = self
             .devices
@@ -273,6 +385,9 @@ impl LightingApp {
         }
         if pending && ready == 0 {
             return ("请打开 USB 调试并点允许".into(), Tone::Warn);
+        }
+        if ready >= 1 && self.client_app_missing() {
+            return ui_text::client_app_missing_hint(self.apk_available);
         }
         if ready == 1 {
             let name = self
@@ -310,7 +425,15 @@ impl LightingApp {
             connected_secs: status.connected_secs,
             usb_hint,
             usb_tone,
-            displays: self.displays.iter().map(|d| d.label()).collect(),
+            client_app_missing: self.client_app_missing(),
+            can_install_apk: self.apk_available && !self.install_inflight,
+            install_inflight: self.install_inflight,
+            displays: self
+                .displays
+                .iter()
+                .enumerate()
+                .map(|(i, d)| ui_text::display_choice_label(i, d.primary, d.width, d.height))
+                .collect(),
             devices: self.devices.iter().map(|d| d.label()).collect(),
             multi_device: self.ready_devices() > 1,
             adb_path: self.adb_path.clone(),
@@ -326,6 +449,7 @@ fn scaled(value: u32, quality: f32) -> u32 {
 impl eframe::App for LightingApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(Duration::from_millis(200));
+        self.apply_pending_devices();
         self.maybe_poll_devices();
         let status = self
             .status
@@ -347,8 +471,9 @@ impl eframe::App for LightingApp {
                 Action::Stop => self.stop_session(),
                 Action::Refresh => {
                     self.refresh_displays();
-                    self.refresh_devices();
+                    self.request_device_refresh();
                 }
+                Action::InstallClient => self.request_install_client(),
                 Action::TouchRelayChanged => self
                     .controls
                     .touch

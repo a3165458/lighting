@@ -161,6 +161,10 @@ pub fn connection_title(running: bool, phase: &str, client_name: &str) -> String
     }
 }
 
+pub fn display_choice_label(index: usize, primary: bool, width: u32, height: u32) -> String {
+    let kind = if primary { "主显示器" } else { "扩展显示器" };
+    format!("{kind} #{n}  ({width} × {height})", n = index + 1)
+}
 pub fn is_streaming(phase: &str) -> bool {
     matches!(phase, "已连接" | "编码" | "回退" | "共享中")
 }
@@ -171,6 +175,29 @@ pub fn share_button_label(running: bool) -> String {
     } else {
         "开始共享".into()
     }
+}
+
+/// Beginner copy when a USB device is ready but the Lighting client APK is missing.
+pub fn client_app_missing_hint(can_install: bool) -> (String, Tone) {
+    if can_install {
+        (
+            "已找到设备，但还没安装 Lighting 客户端。点下方「安装到平板」即可".into(),
+            Tone::Warn,
+        )
+    } else {
+        (
+            "已找到设备，但还没安装 Lighting 客户端。请先把 APK 拷到电脑程序目录，或用 Android Studio 安装".into(),
+            Tone::Warn,
+        )
+    }
+}
+
+pub fn client_app_installing_hint() -> String {
+    "正在把 Lighting 安装到平板，请在平板上点「允许安装」…".into()
+}
+
+pub fn client_app_installed_ok() -> String {
+    "客户端已安装。打开平板上的 Lighting，再点「开始共享」".into()
 }
 
 /// Footer health line: one glance answer to "is this working right now?".
@@ -392,6 +419,18 @@ mod tests {
     }
 
     #[test]
+    fn client_app_missing_copy_is_beginner_friendly() {
+        let (with_apk, tone) = client_app_missing_hint(true);
+        assert!(with_apk.contains("安装到平板"));
+        assert_eq!(tone, Tone::Warn);
+        let (no_apk, _) = client_app_missing_hint(false);
+        assert!(no_apk.contains("Lighting 客户端"));
+        assert!(!no_apk.contains("adb"));
+        assert!(!client_app_installing_hint().contains("adb"));
+        assert!(client_app_installed_ok().contains("开始共享"));
+    }
+
+    #[test]
     fn transport_copy_never_leaks_adb() {
         assert_eq!(
             humanize_transport("USB · adb reverse 已就绪（R52N）"),
@@ -450,5 +489,17 @@ mod tests {
         assert!(looks_like_bind_or_port("connection refused"));
         assert!(looks_technical("adb reverse tcp:17400"));
         assert!(!looks_technical("没有可用显示器"));
+    }
+
+    #[test]
+    fn display_choice_label_matches_mock() {
+        assert_eq!(
+            display_choice_label(1, false, 2560, 1600),
+            "扩展显示器 #2  (2560 × 1600)"
+        );
+        assert_eq!(
+            display_choice_label(0, true, 1920, 1080),
+            "主显示器 #1  (1920 × 1080)"
+        );
     }
 }
