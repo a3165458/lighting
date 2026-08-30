@@ -2,7 +2,7 @@
   "name": "lighting-host-ui",
   "private": true,
   "version": "0.1.0",
-  "description": "Lighting secondary display desktop shell (Electron + React)",
+  "description": "Lighting secondary display — one-click Windows portable app",
   "author": "Lighting",
   "type": "module",
   "main": "electron/main.cjs",
@@ -14,7 +14,8 @@
     "electron:dev": "concurrently -k \"vite\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "electron:pack": "npm run build && electron-builder --dir",
     "electron:build": "npm run build && electron-builder --win portable nsis",
-    "electron:build:win": "npm run build && electron-builder --win portable nsis"
+    "electron:build:win": "npm run build && electron-builder --win portable nsis",
+    "electron:build:portable": "npm run build && electron-builder --win portable"
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -64,16 +65,21 @@
           "arch": ["x64"]
         }
       ],
-      "artifactName": "Lighting-${version}-${os}-${arch}.${ext}"
+      "artifactName": "${productName}-${version}-Setup.${ext}"
     },
     "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
       "createDesktopShortcut": true,
-      "shortcutName": "Lighting副屏"
+      "createStartMenuShortcut": true,
+      "shortcutName": "Lighting副屏",
+      "installerLanguages": ["zh_CN", "en_US"],
+      "language": "2052",
+      "artifactName": "${productName}-${version}-安装包.${ext}"
     },
     "portable": {
-      "artifactName": "Lighting-${version}-portable.exe"
+      "artifactName": "${productName}-${version}-便携版.exe"
     },
     "extraResources": [
       {

@@ -58,7 +58,24 @@ impl Drop for EncoderSession {
 }
 
 pub fn find_ffmpeg() -> Result<PathBuf> {
-    which::which("ffmpeg").context("找不到 ffmpeg，请安装并加入 PATH")
+    if let Ok(p) = which::which("ffmpeg") {
+        return Ok(p);
+    }
+    let mut candidates = Vec::new();
+    if let Ok(runtime) = std::env::var("LIGHTING_RUNTIME_DIR") {
+        candidates.push(PathBuf::from(&runtime).join("ffmpeg").join("bin").join("ffmpeg.exe"));
+        candidates.push(PathBuf::from(&runtime).join("ffmpeg.exe"));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("ffmpeg.exe"));
+            candidates.push(dir.join("ffmpeg").join("bin").join("ffmpeg.exe"));
+        }
+    }
+    if let Some(found) = candidates.into_iter().find(|p| p.is_file()) {
+        return Ok(found);
+    }
+    anyhow::bail!("找不到 ffmpeg。便携版首次启动会自动下载；也可手动安装并加入 PATH")
 }
 
 pub fn pick_encoder(codec: &str) -> &'static str {
