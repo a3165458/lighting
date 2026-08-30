@@ -11,7 +11,8 @@ import kotlin.math.abs
 import kotlin.math.hypot
 
 /**
- * GlideX-style touch: one finger = mouse, long-press = right click, two fingers = scroll.
+ * One finger = mouse. Tap = click. Drag = left-button drag.
+ * Long-press without moving = right click. Two fingers = scroll.
  */
 class TouchMapper(private val send: (action: Int, x: Int, y: Int) -> Unit) {
     companion object {
@@ -45,6 +46,8 @@ class TouchMapper(private val send: (action: Int, x: Int, y: Int) -> Unit) {
     private var lastCy = 0f
     private var lastNorm = 32767 to 32767
     private var sentCount = 0
+    private var lastHandledSeq = -1
+    private var lastHandledAction = -1
 
     private val longPress = Runnable {
         if (!leftDown && !scrolling && !rightClicked) {
@@ -58,14 +61,31 @@ class TouchMapper(private val send: (action: Int, x: Int, y: Int) -> Unit) {
     fun attach(overlay: View, video: View) {
         this.video = video
         this.overlay = overlay
-        slop = ViewConfiguration.get(overlay.context).scaledTouchSlop.toFloat().coerceAtLeast(20f)
+        slop = ViewConfiguration.get(overlay.context).scaledTouchSlop.toFloat().coerceAtLeast(16f)
         overlay.isClickable = true
         overlay.isFocusable = true
         overlay.isFocusableInTouchMode = true
         overlay.setOnTouchListener { view, event ->
             view.parent?.requestDisallowInterceptTouchEvent(true)
-            onTouch(event)
+            try {
+                onWindowTouch(event)
+            } catch (err: Throwable) {
+                Log.w(TAG, "overlay touch failed", err)
+            }
             true
+        }
+    }
+    fun onWindowTouch(event: MotionEvent) {
+        try {
+            val seq = event.eventTime.toInt() xor event.actionMasked
+            val action = event.actionMasked
+            if (seq == lastHandledSeq && action == lastHandledAction) return
+            lastHandledSeq = seq
+            lastHandledAction = action
+            Log.i(TAG, "in action=" + action + " pointers=" + event.pointerCount)
+            onTouch(event)
+        } catch (err: Throwable) {
+            Log.w(TAG, "onTouch failed", err)
         }
     }
 
@@ -80,10 +100,21 @@ class TouchMapper(private val send: (action: Int, x: Int, y: Int) -> Unit) {
     }
 
     private fun onTouch(e: MotionEvent) {
-        val (px, py) = local(e, e.actionIndex)
+        val (px, py) = local(e, e.actionIndex.coerceAtLeast(0))
         lastNorm = norm(px, py)
 
         when (e.actionMasked) {
+            MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_HOVER_ENTER -> {
+                emit(MOVE, lastNorm.first, lastNorm.second)
+            }
+            MotionEvent.ACTION_BUTTON_PRESS -> {
+                emit(LEFT_DOWN, lastNorm.first, lastNorm.second)
+                leftDown = true
+            }
+            MotionEvent.ACTION_BUTTON_RELEASE -> {
+                emit(LEFT_UP, lastNorm.first, lastNorm.second)
+                leftDown = false
+            }
             MotionEvent.ACTION_DOWN -> {
                 downX = px
                 downY = py
@@ -92,6 +123,7 @@ class TouchMapper(private val send: (action: Int, x: Int, y: Int) -> Unit) {
                 rightClicked = false
                 handler.removeCallbacks(longPress)
                 handler.postDelayed(longPress, LONG_PRESS_MS)
+                emit(MOVE, lastNorm.first, lastNorm.second)
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 handler.removeCallbacks(longPress)
@@ -123,12 +155,10 @@ class TouchMapper(private val send: (action: Int, x: Int, y: Int) -> Unit) {
                         emit(LEFT_DOWN, lastNorm.first, lastNorm.second)
                         leftDown = true
                     }
-                    if (leftDown) {
-                        val now = SystemClock.uptimeMillis()
-                        if (now - lastSendMs >= MOVE_MIN_INTERVAL_MS) {
-                            lastSendMs = now
-                            emit(MOVE, lastNorm.first, lastNorm.second)
-                        }
+                    val now = SystemClock.uptimeMillis()
+                    if (now - lastSendMs >= MOVE_MIN_INTERVAL_MS) {
+                        lastSendMs = now
+                        emit(MOVE, lastNorm.first, lastNorm.second)
                     }
                 }
             }
@@ -178,16 +208,26 @@ class TouchMapper(private val send: (action: Int, x: Int, y: Int) -> Unit) {
     private fun local(e: MotionEvent, index: Int): Pair<Float, Float> {
         val v = video
         val ov = overlay
-        val idx = index.coerceIn(0, (e.pointerCount - 1).coerceAtLeast(0))
+        val count = e.pointerCount
+        val rawX: Float
+        val rawY: Float
+        if (count <= 0) {
+            rawX = e.x
+            rawY = e.y
+        } else {
+            val idx = index.coerceIn(0, count - 1)
+            rawX = e.getX(idx)
+            rawY = e.getY(idx)
+        }
         if (v == null || ov == null || v.width <= 0 || v.height <= 0) {
-            return e.getX(idx) to e.getY(idx)
+            return rawX to rawY
         }
         val overlayLoc = IntArray(2)
         val videoLoc = IntArray(2)
         ov.getLocationOnScreen(overlayLoc)
         v.getLocationOnScreen(videoLoc)
-        val x = e.getX(idx) + overlayLoc[0] - videoLoc[0]
-        val y = e.getY(idx) + overlayLoc[1] - videoLoc[1]
+        val x = rawX + overlayLoc[0] - videoLoc[0]
+        val y = rawY + overlayLoc[1] - videoLoc[1]
         return x to y
     }
 
@@ -230,3 +270,7 @@ class TouchMapper(private val send: (action: Int, x: Int, y: Int) -> Unit) {
         return s / e.pointerCount
     }
 }
+
+
+
+
