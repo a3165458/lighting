@@ -30,6 +30,12 @@
   --color-warning: var(--color-warning);
   --color-success: var(--color-success);
   --color-danger: var(--color-danger);
+  --color-tint-blue-bg: var(--color-tint-blue-bg);
+  --color-tint-blue-fg: var(--color-tint-blue-fg);
+  --color-tint-pink-bg: var(--color-tint-pink-bg);
+  --color-tint-pink-fg: var(--color-tint-pink-fg);
+  --color-tint-mint-bg: var(--color-tint-mint-bg);
+  --color-tint-mint-fg: var(--color-tint-mint-fg);
 
   --spacing-1: var(--space-1);
   --spacing-2: var(--space-2);

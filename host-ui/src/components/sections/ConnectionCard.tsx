@@ -22,7 +22,7 @@ export function ConnectionCard({ session, onToggleShare }: Props) {
       aria-label="连接状态"
     >
       <div className="relative shrink-0">
-        <span className="flex size-14 items-center justify-center rounded-full bg-[rgba(96,140,255,0.14)] text-[#4B6FFF]">
+        <span className="flex size-14 items-center justify-center rounded-full bg-tint-blue-bg text-tint-blue-fg">
           <Tablet className="size-7" strokeWidth={1.75} />
         </span>
         <span
