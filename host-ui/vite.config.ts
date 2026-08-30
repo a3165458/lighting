@@ -4,6 +4,8 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
+  // Required for Electron file:// loading of production assets.
+  base: './',
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
@@ -11,7 +13,8 @@ export default defineConfig({
     },
   },
   server: {
-    host: true,
+    host: '127.0.0.1',
     port: 5173,
+    strictPort: true,
   },
 })

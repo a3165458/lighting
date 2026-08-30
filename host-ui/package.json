@@ -1,13 +1,20 @@
 {
-  "name": "host-ui",
+  "name": "lighting-host-ui",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "Lighting secondary display desktop shell (Electron + React)",
+  "author": "Lighting",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "electron:dev": "concurrently -k \"vite\" \"wait-on http://127.0.0.1:5173 && electron .\"",
+    "electron:pack": "npm run build && electron-builder --dir",
+    "electron:build": "npm run build && electron-builder --win portable nsis",
+    "electron:build:win": "npm run build && electron-builder --win portable nsis"
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -23,9 +30,50 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.1.0",
+    "concurrently": "^9.2.1",
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12",
     "oxlint": "^1.79.0",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.2",
-    "vite": "^8.2.2"
+    "vite": "^8.2.2",
+    "wait-on": "^8.0.5"
+  },
+  "build": {
+    "appId": "app.lighting.display.ui",
+    "productName": "Lighting副屏",
+    "copyright": "Copyright © Lighting",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        },
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "artifactName": "Lighting-${version}-${os}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Lighting副屏"
+    },
+    "portable": {
+      "artifactName": "Lighting-${version}-portable.exe"
+    }
   }
 }
