@@ -38,6 +38,14 @@
   --color-success: #4caf50;
   --color-danger: #ff654f;
 
+  /* Metric / device icon tints */
+  --color-tint-blue-bg: rgba(96, 140, 255, 0.14);
+  --color-tint-blue-fg: #4b6fff;
+  --color-tint-pink-bg: rgba(255, 120, 180, 0.14);
+  --color-tint-pink-fg: #e2559a;
+  --color-tint-mint-bg: rgba(80, 200, 170, 0.14);
+  --color-tint-mint-fg: #2aa88a;
+
   /* ── Spacing (4px base) ── */
   --space-1: 4px;
   --space-2: 8px;

@@ -10,10 +10,10 @@ const ICONS: Record<PerformanceMetric['icon'], LucideIcon> = {
 }
 
 const TINTS: Record<PerformanceMetric['tint'], string> = {
-  purple: 'bg-[rgba(108,78,255,0.12)] text-brand',
-  blue: 'bg-[rgba(96,140,255,0.14)] text-[#4B6FFF]',
-  pink: 'bg-[rgba(255,120,180,0.14)] text-[#E2559A]',
-  mint: 'bg-[rgba(80,200,170,0.14)] text-[#2AA88A]',
+  purple: 'bg-brand-soft text-brand',
+  blue: 'bg-tint-blue-bg text-tint-blue-fg',
+  pink: 'bg-tint-pink-bg text-tint-pink-fg',
+  mint: 'bg-tint-mint-bg text-tint-mint-fg',
 }
 
 type Props = {
