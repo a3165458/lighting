@@ -85,7 +85,7 @@
       {
         "from": "resources/",
         "to": ".",
-        "filter": ["lighting-host.exe"]
+        "filter": ["lighting-host.exe", "Lighting.apk"]
       }
     ]
   }

@@ -57,6 +57,9 @@ pub fn find_bundled_apk() -> Option<PathBuf> {
             );
         }
     }
+    if let Ok(runtime) = std::env::var("LIGHTING_RUNTIME_DIR") {
+        candidates.push(PathBuf::from(&runtime).join("Lighting.apk"));
+    }
     candidates.push(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
