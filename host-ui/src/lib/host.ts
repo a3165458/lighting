@@ -29,6 +29,7 @@ export type HostDevice = {
   serial: string
   state: string
   clientInstalled?: boolean | null
+  clientVersion?: string | null
 }
 
 export type BootstrapStatus = {
@@ -60,6 +61,7 @@ export type HostState = {
   usbTone: string
   deviceDetected: boolean
   clientAppMissing: boolean
+  clientAppVersion: string
   canInstallApk: boolean
   installInflight: boolean
   multiDevice: boolean
@@ -68,6 +70,7 @@ export type HostState = {
   settings: HostSettings | null
   lastError: string
   hostVersion: string
+  appVersion?: string
   bootstrap?: BootstrapStatus
 }
 
@@ -129,6 +132,7 @@ export const DISCONNECTED_STATE: HostState = {
   usbTone: 'info',
   deviceDetected: false,
   clientAppMissing: false,
+  clientAppVersion: '',
   canInstallApk: false,
   installInflight: false,
   multiDevice: false,
@@ -137,4 +141,5 @@ export const DISCONNECTED_STATE: HostState = {
   settings: null,
   lastError: '',
   hostVersion: '',
+  appVersion: '',
 }

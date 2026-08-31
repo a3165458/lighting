@@ -295,13 +295,17 @@ impl HostService {
         let status = g.status.lock().ok().map(|s| s.clone()).unwrap_or_default();
         let (usb_hint, usb_tone) = usb_hint_locked(&g, &status);
         let ready = g.devices.iter().filter(|d| d.state == "device").count();
-        let client_app_missing = g
+        let selected = g
             .devices
             .get(g.settings.selected_device)
             .filter(|d| d.state == "device")
-            .or_else(|| g.devices.iter().find(|d| d.state == "device"))
+            .or_else(|| g.devices.iter().find(|d| d.state == "device"));
+        let client_app_missing = selected
             .and_then(|d| d.client_installed)
             .is_some_and(|installed| !installed);
+        let client_app_version = selected
+            .and_then(|d| d.client_version.clone())
+            .unwrap_or_default();
 
         HostStateDto {
             connected: true,
@@ -322,6 +326,7 @@ impl HostService {
             usb_tone: tone_str(usb_tone).into(),
             device_detected: ready >= 1,
             client_app_missing,
+            client_app_version,
             can_install_apk: g.apk_available && !g.install_inflight,
             install_inflight: g.install_inflight,
             multi_device: ready > 1,
@@ -347,6 +352,7 @@ impl HostService {
                     serial: d.serial.clone(),
                     state: d.state.clone(),
                     client_installed: d.client_installed,
+                    client_version: d.client_version.clone(),
                 })
                 .collect(),
             settings: HostSettingsDto {

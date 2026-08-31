@@ -131,6 +131,7 @@ ipcMain.handle('host:getState', async () => {
       usbTone: boot.phase === 'error' ? 'bad' : 'info',
       deviceDetected: false,
       clientAppMissing: false,
+      clientAppVersion: '',
       canInstallApk: false,
       installInflight: false,
       multiDevice: false,
@@ -139,6 +140,7 @@ ipcMain.handle('host:getState', async () => {
       settings: null,
       lastError: boot.error || '',
       hostVersion: '',
+      appVersion: app.getVersion(),
       bootstrap: boot,
     }
   }

@@ -62,6 +62,7 @@ pub struct HostStateDto {
     pub usb_tone: String,
     pub device_detected: bool,
     pub client_app_missing: bool,
+    pub client_app_version: String,
     pub can_install_apk: bool,
     pub install_inflight: bool,
     pub multi_device: bool,
@@ -90,6 +91,7 @@ pub struct DeviceDto {
     pub serial: String,
     pub state: String,
     pub client_installed: Option<bool>,
+    pub client_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

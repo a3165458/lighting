@@ -177,13 +177,13 @@ export function DisplaySettings({
                 disabled={busy || !host.connected || host.installInflight || !host.canInstallApk}
                 onClick={onInstallClient}
                 icon={<Download className="size-4" />}
-                className="h-9 px-4 text-sm"
+                className="min-w-[9.5rem]"
               >
                 {host.installInflight
                   ? '安装中…'
                   : host.clientAppMissing
                     ? '安装到平板'
-                    : '重新安装 / 更新'}
+                    : '重新安装'}
               </Button>
             }
           />

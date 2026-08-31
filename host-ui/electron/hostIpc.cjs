@@ -1,9 +1,12 @@
 const net = require('node:net')
-const { spawn } = require('node:child_process')
+const { spawn, execFile } = require('node:child_process')
 const fs = require('node:fs')
 const path = require('node:path')
+const { promisify } = require('node:util')
 const { app } = require('electron')
 const bootstrap = require('./bootstrap.cjs')
+
+const execFileAsync = promisify(execFile)
 
 const DEFAULT_PORT = 17401
 const PORT_ENV = 'LIGHTING_IPC_PORT'
@@ -20,12 +23,65 @@ class HostIpcClient {
     this.pending = new Map()
     this.port = Number(process.env[PORT_ENV] || DEFAULT_PORT)
     this.connected = false
+    this._aligningVersion = false
   }
 
   async ensureConnected() {
-    if (this.socket && this.connected) return
-    await this.startHostIfNeeded()
-    await this.connectWithRetry(30, 300)
+    if (!(this.socket && this.connected)) {
+      await this.startHostIfNeeded()
+      await this.connectWithRetry(30, 300)
+    }
+    if (!this._aligningVersion) {
+      await this.alignHostVersion()
+    }
+  }
+
+  /**
+   * Packaged Electron apps must not keep talking to a leftover older
+   * lighting-host.exe still bound to 17401 (that is why UI showed v0.1.0
+   * after installing 0.1.2).
+   */
+  async alignHostVersion() {
+    this._aligningVersion = true
+    try {
+      const expected = app.getVersion()
+      const state = await this.rawInvoke('getState')
+      const hostVersion = String(state?.hostVersion || '')
+      if (hostVersion && expected && hostVersion !== expected) {
+        await this.replaceStaleHost()
+      }
+    } catch {
+      /* first connect races are fine; next poll retries */
+    } finally {
+      this._aligningVersion = false
+    }
+  }
+
+  async replaceStaleHost() {
+    this.disconnectSocket()
+    if (this.child && !this.child.killed) {
+      try {
+        this.child.kill()
+      } catch {
+        /* ignore */
+      }
+      this.child = null
+    }
+    await this.killStrayHosts()
+    await this.spawnBundledHost()
+    await this.connectWithRetry(40, 250)
+  }
+
+  async killStrayHosts() {
+    if (process.platform !== 'win32') return
+    try {
+      await execFileAsync('taskkill', ['/F', '/IM', 'lighting-host.exe'], {
+        windowsHide: true,
+      })
+    } catch {
+      /* nothing to kill */
+    }
+    await new Promise((r) => setTimeout(r, 400))
   }
 
   hostCandidates() {
@@ -60,22 +116,28 @@ class HostIpcClient {
     )
   }
 
-  async startHostIfNeeded() {
-    if (await this.canConnectOnce(150)) return
-
-    const exe = this.hostCandidates().find((p) => {
+  resolveHostExe() {
+    return this.hostCandidates().find((p) => {
       try {
         return fs.existsSync(p)
       } catch {
         return false
       }
     })
+  }
+
+  async startHostIfNeeded() {
+    if (await this.canConnectOnce(150)) return
+    await this.spawnBundledHost()
+  }
+
+  async spawnBundledHost() {
+    const exe = this.resolveHostExe()
     if (!exe) {
       throw new Error(
         '未找到主机组件 lighting-host.exe。请使用官方便携包，或先运行打包脚本。',
       )
     }
-
     if (this.child && !this.child.killed) return
 
     const env = {
@@ -128,6 +190,16 @@ class HostIpcClient {
     throw lastErr || new Error('无法连接本地主机服务')
   }
 
+  disconnectSocket() {
+    try {
+      this.socket?.destroy()
+    } catch {
+      /* ignore */
+    }
+    this.socket = null
+    this.connected = false
+  }
+
   connect() {
     return new Promise((resolve, reject) => {
       if (this.socket) {
@@ -178,31 +250,37 @@ class HostIpcClient {
     }
   }
 
+  rawInvoke(method, params = {}) {
+    return new Promise((resolve, reject) => {
+      if (!this.socket) {
+        reject(new Error('尚未连接主机'))
+        return
+      }
+      const id = this.nextId++
+      this.pending.set(id, { resolve, reject })
+      const payload = `${JSON.stringify({ id, method, params })}\n`
+      this.socket.write(payload, (err) => {
+        if (err) {
+          this.pending.delete(id)
+          reject(err)
+        }
+      })
+    })
+  }
+
   invoke(method, params = {}) {
-    return this.ensureConnected().then(
-      () =>
-        new Promise((resolve, reject) => {
-          if (!this.socket) {
-            reject(new Error('尚未连接主机'))
-            return
-          }
-          const id = this.nextId++
-          this.pending.set(id, { resolve, reject })
-          const payload = `${JSON.stringify({ id, method, params })}\n`
-          this.socket.write(payload, (err) => {
-            if (err) {
-              this.pending.delete(id)
-              reject(err)
-            }
-          })
-        }),
-    )
+    return this.ensureConnected().then(() => this.rawInvoke(method, params))
   }
 
   async getState() {
     try {
       const state = await this.invoke('getState')
-      return { ...state, connected: true }
+      return {
+        ...state,
+        connected: true,
+        appVersion: app.getVersion(),
+        clientAppVersion: state.clientAppVersion || '',
+      }
     } catch (err) {
       return {
         connected: false,
@@ -223,6 +301,7 @@ class HostIpcClient {
         usbTone: 'warn',
         deviceDetected: false,
         clientAppMissing: false,
+        clientAppVersion: '',
         canInstallApk: false,
         installInflight: false,
         multiDevice: false,
@@ -231,17 +310,13 @@ class HostIpcClient {
         settings: null,
         lastError: String(err.message || err),
         hostVersion: '',
+        appVersion: app.getVersion(),
       }
     }
   }
 
   dispose() {
-    try {
-      this.socket?.destroy()
-    } catch {
-      /* ignore */
-    }
-    this.socket = null
+    this.disconnectSocket()
     if (this.child && !this.child.killed) {
       try {
         this.child.kill()

@@ -61,13 +61,13 @@ export function ConnectionCard({ host, busy, onToggleShare, onInstallClient }: P
               disabled={busy || host.installInflight}
               onClick={onInstallClient}
               icon={<Download className="size-4" />}
-              className="h-9 px-4 text-sm"
+              className="min-w-[9.5rem]"
             >
               {host.installInflight
                 ? '安装中…'
                 : host.clientAppMissing
                   ? '安装到平板'
-                  : '更新平板客户端'}
+                  : '更新客户端'}
             </Button>
           </div>
         )}
