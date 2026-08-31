@@ -1,19 +1,17 @@
 package app.lighting.display
 
-import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.AttributeSet
-import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
-import android.graphics.SurfaceTexture
 import android.view.Surface
-import android.view.TextureView
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
@@ -23,10 +21,9 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
-class DisplayActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
+class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     companion object {
         const val EXTRA_HOST = "host"
         const val EXTRA_PORT = "port"
@@ -38,7 +35,7 @@ class DisplayActivity : AppCompatActivity(), TextureView.SurfaceTextureListener 
         private const val HUD_HIDE_MS = 2800L
     }
 
-    private lateinit var surface: TextureView
+    private lateinit var surface: SurfaceView
     private var videoSurface: Surface? = null
     private lateinit var status: TextView
     private lateinit var statusReason: TextView
@@ -102,13 +99,15 @@ class DisplayActivity : AppCompatActivity(), TextureView.SurfaceTextureListener 
         reconnectLayer.setOnClickListener(null)
         surface.isClickable = false
         surface.isFocusable = false
-        surface.surfaceTextureListener = this
+        // SurfaceView sits under the overlay; z-order media overlay keeps HUD/touch above.
+        surface.setZOrderMediaOverlay(false)
+        surface.holder.addCallback(this)
         touchLayer.bringToFront()
         reconnectLayer.bringToFront()
         statusBar.bringToFront()
         touch.attach(touchLayer, surface)
-        if (surface.isAvailable) {
-            bindVideoSurface(surface.surfaceTexture)
+        if (surface.holder.surface.isValid) {
+            bindVideoSurface(surface.holder.surface)
             startSession()
         }
     }
@@ -146,30 +145,26 @@ class DisplayActivity : AppCompatActivity(), TextureView.SurfaceTextureListener 
         return super.dispatchGenericMotionEvent(ev)
     }
 
-    override fun onSurfaceTextureAvailable(texture: SurfaceTexture, width: Int, height: Int) {
-        bindVideoSurface(texture)
+    override fun surfaceCreated(holder: SurfaceHolder) {
+        bindVideoSurface(holder.surface)
         startSession()
     }
 
-    override fun onSurfaceTextureSizeChanged(texture: SurfaceTexture, width: Int, height: Int) {
+    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
         if (streamW > 0 && streamH > 0) {
             letterboxSurface(streamW, streamH)
         }
     }
 
-    override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
+    override fun surfaceDestroyed(holder: SurfaceHolder) {
         stopSession()
-        videoSurface?.release()
+        // SurfaceHolder owns the surface — do not release it.
         videoSurface = null
-        return true
     }
 
-    override fun onSurfaceTextureUpdated(texture: SurfaceTexture) {}
-
-    private fun bindVideoSurface(texture: SurfaceTexture?) {
-        if (texture == null) return
-        videoSurface?.release()
-        videoSurface = Surface(texture)
+    private fun bindVideoSurface(surfaceObj: Surface?) {
+        if (surfaceObj == null || !surfaceObj.isValid) return
+        videoSurface = surfaceObj
     }
 
     override fun onDestroy() {
@@ -343,7 +338,7 @@ class DisplayActivity : AppCompatActivity(), TextureView.SurfaceTextureListener 
                                 cfg.width,
                                 cfg.height,
                                 data,
-                                (videoSurface ?: Surface(surface.surfaceTexture)),
+                                (videoSurface ?: surface.holder.surface),
                             )
                             configured = true
                             reachedVideo = true

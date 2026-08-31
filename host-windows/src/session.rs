@@ -640,22 +640,33 @@ fn start_live_encoder(
 ) -> Result<(encoder::EncoderSession, Vec<EncodedPacket>)> {
     let mut last_err: Option<anyhow::Error> = None;
     for enc in encoder::encoder_fallback_chain(&settings.codec) {
-        let session = match encoder::start_encoder(ffmpeg, display, settings, enc) {
-            Ok(s) => s,
-            Err(err) => {
-                tracing::warn!("encoder {enc} failed: {err:#}");
-                last_err = Some(err);
-                continue;
-            }
-        };
-        match annexb::recv_bootstrap(&session.rx, Duration::from_secs(3), hevc) {
-            Ok(bootstrap) => {
-                tracing::info!("using encoder {enc}");
-                return Ok((session, bootstrap));
-            }
-            Err(err) => {
-                tracing::warn!("{enc} died before codec-config + IDR: {err:#}");
-                last_err = Some(err);
+        let graphs = lighting_host::capture_graph::dda_capture_graphs(
+            display.dxgi_index,
+            settings.fps,
+            display.width,
+            display.height,
+            settings.width,
+            settings.height,
+            enc,
+        );
+        for graph in graphs {
+            let session = match encoder::start_encoder(ffmpeg, display, settings, enc, &graph) {
+                Ok(s) => s,
+                Err(err) => {
+                    tracing::warn!("encoder {enc} spawn failed: {err:#}");
+                    last_err = Some(err);
+                    continue;
+                }
+            };
+            match annexb::recv_bootstrap(&session.rx, Duration::from_secs(3), hevc) {
+                Ok(bootstrap) => {
+                    tracing::info!("using encoder {enc} graph={graph}");
+                    return Ok((session, bootstrap));
+                }
+                Err(err) => {
+                    tracing::warn!("{enc} graph died before codec-config + IDR ({graph}): {err:#}");
+                    last_err = Some(err);
+                }
             }
         }
     }

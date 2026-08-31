@@ -100,8 +100,9 @@ pub fn start_encoder(
     display: &DisplayInfo,
     settings: &EncodeSettings,
     encoder: &str,
+    capture_filter: &str,
 ) -> Result<EncoderSession> {
-    let args = build_args(display, settings, encoder);
+    let args = build_args(settings, encoder, capture_filter);
     tracing::info!("ffmpeg {}", args.join(" "));
 
     let mut cmd = Command::new(ffmpeg);
@@ -158,7 +159,7 @@ fn tail(s: &str, n: usize) -> String {
         .join("\n")
 }
 
-fn build_args(display: &DisplayInfo, settings: &EncodeSettings, encoder: &str) -> Vec<String> {
+fn build_args(settings: &EncodeSettings, encoder: &str, capture_filter: &str) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-hide_banner".into(),
         "-loglevel".into(),
@@ -175,14 +176,9 @@ fn build_args(display: &DisplayInfo, settings: &EncodeSettings, encoder: &str) -
         "2".into(),
     ];
 
-    // Desktop Duplication (low latency). output_idx matches DXGI order.
-    let filter = format!(
-        "ddagrab=output_idx={}:framerate={}:draw_mouse=1,hwdownload,format=bgra,format=yuv420p,scale={}:{}:flags=fast_bilinear",
-        display.dxgi_index, settings.fps, settings.width, settings.height
-    );
     args.extend([
         "-filter_complex".into(),
-        filter,
+        capture_filter.to_string(),
         "-an".into(),
         "-c:v".into(),
         encoder.to_string(),
@@ -246,9 +242,11 @@ pub fn start_encoder_gdigrab(
         "desktop".into(),
         "-an".into(),
         "-vf".into(),
-        format!(
-            "format=yuv420p,scale={}:{}:flags=fast_bilinear",
-            settings.width, settings.height
+        lighting_host::capture_graph::gdigrab_vf(
+            display.width,
+            display.height,
+            settings.width,
+            settings.height,
         ),
         "-c:v".into(),
         encoder.to_string(),
@@ -330,8 +328,9 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "0".into(),
             "-zerolatency".into(),
             "1".into(),
+            // Spatial AQ improves detail at the same bitrate with negligible latency cost.
             "-spatial-aq".into(),
-            "0".into(),
+            "1".into(),
             "-temporal-aq".into(),
             "0".into(),
         ]
