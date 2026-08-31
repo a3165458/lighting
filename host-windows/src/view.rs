@@ -9,6 +9,98 @@ use egui::{Color32, Margin, Pos2, Rect, Vec2};
 use crate::theme::{self, Glyph};
 use crate::ui_text::{self, Tone};
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ShareMode {
+    /// Stream the primary monitor (Windows “Duplicate”).
+    Mirror,
+    /// Stream a secondary / virtual monitor (Windows “Extend”). Default for 副屏.
+    #[default]
+    Extend,
+    /// Prefer the secondary only (Windows “Second screen only”).
+    External,
+}
+
+impl ShareMode {
+    pub const ALL: [ShareMode; 3] = [ShareMode::Mirror, ShareMode::Extend, ShareMode::External];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ShareMode::Mirror => "镜像主屏",
+            ShareMode::Extend => "扩展屏（推荐）",
+            ShareMode::External => "仅第二屏",
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            ShareMode::Mirror => "平板显示与电脑主屏相同内容（相当于 Win+P「复制」）。",
+            ShareMode::Extend => "平板作为独立扩展桌面（相当于 Win+P「扩展」）。需虚拟显示驱动或第二块显示器。",
+            ShareMode::External => "仅在第二屏显示桌面（相当于 Win+P「仅第二屏幕」）。",
+        }
+    }
+
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            ShareMode::Mirror => "mirror",
+            ShareMode::Extend => "extend",
+            ShareMode::External => "external",
+        }
+    }
+
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "mirror" | "clone" | "duplicate" => Some(ShareMode::Mirror),
+            "extend" | "extended" => Some(ShareMode::Extend),
+            "external" | "second" | "externalonly" => Some(ShareMode::External),
+            _ => None,
+        }
+    }
+
+    pub fn display_switch_arg(self) -> &'static str {
+        match self {
+            ShareMode::Mirror => "/clone",
+            ShareMode::Extend => "/extend",
+            ShareMode::External => "/external",
+        }
+    }
+}
+
+/// Heuristic for virtual / IDD monitors used as Lighting extend targets.
+pub fn looks_virtual_display(name: &str, friendly: &str) -> bool {
+    let blob = format!("{name} {friendly}").to_ascii_lowercase();
+    blob.contains("virtual")
+        || blob.contains("iddsample")
+        || blob.contains("idd ")
+        || blob.contains("usb-mobile-monitor")
+        || blob.contains("usb mobile")
+        || blob.contains("spacedesk")
+        || blob.contains("deskreen")
+        || blob.contains("sunshine")
+        || blob.contains("parsec")
+        || blob.contains("amyuni")
+        || blob.contains("usbmmidd")
+        || blob.contains("vdd")
+        || blob.contains("indirect display")
+}
+
+#[cfg(test)]
+mod share_mode_tests {
+    use super::*;
+
+    #[test]
+    fn share_mode_wire_roundtrip() {
+        for mode in ShareMode::ALL {
+            assert_eq!(ShareMode::from_wire(mode.as_wire()), Some(mode));
+        }
+    }
+
+    #[test]
+    fn virtual_display_heuristics() {
+        assert!(looks_virtual_display(r"\\.\DISPLAY2", "Virtual Display Driver"));
+        assert!(!looks_virtual_display(r"\\.\DISPLAY1", "Generic PnP Monitor"));
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum ResCap {
     #[default]
@@ -83,6 +175,7 @@ pub struct Snapshot {
 pub struct Settings {
     pub selected_display: usize,
     pub selected_device: usize,
+    pub share_mode: ShareMode,
     pub quality_pct: u32,
     pub fps: u32,
     pub bitrate_kbps: u32,
@@ -103,6 +196,7 @@ impl Default for Settings {
         Self {
             selected_display: 0,
             selected_device: 0,
+            share_mode: ShareMode::Extend,
             quality_pct: 100,
             fps: 60,
             bitrate_kbps: 25_000,
@@ -564,6 +658,43 @@ fn connection_card(
 
 fn display_card(ui: &mut egui::Ui, snap: &Snapshot, settings: &mut Settings) {
     theme::card(ui, "扩展屏设置", |ui| {
+        form_row(
+            ui,
+            Glyph::Share,
+            "投屏模式",
+            FORM_ROW_H,
+            FORM_TRAIL,
+            |ui, w| {
+                egui::ComboBox::from_id_salt("share_mode")
+                    .width(w.max(80.0))
+                    .selected_text(egui::RichText::new(settings.share_mode.label()).size(12.0))
+                    .show_ui(ui, |ui| {
+                        for mode in ShareMode::ALL {
+                            ui.selectable_value(&mut settings.share_mode, mode, mode.label());
+                        }
+                    });
+            },
+            |_| {},
+        );
+        ui.add_space(2.0);
+        ui.label(
+            egui::RichText::new(settings.share_mode.hint())
+                .size(11.0)
+                .color(theme::MUTED),
+        );
+        if matches!(settings.share_mode, ShareMode::Extend | ShareMode::External)
+            && !snap.displays.iter().any(|d| d.contains("副屏") || d.contains("虚拟"))
+        {
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(
+                    "未检测到第二块显示器。扩展模式请先安装虚拟显示驱动：winget install VirtualDrivers.Virtual-Display-Driver",
+                )
+                .size(11.0)
+                .color(theme::WARN),
+            );
+        }
+        ui.add_space(6.0);
         // Reserve the same trailing column as sliders so the dropdown's right
         // edge lines up with the slider tracks.
         form_row(

@@ -8,7 +8,7 @@ use lighting_host::host_ipc::{
     DeviceDto, DisplayDto, HostSettingsDto, HostStateDto, SettingsPatchDto,
 };
 use lighting_host::ui_text::{self, Tone};
-use lighting_host::view::{ResCap, Settings, Snapshot};
+use lighting_host::view::{ResCap, Settings, ShareMode, Snapshot};
 
 use crate::adb;
 use crate::displays;
@@ -109,14 +109,42 @@ impl HostService {
     }
 
     pub fn start_share(&self) -> Result<(), String> {
+        let mode = {
+            let g = self.inner.lock().expect("host lock");
+            if g.running {
+                return Ok(());
+            }
+            g.settings.share_mode
+        };
+
+        // Mirror Win+P topology before we pick a capture target.
+        if let Err(err) = displays::apply_project_mode(mode) {
+            tracing::warn!("DisplaySwitch failed ({err:#}); continuing with current layout");
+        }
+
         let mut g = self.inner.lock().expect("host lock");
-        if g.running {
-            return Ok(());
+        match displays::list_displays() {
+            Ok(list) => g.displays = list,
+            Err(err) => {
+                g.last_error = format!("{err:#}");
+                return Err(g.last_error.clone());
+            }
         }
         if g.displays.is_empty() {
             g.last_error = "没有可用显示器".into();
             return Err(g.last_error.clone());
         }
+        if matches!(mode, ShareMode::Extend | ShareMode::External) && !displays::has_secondary(&g.displays)
+        {
+            let msg = "扩展模式需要第二块显示器。请安装虚拟显示驱动后在 Windows 里设为「扩展这些显示器」：winget install VirtualDrivers.Virtual-Display-Driver。也可先改成「镜像主屏」。".to_string();
+            g.last_error = msg.clone();
+            g.notice = Some((Tone::Warn, msg.clone()));
+            return Err(msg);
+        }
+        if let Some(idx) = displays::pick_display_index(&g.displays, mode) {
+            g.settings.selected_display = idx;
+        }
+
         let quality = (g.settings.quality_pct.clamp(40, 100) as f32) / 100.0;
         let (match_device, scale, max_width, max_height) = match g.settings.res_cap {
             ResCap::Device => (true, quality, 3840, 2560),
@@ -217,6 +245,14 @@ impl HostService {
         }
         if let Some(v) = patch.prefer_hevc {
             g.settings.prefer_hevc = v;
+        }
+        if let Some(v) = patch.share_mode {
+            if let Some(mode) = ShareMode::from_wire(&v) {
+                g.settings.share_mode = mode;
+                if let Some(idx) = displays::pick_display_index(&g.displays, mode) {
+                    g.settings.selected_display = idx;
+                }
+            }
         }
         if let Some(v) = patch.res_cap {
             if let Some(cap) = ResCap::from_wire(&v) {
@@ -336,10 +372,11 @@ impl HostService {
                 .enumerate()
                 .map(|(i, d)| DisplayDto {
                     id: i.to_string(),
-                    label: ui_text::display_choice_label(i, d.primary, d.width, d.height),
+                    label: d.label(),
                     primary: d.primary,
                     width: d.width,
                     height: d.height,
+                    virtual_display: d.is_virtual,
                 })
                 .collect(),
             devices: g
@@ -358,6 +395,7 @@ impl HostService {
             settings: HostSettingsDto {
                 selected_display: g.settings.selected_display,
                 selected_device: g.settings.selected_device,
+                share_mode: g.settings.share_mode.as_wire().into(),
                 quality_pct: g.settings.quality_pct,
                 fps: g.settings.fps,
                 bitrate_kbps: g.settings.bitrate_kbps,
@@ -559,12 +597,7 @@ fn ui_snapshot_locked(g: &HostInner, status: &SessionStatus) -> lighting_host::v
         client_app_missing,
         can_install_apk: g.apk_available && !g.install_inflight,
         install_inflight: g.install_inflight,
-        displays: g
-            .displays
-            .iter()
-            .enumerate()
-            .map(|(i, d)| ui_text::display_choice_label(i, d.primary, d.width, d.height))
-            .collect(),
+        displays: g.displays.iter().map(|d| d.label()).collect(),
         devices: g.devices.iter().map(|d| d.label()).collect(),
         multi_device: ready > 1,
         adb_path: g.adb_path.clone(),

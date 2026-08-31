@@ -88,6 +88,7 @@ export default function App() {
               ...(patch.selectedDisplay !== undefined
                 ? { selectedDisplay: patch.selectedDisplay }
                 : {}),
+              ...(patch.shareMode !== undefined ? { shareMode: patch.shareMode } : {}),
               ...(patch.qualityPct !== undefined ? { qualityPct: patch.qualityPct } : {}),
               ...(patch.fps !== undefined ? { fps: patch.fps } : {}),
               ...(patch.bitrateKbps !== undefined ? { bitrateKbps: patch.bitrateKbps } : {}),
