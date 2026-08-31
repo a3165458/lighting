@@ -31,10 +31,10 @@ pub fn smooth_latency_ms(prev: u32, sample: u32) -> u32 {
     }
 }
 
-/// ~2-frame VBV so rate control does not hold frames for half a second of bits.
+/// ~4-frame VBV: low latency without the quality swings of a 1–2 frame budget.
 pub fn vbv_bufsize_kb(bitrate_kbps: u32, fps: u32) -> u32 {
     let fps = fps.max(24);
-    ((bitrate_kbps * 2) / fps).clamp(800, bitrate_kbps.max(800))
+    ((bitrate_kbps * 4) / fps).clamp(1_200, bitrate_kbps.max(1_200))
 }
 
 /// I/O / pipe failures from a dropped tablet must not tear down the share.
@@ -79,9 +79,10 @@ mod tests {
 
     #[test]
     #[test]
-    fn vbv_targets_about_two_frames() {
-        assert_eq!(vbv_bufsize_kb(25_000, 60), 833);
-        assert!(vbv_bufsize_kb(8_000, 120) >= 800);
+    fn vbv_targets_about_four_frames() {
+        // 25 Mbps @ 60fps → ~1666 kb for 4 frames
+        assert_eq!(vbv_bufsize_kb(25_000, 60), 1_666);
+        assert!(vbv_bufsize_kb(8_000, 120) >= 1_200);
         assert!(vbv_bufsize_kb(40_000, 30) <= 40_000);
         // Old formula used bitrate/2; keep the new budget far below that.
         assert!(vbv_bufsize_kb(25_000, 60) < 25_000 / 2);

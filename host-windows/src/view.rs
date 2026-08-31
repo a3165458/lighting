@@ -15,16 +15,37 @@ pub enum ResCap {
     Device,
     Fhd,
     Uhd2k,
+    Uhd4k,
 }
 
 impl ResCap {
-    pub const ALL: [ResCap; 3] = [ResCap::Device, ResCap::Fhd, ResCap::Uhd2k];
+    pub const ALL: [ResCap; 4] = [ResCap::Device, ResCap::Fhd, ResCap::Uhd2k, ResCap::Uhd4k];
 
     pub fn label(self) -> &'static str {
         match self {
             ResCap::Device => "跟随平板",
             ResCap::Fhd => "最高 1080p",
             ResCap::Uhd2k => "最高 2K",
+            ResCap::Uhd4k => "最高 4K",
+        }
+    }
+
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            ResCap::Device => "device",
+            ResCap::Fhd => "fhd",
+            ResCap::Uhd2k => "uhd2k",
+            ResCap::Uhd4k => "uhd4k",
+        }
+    }
+
+    pub fn from_wire(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "device" => Some(ResCap::Device),
+            "fhd" | "1080p" => Some(ResCap::Fhd),
+            "uhd2k" | "2k" => Some(ResCap::Uhd2k),
+            "uhd4k" | "4k" => Some(ResCap::Uhd4k),
+            _ => None,
         }
     }
 }

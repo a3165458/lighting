@@ -1,4 +1,5 @@
-import { Gauge, Monitor, Volume2, Waves } from 'lucide-react'
+import { Download, Gauge, Monitor, Sparkles, Volume2, Waves } from 'lucide-react'
+import { Button } from '@/components/ui/Button'
 import { Dropdown } from '@/components/ui/Dropdown'
 import { SettingRow } from '@/components/ui/SettingRow'
 import { SliderControl } from '@/components/ui/SliderControl'
@@ -8,10 +9,25 @@ import type { HostSettingsPatch, HostState } from '@/lib/host'
 type Props = {
   host: HostState
   onChange: (patch: HostSettingsPatch) => void
+  onInstallClient?: () => void
+  busy?: boolean
   disabled?: boolean
 }
 
-export function DisplaySettings({ host, onChange, disabled }: Props) {
+const RES_OPTIONS = [
+  { id: 'device', label: '跟随平板（推荐）' },
+  { id: 'fhd', label: '最高 1080p' },
+  { id: 'uhd2k', label: '最高 2K' },
+  { id: 'uhd4k', label: '最高 4K' },
+]
+
+export function DisplaySettings({
+  host,
+  onChange,
+  onInstallClient,
+  busy,
+  disabled,
+}: Props) {
   const settings = host.settings
   const displays = host.displays.map((d) => ({ id: d.id, label: d.label }))
   const displayId = String(settings?.selectedDisplay ?? 0)
@@ -19,6 +35,8 @@ export function DisplaySettings({ host, onChange, disabled }: Props) {
   const fps = settings?.fps ?? 60
   const bitrate = settings?.bitrateKbps ?? 25000
   const audioSync = settings?.sendAudio ?? true
+  const preferHevc = settings?.preferHevc ?? false
+  const resCap = settings?.resCap ?? 'device'
 
   return (
     <section className="glass-card p-[var(--space-card-pad)]" aria-label="扩展屏设置">
@@ -45,6 +63,22 @@ export function DisplaySettings({ host, onChange, disabled }: Props) {
                 onChange={(id) => onChange({ selectedDisplay: Number(id) })}
                 disabled={disabled || displays.length === 0}
                 ariaLabel="选择显示器"
+              />
+            </div>
+          }
+        />
+
+        <SettingRow
+          icon={Monitor}
+          label="分辨率上限"
+          control={
+            <div className="w-[280px] max-w-full">
+              <Dropdown
+                value={resCap}
+                options={RES_OPTIONS}
+                onChange={(id) => onChange({ resCap: id })}
+                disabled={disabled}
+                ariaLabel="分辨率上限"
               />
             </div>
           }
@@ -108,6 +142,19 @@ export function DisplaySettings({ host, onChange, disabled }: Props) {
         />
 
         <SettingRow
+          icon={Sparkles}
+          label="优先 HEVC"
+          control={
+            <ToggleSwitch
+              checked={preferHevc}
+              onChange={(next) => onChange({ preferHevc: next })}
+              disabled={disabled}
+              ariaLabel="优先 HEVC"
+            />
+          }
+        />
+
+        <SettingRow
           icon={Volume2}
           label="系统声音同步"
           control={
@@ -119,6 +166,28 @@ export function DisplaySettings({ host, onChange, disabled }: Props) {
             />
           }
         />
+
+        {onInstallClient && (
+          <SettingRow
+            icon={Download}
+            label="客户端 APK"
+            control={
+              <Button
+                variant="outline"
+                disabled={busy || !host.connected || host.installInflight || !host.canInstallApk}
+                onClick={onInstallClient}
+                icon={<Download className="size-4" />}
+                className="h-9 px-4 text-sm"
+              >
+                {host.installInflight
+                  ? '安装中…'
+                  : host.clientAppMissing
+                    ? '安装到平板'
+                    : '重新安装 / 更新'}
+              </Button>
+            }
+          />
+        )}
       </div>
     </section>
   )
