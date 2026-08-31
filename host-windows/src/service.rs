@@ -122,7 +122,7 @@ impl HostService {
                 let mut g = self.inner.lock().expect("host lock");
                 g.notice = Some((
                     Tone::Info,
-                    "正在创建/激活虚拟扩展屏…".into(),
+                    "正在启用虚拟扩展屏（可能弹出管理员确认）…".into(),
                 ));
                 g.last_error.clear();
             }
