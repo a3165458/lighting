@@ -78,12 +78,23 @@ mod tests {
     }
 
     #[test]
+    #[test]
     fn vbv_targets_about_two_frames() {
         assert_eq!(vbv_bufsize_kb(25_000, 60), 833);
         assert!(vbv_bufsize_kb(8_000, 120) >= 800);
         assert!(vbv_bufsize_kb(40_000, 30) <= 40_000);
         // Old formula used bitrate/2; keep the new budget far below that.
         assert!(vbv_bufsize_kb(25_000, 60) < 25_000 / 2);
+    }
+
+    #[test]
+    fn quality_baseline_defaults_are_not_reduced() {
+        // Guardrail for the latency goal: do not "win" latency by cutting
+        // the UI defaults users start from (100% / 60fps / 25Mbps).
+        let defaults = crate::view::Settings::default();
+        assert_eq!(defaults.quality_pct, 100);
+        assert_eq!(defaults.fps, 60);
+        assert_eq!(defaults.bitrate_kbps, 25_000);
     }
 
     #[test]
