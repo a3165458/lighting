@@ -8,7 +8,7 @@ use lighting_host::host_ipc::{
     DeviceDto, DisplayDto, HostSettingsDto, HostStateDto, SettingsPatchDto,
 };
 use lighting_host::ui_text::{self, Tone};
-use lighting_host::view::{ResCap, Settings};
+use lighting_host::view::{ResCap, Settings, Snapshot};
 
 use crate::adb;
 use crate::displays;
@@ -168,7 +168,7 @@ impl HostService {
                 phase: "启动中".into(),
                 ..Default::default()
             };
-        }
+        };
         let status = g.status.clone();
         let stop = g.stop.clone();
         let controls = g.controls.clone();
@@ -187,7 +187,7 @@ impl HostService {
             s.bitrate_kbps = 0;
             s.frames = 0;
             s.detail.clear();
-        }
+        };
     }
 
     pub fn patch_settings(&self, patch: SettingsPatchDto) {
@@ -362,8 +362,7 @@ impl HostService {
     }
 
     /// egui bridge: mutate settings + render snapshot pieces.
-    pub fn with_ui<R>(&self, f: impl FnOnce(&mut Settings, view::Snapshot) -> R) -> R {
-        use lighting_host::view;
+    pub fn with_ui<R>(&self, f: impl FnOnce(&mut Settings, Snapshot) -> R) -> R {
         let mut g = self.inner.lock().expect("host lock");
         Self::apply_pending_devices_locked(&self.rt, &mut g);
         let status = g.status.lock().ok().map(|s| s.clone()).unwrap_or_default();
@@ -373,9 +372,8 @@ impl HostService {
 
     pub fn set_running_flag_from_status(&self) {
         let mut g = self.inner.lock().expect("host lock");
-        if let Ok(s) = g.status.lock() {
-            g.running = s.running;
-        }
+        let running = g.status.lock().ok().map(|s| s.running).unwrap_or(false);
+        g.running = running;
     }
 
     fn apply_pending_devices_locked(rt: &tokio::runtime::Runtime, g: &mut HostInner) {
@@ -468,6 +466,7 @@ fn tone_str(tone: Tone) -> &'static str {
         Tone::Warn => "warn",
         Tone::Bad => "bad",
         Tone::Info => "info",
+        Tone::Muted => "muted",
     }
 }
 
