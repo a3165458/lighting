@@ -8,8 +8,8 @@ use std::time::Duration;
 use windows::Win32::Foundation::{BOOL, LPARAM, RECT};
 use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1};
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, DISPLAY_DEVICEW,
-    ENUM_DISPLAY_DEVICES_FLAGS, HDC, HMONITOR, MONITORINFO,
+    EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, DISPLAY_DEVICEW, HDC, HMONITOR,
+    MONITORINFO,
 };
 use windows::Win32::UI::WindowsAndMessaging::MONITORINFOF_PRIMARY;
 use windows::core::PCWSTR;
@@ -154,9 +154,8 @@ fn device_string_for(device_name: &str) -> Option<String> {
             cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
             ..Default::default()
         };
-        if EnumDisplayDevicesW(PCWSTR(wide.as_ptr()), 0, &mut dd, ENUM_DISPLAY_DEVICES_FLAGS(0))
-            .as_bool()
-        {
+        // windows 0.58 takes a raw DWORD for dwFlags (not ENUM_DISPLAY_DEVICES_FLAGS).
+        if EnumDisplayDevicesW(PCWSTR(wide.as_ptr()), 0, &mut dd, 0).as_bool() {
             let s = wchar_to_string(&dd.DeviceString);
             if !s.is_empty() {
                 return Some(s);
@@ -167,9 +166,7 @@ fn device_string_for(device_name: &str) -> Option<String> {
             ..Default::default()
         };
         // 0x1 = EDD_GET_DEVICE_INTERFACE_NAME
-        if EnumDisplayDevicesW(PCWSTR(wide.as_ptr()), 0, &mut dd2, ENUM_DISPLAY_DEVICES_FLAGS(0x1))
-            .as_bool()
-        {
+        if EnumDisplayDevicesW(PCWSTR(wide.as_ptr()), 0, &mut dd2, 0x1).as_bool() {
             let s = wchar_to_string(&dd2.DeviceString);
             if !s.is_empty() {
                 return Some(s);
