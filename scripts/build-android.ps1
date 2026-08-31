@@ -22,7 +22,8 @@ if (-not $sdk) {
 }
 
 $localProps = Join-Path $AndroidDir "local.properties"
-"sdk.dir=$($sdk.Replace('\','\\'))" | Set-Content -Path $localProps -Encoding UTF8
+$sdkPath = $sdk -replace '\\', '/'
+[System.IO.File]::WriteAllText($localProps, "sdk.dir=$sdkPath`n")
 
 Write-Host "==> Gradle assembleDebug"
 Push-Location $AndroidDir

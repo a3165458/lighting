@@ -39,7 +39,8 @@ jobs:
       - name: Build Android APK
         shell: pwsh
         run: |
-          "sdk.dir=$env:ANDROID_HOME" | Out-File -Encoding utf8 android/local.properties
+          $sdkPath = $env:ANDROID_HOME -replace '\\', '/'
+          [System.IO.File]::WriteAllText("$PWD/android/local.properties", "sdk.dir=$sdkPath`n")
           cd android
           .\gradlew.bat assembleDebug --no-daemon
           New-Item -ItemType Directory -Force -Path ../host-ui/resources | Out-Null
