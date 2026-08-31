@@ -3,6 +3,7 @@ import { AppShell } from '@/components/layout/AppShell'
 import { Hero } from '@/components/sections/Hero'
 import { BootstrapBanner } from '@/components/sections/BootstrapBanner'
 import { ConnectionCard } from '@/components/sections/ConnectionCard'
+import { ClientInstallPanel } from '@/components/sections/ClientInstallPanel'
 import { DisplaySettings } from '@/components/sections/DisplaySettings'
 import { InteractionSettings } from '@/components/sections/InteractionSettings'
 import { PerformancePanel } from '@/components/sections/PerformancePanel'
@@ -91,6 +92,8 @@ export default function App() {
               ...(patch.fps !== undefined ? { fps: patch.fps } : {}),
               ...(patch.bitrateKbps !== undefined ? { bitrateKbps: patch.bitrateKbps } : {}),
               ...(patch.sendAudio !== undefined ? { sendAudio: patch.sendAudio } : {}),
+              ...(patch.preferHevc !== undefined ? { preferHevc: patch.preferHevc } : {}),
+              ...(patch.resCap !== undefined ? { resCap: patch.resCap } : {}),
               ...(patch.touchRelay !== undefined ? { touchRelay: patch.touchRelay } : {}),
               ...(patch.keyboardRelay !== undefined
                 ? { keyboardRelay: patch.keyboardRelay }
@@ -171,6 +174,8 @@ export default function App() {
               <DisplaySettings
                 host={host}
                 onChange={(patch) => void patchSettings(patch)}
+                onInstallClient={() => void installClient()}
+                busy={busy}
                 disabled={!host.connected || host.sharing}
               />
               <InteractionSettings
@@ -185,14 +190,28 @@ export default function App() {
       )}
 
       {nav === 'settings' && (
-        <Placeholder
-          title="通用设置"
-          body={
-            host.connected
-              ? `已连接主机 v${host.hostVersion || '—'}。首次启动会自动准备 adb / ffmpeg。`
-              : '正在连接本地主机，或首次启动正在下载运行组件…'
-          }
-        />
+        <div className="flex flex-col gap-[var(--space-card-gap)]">
+          <ClientInstallPanel
+            host={host}
+            busy={busy}
+            onInstallClient={() => void installClient()}
+          />
+          <DisplaySettings
+            host={host}
+            onChange={(patch) => void patchSettings(patch)}
+            onInstallClient={() => void installClient()}
+            busy={busy}
+            disabled={!host.connected || host.sharing}
+          />
+          <section className="glass-card p-6">
+            <h2 className="text-lg font-bold text-text">运行环境</h2>
+            <p className="mt-2 text-md text-text-secondary">
+              {host.connected
+                ? `已连接主机 v${host.hostVersion || '—'}。首次启动会自动准备 adb / ffmpeg。`
+                : '正在连接本地主机，或首次启动正在下载运行组件…'}
+            </p>
+          </section>
+        </div>
       )}
       {nav === 'shortcuts' && (
         <Placeholder title="快捷键" body="自定义开始 / 停止共享、画质切换等快捷键。" />

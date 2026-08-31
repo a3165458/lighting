@@ -373,10 +373,12 @@ async fn handle_client(
 
     let fps = adapted_fps(req.fps, hello.max_fps, dec_fps, hw);
     let auto_br = auto_bitrate(width, height, fps);
+    // Honor the user's bitrate for hardware decode — auto_br used to silently
+    // cap 1080p@60 to ~15 Mbps even when the slider said 25 Mbps.
     let bitrate_kbps = if hw {
-        auto_br.min(req.bitrate_kbps).max(4_000)
+        req.bitrate_kbps.clamp(4_000, 80_000).max(auto_br.min(req.bitrate_kbps))
     } else {
-        auto_br.min(req.bitrate_kbps).min(12_000).max(4_000)
+        req.bitrate_kbps.min(12_000).clamp(4_000, 12_000)
     };
     let audio_enabled = req.send_audio;
     let cfg = StreamConfig {
@@ -741,23 +743,41 @@ fn pick_codec(hello: &Hello, prefer_hevc: bool) -> String {
         0
     };
     let hevc_score = if hevc_ok {
-        hello
-            .hevc_limit
-            .as_ref()
-            .map(|l| {
-                (l.width as u64)
-                    .saturating_mul(l.height as u64)
-                    .saturating_mul(l.fps.max(24) as u64)
-            })
-            .unwrap_or(0)
+        codec_score(
+            hello.hevc_limit.as_ref(),
+            hello.decoder_max_width,
+            hello.decoder_max_height,
+            hello.decoder_max_fps,
+        )
     } else {
         0
     };
+    let screen_area = (hello.screen_width.max(1) as u64).saturating_mul(hello.screen_height.max(1) as u64);
+    let avc_area = hello
+        .avc_limit
+        .as_ref()
+        .map(|l| (l.width.max(1) as u64).saturating_mul(l.height.max(1) as u64))
+        .unwrap_or_else(|| {
+            (hello.decoder_max_width.max(1) as u64).saturating_mul(hello.decoder_max_height.max(1) as u64)
+        });
+    let hevc_area = hello
+        .hevc_limit
+        .as_ref()
+        .map(|l| (l.width.max(1) as u64).saturating_mul(l.height.max(1) as u64))
+        .unwrap_or(0);
+
     // Treble/GSI HEVC is often broken or much slower; stay on AVC unless HEVC is clearly larger.
     if hello.gsi && avc_ok && hevc_score < avc_score.saturating_mul(2) {
         return "avc".into();
     }
+    // Tablet panel larger than AVC hard-decode ceiling → pick HEVC when it unlocks more pixels.
+    if hevc_ok && avc_ok && screen_area > avc_area && hevc_area > avc_area {
+        return "hevc".into();
+    }
     if prefer_hevc && hevc_ok && hevc_score >= avc_score {
+        return "hevc".into();
+    }
+    if hevc_ok && !avc_ok {
         return "hevc".into();
     }
     if avc_ok {
@@ -933,7 +953,35 @@ mod tests {
             name: "c2.mtk.hevc.decoder".into(),
         });
         assert_eq!(pick_codec(&h, true), "hevc");
+        // Screen 2000×1200 exceeds AVC 1920×1088 → auto HEVC even without prefer flag.
+        assert_eq!(pick_codec(&h, false), "hevc");
+    }
+
+    #[test]
+    fn hevc_not_forced_when_screen_fits_avc() {
+        let mut h = qcom_gsi();
+        h.gsi = false;
+        h.screen_width = 1920;
+        h.screen_height = 1080;
+        h.hevc_limit = Some(CodecLimit {
+            width: 3840,
+            height: 2160,
+            fps: 60,
+            hw: true,
+            name: "c2.qti.hevc.decoder".into(),
+        });
         assert_eq!(pick_codec(&h, false), "avc");
+        assert_eq!(pick_codec(&h, true), "hevc");
+    }
+
+    #[test]
+    fn user_bitrate_not_silently_capped_on_hw() {
+        // Historical bug: auto_bitrate(1920×1080@60) ≈ 15 Mbps crushed a 25 Mbps slider.
+        let auto = auto_bitrate(1920, 1080, 60);
+        assert!(auto < 25_000);
+        let user = 25_000u32;
+        let hw_br = user.clamp(4_000, 80_000).max(auto.min(user));
+        assert_eq!(hw_br, 25_000);
     }
 
     #[test]

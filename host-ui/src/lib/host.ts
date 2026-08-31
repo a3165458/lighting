@@ -8,6 +8,7 @@ export type HostSettings = {
   bitrateKbps: number
   sendAudio: boolean
   preferHevc: boolean
+  resCap: string
   touchRelay: boolean
   keyboardRelay: boolean
   bindHost: string
@@ -78,6 +79,7 @@ export type HostSettingsPatch = Partial<{
   bitrateKbps: number
   sendAudio: boolean
   preferHevc: boolean
+  resCap: string
   touchRelay: boolean
   keyboardRelay: boolean
   bindHost: string

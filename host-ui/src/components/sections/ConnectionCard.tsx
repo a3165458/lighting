@@ -54,7 +54,7 @@ export function ConnectionCard({ host, busy, onToggleShare, onInstallClient }: P
         {host.lastError && (
           <p className="mt-1 text-sm text-danger">{host.lastError}</p>
         )}
-        {host.clientAppMissing && host.canInstallApk && (
+        {host.canInstallApk && (
           <div className="mt-3">
             <Button
               variant="outline"
@@ -63,7 +63,11 @@ export function ConnectionCard({ host, busy, onToggleShare, onInstallClient }: P
               icon={<Download className="size-4" />}
               className="h-9 px-4 text-sm"
             >
-              {host.installInflight ? '安装中…' : '安装到平板'}
+              {host.installInflight
+                ? '安装中…'
+                : host.clientAppMissing
+                  ? '安装到平板'
+                  : '更新平板客户端'}
             </Button>
           </div>
         )}

@@ -122,6 +122,7 @@ impl HostService {
             ResCap::Device => (true, quality, 3840, 2560),
             ResCap::Fhd => (false, 1.0, scaled(1920, quality), scaled(1080, quality)),
             ResCap::Uhd2k => (false, 1.0, scaled(2560, quality), scaled(1440, quality)),
+            ResCap::Uhd4k => (false, 1.0, scaled(3840, quality), scaled(2160, quality)),
         };
         let serial = g
             .devices
@@ -216,6 +217,11 @@ impl HostService {
         }
         if let Some(v) = patch.prefer_hevc {
             g.settings.prefer_hevc = v;
+        }
+        if let Some(v) = patch.res_cap {
+            if let Some(cap) = ResCap::from_wire(&v) {
+                g.settings.res_cap = cap;
+            }
         }
         if let Some(v) = patch.touch_relay {
             g.settings.touch_relay = v;
@@ -351,6 +357,7 @@ impl HostService {
                 bitrate_kbps: g.settings.bitrate_kbps,
                 send_audio: g.settings.send_audio,
                 prefer_hevc: g.settings.prefer_hevc,
+                res_cap: g.settings.res_cap.as_wire().into(),
                 touch_relay: g.settings.touch_relay,
                 keyboard_relay: g.settings.keyboard_relay,
                 bind_host: g.settings.bind_host.clone(),

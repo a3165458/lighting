@@ -178,12 +178,22 @@ data class DeviceCaps(
             val align = maxOf(caps.widthAlignment, caps.heightAlignment, 2)
             var fps = 30
             try {
-                val probeW = maxW.coerceAtMost(1920)
-                val probeH = maxH.coerceAtMost(1080)
-                if (caps.isSizeSupported(probeW, probeH)) {
-                    fps = caps.getSupportedFrameRatesFor(probeW, probeH).upper.toInt()
-                } else if (caps.isSizeSupported(probeH, probeW)) {
-                    fps = caps.getSupportedFrameRatesFor(probeH, probeW).upper.toInt()
+                // Probe at the codec's real ceiling and common tablet sizes — not only 1080p.
+                val probes = linkedSetOf(
+                    maxW to maxH,
+                    maxH to maxW,
+                    maxW.coerceAtMost(2560) to maxH.coerceAtMost(1600),
+                    maxW.coerceAtMost(2560) to maxH.coerceAtMost(1440),
+                    maxW.coerceAtMost(1920) to maxH.coerceAtMost(1080),
+                )
+                for ((pw, ph) in probes) {
+                    if (pw < 128 || ph < 128) continue
+                    try {
+                        if (caps.isSizeSupported(pw, ph)) {
+                            fps = maxOf(fps, caps.getSupportedFrameRatesFor(pw, ph).upper.toInt())
+                        }
+                    } catch (_: Throwable) {
+                    }
                 }
             } catch (_: Throwable) {
             }
