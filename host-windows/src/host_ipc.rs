@@ -29,6 +29,7 @@ pub struct RpcResponse {
 pub struct HostSettingsDto {
     pub selected_display: usize,
     pub selected_device: usize,
+    pub share_mode: String,
     pub quality_pct: u32,
     pub fps: u32,
     pub bitrate_kbps: u32,
@@ -81,6 +82,8 @@ pub struct DisplayDto {
     pub primary: bool,
     pub width: u32,
     pub height: u32,
+    #[serde(default)]
+    pub virtual_display: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +102,7 @@ pub struct DeviceDto {
 pub struct SettingsPatchDto {
     pub selected_display: Option<usize>,
     pub selected_device: Option<usize>,
+    pub share_mode: Option<String>,
     pub quality_pct: Option<u32>,
     pub fps: Option<u32>,
     pub bitrate_kbps: Option<u32>,

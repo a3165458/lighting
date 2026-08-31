@@ -1,8 +1,11 @@
 import type { LightingDesktopApi } from '@/lib/desktop'
 
+export type ShareMode = 'mirror' | 'extend' | 'external'
+
 export type HostSettings = {
   selectedDisplay: number
   selectedDevice: number
+  shareMode: ShareMode | string
   qualityPct: number
   fps: number
   bitrateKbps: number
@@ -21,6 +24,7 @@ export type HostDisplay = {
   primary: boolean
   width: number
   height: number
+  virtualDisplay?: boolean
 }
 
 export type HostDevice = {
@@ -77,6 +81,7 @@ export type HostState = {
 export type HostSettingsPatch = Partial<{
   selectedDisplay: number
   selectedDevice: number
+  shareMode: ShareMode | string
   qualityPct: number
   fps: number
   bitrateKbps: number
@@ -112,6 +117,24 @@ declare global {
 export function hasHostBridge(): boolean {
   return typeof window !== 'undefined' && Boolean(window.lightingHost)
 }
+
+export const SHARE_MODE_OPTIONS = [
+  {
+    id: 'mirror',
+    label: '镜像主屏',
+    hint: '平板与电脑主屏显示相同内容（相当于 Win+P「复制」）。无需虚拟屏。',
+  },
+  {
+    id: 'extend',
+    label: '扩展屏（推荐）',
+    hint: '平板作为独立扩展桌面（相当于 Win+P「扩展」）。需虚拟显示驱动或第二块显示器。',
+  },
+  {
+    id: 'external',
+    label: '仅第二屏',
+    hint: '仅在第二屏显示桌面（相当于 Win+P「仅第二屏幕」）。需虚拟显示驱动或第二块显示器。',
+  },
+] as const
 
 export const DISCONNECTED_STATE: HostState = {
   connected: false,
