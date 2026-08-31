@@ -347,26 +347,20 @@ async fn handle_client(
 
     let codec = pick_codec(&hello, req.prefer_hevc);
     let (dec_w, dec_h, dec_fps, hw) = codec_limit(&hello, &codec);
-    let (mut width, mut height) =
-        if req.match_device && hello.screen_width > 0 && hello.screen_height > 0 {
-            fit_to_device(
-                display.width,
-                display.height,
-                hello.screen_width,
-                hello.screen_height,
-                req.scale,
-                dec_w,
-                dec_h,
-            )
-        } else {
-            let (w, h) =
-                fit_resolution(display.width, display.height, req.max_width, req.max_height);
-            if dec_w > 0 && dec_h > 0 {
-                fit_resolution(w, h, dec_w, dec_h)
-            } else {
-                (w, h)
-            }
-        };
+    // Always clamp to the tablet panel when Hello reports it — a 2K desktop
+    // must not stream 2K to a 1080p/1200p pad just because ResCap is「最高 2K」.
+    let scale = if req.match_device { req.scale } else { 1.0 };
+    let (mut width, mut height) = lighting_host::session_policy::compute_encode_size(
+        display.width,
+        display.height,
+        hello.screen_width,
+        hello.screen_height,
+        req.max_width,
+        req.max_height,
+        scale,
+        dec_w,
+        dec_h,
+    );
     let align = hello.alignment.max(2);
     width = (width / align * align).max(align);
     height = (height / align * align).max(align);
@@ -822,36 +816,17 @@ fn fit_to_device(
     dec_w: u32,
     dec_h: u32,
 ) -> (u32, u32) {
-    let (mut box_w, mut box_h) = if src_w >= src_h {
-        if dev_w >= dev_h {
-            (dev_w, dev_h)
-        } else {
-            (dev_h, dev_w)
-        }
-    } else if dev_h >= dev_w {
-        (dev_w, dev_h)
-    } else {
-        (dev_h, dev_w)
-    };
-    if dec_w > 0 && dec_h > 0 {
-        let (lim_w, lim_h) = if box_w >= box_h {
-            if dec_w >= dec_h {
-                (dec_w, dec_h)
-            } else {
-                (dec_h, dec_w)
-            }
-        } else if dec_h >= dec_w {
-            (dec_w, dec_h)
-        } else {
-            (dec_h, dec_w)
-        };
-        box_w = box_w.min(lim_w);
-        box_h = box_h.min(lim_h);
-    }
-    let scale = (scale as f64).clamp(0.35, 1.0);
-    let cap_w = ((box_w as f64 * scale) as u32).max(16);
-    let cap_h = ((box_h as f64 * scale) as u32).max(16);
-    fit_resolution(src_w, src_h, cap_w, cap_h)
+    lighting_host::session_policy::compute_encode_size(
+        src_w,
+        src_h,
+        dev_w,
+        dev_h,
+        u32::MAX / 4,
+        u32::MAX / 4,
+        scale,
+        dec_w,
+        dec_h,
+    )
 }
 
 fn auto_bitrate(width: u32, height: u32, fps: u32) -> u32 {
@@ -861,14 +836,7 @@ fn auto_bitrate(width: u32, height: u32, fps: u32) -> u32 {
 }
 
 fn fit_resolution(src_w: u32, src_h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
-    let mut w = src_w.max(2);
-    let mut h = src_h.max(2);
-    if w > max_w || h > max_h {
-        let scale = (max_w as f64 / w as f64).min(max_h as f64 / h as f64);
-        w = ((w as f64 * scale) as u32) & !1;
-        h = ((h as f64 * scale) as u32) & !1;
-    }
-    (w.max(2), h.max(2))
+    lighting_host::session_policy::fit_resolution(src_w, src_h, max_w, max_h)
 }
 
 #[cfg(test)]

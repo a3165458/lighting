@@ -33,9 +33,9 @@ impl ShareMode {
 
     pub fn hint(self) -> &'static str {
         match self {
-            ShareMode::Mirror => "平板显示与电脑主屏相同内容（相当于 Win+P「复制」）。",
-            ShareMode::Extend => "平板作为独立扩展桌面（相当于 Win+P「扩展」）。需虚拟显示驱动或第二块显示器。",
-            ShareMode::External => "仅在第二屏显示桌面（相当于 Win+P「仅第二屏幕」）。",
+            ShareMode::Mirror => "平板与电脑主屏同画面，并自动缩放到平板分辨率。",
+            ShareMode::Extend => "平板作为独立扩展桌面。首次使用会自动准备虚拟屏（可能弹出一次管理员确认）。之后也可用 Win+P「扩展」。",
+            ShareMode::External => "桌面只显示在扩展屏/平板上（相当于 Win+P「仅第二屏幕」）。首次会自动准备虚拟屏。",
         }
     }
 
@@ -688,7 +688,7 @@ fn display_card(ui: &mut egui::Ui, snap: &Snapshot, settings: &mut Settings) {
             ui.add_space(4.0);
             ui.label(
                 egui::RichText::new(
-                    "未检测到第二块显示器。扩展模式请先安装虚拟显示驱动：winget install VirtualDrivers.Virtual-Display-Driver",
+                    "尚未检测到扩展屏。点「开始共享」时会自动准备（可能弹出一次管理员确认）。",
                 )
                 .size(11.0)
                 .color(theme::WARN),
