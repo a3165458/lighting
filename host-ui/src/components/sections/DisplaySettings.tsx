@@ -78,8 +78,8 @@ export function DisplaySettings({
 
         {showVddHint && (
           <p className="rounded-[var(--radius-control)] bg-warning/10 px-3 py-2 text-sm text-warning">
-            尚未检测到扩展屏。点「开始共享」时会自动准备（类似 GlideX，可能弹出一次管理员确认）。
-            准备完成后，也可用系统 Win+P 选择「扩展」或「仅第二屏幕」——画面会经 Lighting 显示在平板上。
+            尚未看到虚拟扩展屏。点「开始共享」会自动创建（驱动管道 SETDISPLAYCOUNT），并把分辨率设成你的平板尺寸。
+            不会使用 Win+P「仅第二屏幕」（那会关掉电脑屏，Lighting 也无法操作）。
           </p>
         )}
 

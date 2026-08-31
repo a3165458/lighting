@@ -27,15 +27,15 @@ impl ShareMode {
         match self {
             ShareMode::Mirror => "镜像主屏",
             ShareMode::Extend => "扩展屏（推荐）",
-            ShareMode::External => "仅第二屏",
+            ShareMode::External => "仅投扩展屏",
         }
     }
 
     pub fn hint(self) -> &'static str {
         match self {
             ShareMode::Mirror => "平板与电脑主屏同画面，并自动缩放到平板分辨率。",
-            ShareMode::Extend => "平板作为独立扩展桌面。首次使用会自动准备虚拟屏（可能弹出一次管理员确认）。之后也可用 Win+P「扩展」。",
-            ShareMode::External => "桌面只显示在扩展屏/平板上（相当于 Win+P「仅第二屏幕」）。首次会自动准备虚拟屏。",
+            ShareMode::Extend => "创建虚拟扩展桌面；平板连接后会按平板分辨率输出。电脑主屏照常可用。",
+            ShareMode::External => "只把扩展桌面投到平板（按平板分辨率 1:1）。不会关掉电脑主屏（避免 Lighting 界面消失）。",
         }
     }
 
@@ -56,12 +56,16 @@ impl ShareMode {
         }
     }
 
+    /// Lighting maps both extend modes to `/extend`. `/external` blanks the PC.
     pub fn display_switch_arg(self) -> &'static str {
         match self {
             ShareMode::Mirror => "/clone",
-            ShareMode::Extend => "/extend",
-            ShareMode::External => "/external",
+            ShareMode::Extend | ShareMode::External => "/extend",
         }
+    }
+
+    pub fn uses_virtual_display(self) -> bool {
+        matches!(self, ShareMode::Extend | ShareMode::External)
     }
 }
 
@@ -71,6 +75,8 @@ pub fn looks_virtual_display(name: &str, friendly: &str) -> bool {
     blob.contains("virtual")
         || blob.contains("iddsample")
         || blob.contains("idd ")
+        || blob.contains("mttvdd")
+        || blob.contains("mtt vdd")
         || blob.contains("usb-mobile-monitor")
         || blob.contains("usb mobile")
         || blob.contains("spacedesk")

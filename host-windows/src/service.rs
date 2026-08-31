@@ -122,7 +122,7 @@ impl HostService {
                 let mut g = self.inner.lock().expect("host lock");
                 g.notice = Some((
                     Tone::Info,
-                    "正在准备扩展屏…首次可能弹出管理员确认".into(),
+                    "正在创建/激活虚拟扩展屏…".into(),
                 ));
                 g.last_error.clear();
             }
@@ -151,7 +151,7 @@ impl HostService {
         }
         if matches!(mode, ShareMode::Extend | ShareMode::External) && !displays::has_secondary(&g.displays)
         {
-            let msg = "扩展屏尚未就绪，请重试「开始共享」，或检查是否取消了管理员确认。".to_string();
+            let msg = "扩展屏尚未就绪。若刚装完驱动，请再点一次「开始共享」。".to_string();
             g.last_error = msg.clone();
             g.notice = Some((Tone::Warn, msg.clone()));
             return Err(msg);
@@ -161,11 +161,16 @@ impl HostService {
         }
 
         let quality = (g.settings.quality_pct.clamp(40, 100) as f32) / 100.0;
-        let (match_device, scale, max_width, max_height) = match g.settings.res_cap {
-            ResCap::Device => (true, quality, 3840, 2560),
-            ResCap::Fhd => (false, 1.0, scaled(1920, quality), scaled(1080, quality)),
-            ResCap::Uhd2k => (false, 1.0, scaled(2560, quality), scaled(1440, quality)),
-            ResCap::Uhd4k => (false, 1.0, scaled(3840, quality), scaled(2160, quality)),
+        // Extend modes always follow the tablet panel (set on Hello); ResCap is a ceiling.
+        let (match_device, scale, max_width, max_height) = if mode.uses_virtual_display() {
+            (true, quality, 3840, 2560)
+        } else {
+            match g.settings.res_cap {
+                ResCap::Device => (true, quality, 3840, 2560),
+                ResCap::Fhd => (false, 1.0, scaled(1920, quality), scaled(1080, quality)),
+                ResCap::Uhd2k => (false, 1.0, scaled(2560, quality), scaled(1440, quality)),
+                ResCap::Uhd4k => (false, 1.0, scaled(3840, quality), scaled(2160, quality)),
+            }
         };
         let serial = g
             .devices
@@ -201,6 +206,7 @@ impl HostService {
             match_device,
             scale,
             send_audio: g.settings.send_audio,
+            share_mode: mode,
         };
         g.stop.store(false, Ordering::Relaxed);
         g.controls
