@@ -78,11 +78,8 @@ export function DisplaySettings({
 
         {showVddHint && (
           <p className="rounded-[var(--radius-control)] bg-warning/10 px-3 py-2 text-sm text-warning">
-            平板不会出现在 Win+P 列表里。扩展 / 仅第二屏需要虚拟显示驱动或第二块显示器：
-            <code className="mx-1 rounded bg-black/5 px-1.5 py-0.5 text-[12px]">
-              winget install VirtualDrivers.Virtual-Display-Driver
-            </code>
-            安装后在 Windows「显示器」里设为扩展，也可先改成「镜像主屏」验证通道。
+            尚未检测到扩展屏。点「开始共享」时会自动准备（类似 GlideX，可能弹出一次管理员确认）。
+            准备完成后，也可用系统 Win+P 选择「扩展」或「仅第二屏幕」——画面会经 Lighting 显示在平板上。
           </p>
         )}
 

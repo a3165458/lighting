@@ -1,7 +1,7 @@
 {
   "name": "lighting-host-ui",
   "private": true,
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Lighting secondary display — one-click Windows portable app",
   "author": "Lighting",
   "type": "module",
@@ -58,11 +58,15 @@
       "target": [
         {
           "target": "portable",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "artifactName": "${productName}-${version}-Setup.${ext}"
@@ -74,7 +78,10 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Lighting副屏",
-      "installerLanguages": ["zh_CN", "en_US"],
+      "installerLanguages": [
+        "zh_CN",
+        "en_US"
+      ],
       "language": "2052",
       "artifactName": "${productName}-${version}-安装包.${ext}"
     },
@@ -85,7 +92,10 @@
       {
         "from": "resources/",
         "to": ".",
-        "filter": ["lighting-host.exe", "Lighting.apk"]
+        "filter": [
+          "lighting-host.exe",
+          "Lighting.apk"
+        ]
       }
     ]
   }

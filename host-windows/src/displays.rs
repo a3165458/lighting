@@ -97,6 +97,68 @@ pub fn has_secondary(displays: &[DisplayInfo]) -> bool {
     displays.iter().any(|d| !d.primary)
 }
 
+/// Ensure a secondary (preferably virtual) display exists for extend/external.
+/// First-time users get a one-shot elevated winget install — no manual terminal.
+pub fn ensure_secondary_display(mode: ShareMode) -> Result<()> {
+    let list = list_displays().unwrap_or_default();
+    if has_secondary(&list) {
+        let _ = apply_project_mode(mode);
+        return Ok(());
+    }
+    tracing::info!("no secondary display; provisioning virtual display driver");
+    install_virtual_display_driver()?;
+    // Driver arrival + topology rebuild can take a few seconds.
+    for attempt in 0..24 {
+        std::thread::sleep(Duration::from_millis(if attempt < 4 { 700 } else { 500 }));
+        let _ = apply_project_mode(ShareMode::Extend);
+        let list = list_displays().unwrap_or_default();
+        if has_secondary(&list) {
+            if !matches!(mode, ShareMode::Extend) {
+                let _ = apply_project_mode(mode);
+            }
+            return Ok(());
+        }
+    }
+    anyhow::bail!(
+        "未能自动准备扩展屏。请确认已允许管理员权限，或在 Windows 显示设置中检查是否出现虚拟显示器。"
+    )
+}
+
+fn install_virtual_display_driver() -> Result<()> {
+    // Elevate once via UAC (same class of prompt GlideX / vendor tools show).
+    // --disable-interactivity keeps winget from blocking on agreements.
+    let ps = r#"
+$ErrorActionPreference = 'Stop'
+$winget = Get-Command winget -ErrorAction SilentlyContinue
+if (-not $winget) { throw '本机没有 winget，无法自动准备扩展屏' }
+$args = @(
+  'install','--id=VirtualDrivers.Virtual-Display-Driver','-e',
+  '--accept-package-agreements','--accept-source-agreements','--disable-interactivity'
+)
+$p = Start-Process -FilePath $winget.Source -ArgumentList $args -Verb RunAs -PassThru -Wait
+if ($null -eq $p) { throw '用户取消了管理员确认' }
+if ($p.ExitCode -ne 0 -and $p.ExitCode -ne -1978335189) {
+  # -1978335189 = already installed (APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE)
+  throw ("winget 退出码 " + $p.ExitCode)
+}
+"#;
+    let status = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            ps,
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .context("启动自动安装虚拟屏失败")?;
+    if !status.success() {
+        anyhow::bail!("自动准备扩展屏失败（可能取消了管理员确认）");
+    }
+    Ok(())
+}
+
 fn list_via_dxgi() -> Result<Vec<DisplayInfo>> {
     unsafe {
         let factory: IDXGIFactory1 = CreateDXGIFactory1().context("CreateDXGIFactory1")?;

@@ -51,6 +51,65 @@ pub fn is_client_disconnect(err: &str) -> bool {
         || e.contains("send audio failed")
 }
 
+/// Orient `(dw, dh)` so it matches the landscape/portrait of `(sw, sh)`.
+pub fn orient_box(sw: u32, sh: u32, dw: u32, dh: u32) -> (u32, u32) {
+    if sw >= sh {
+        if dw >= dh {
+            (dw, dh)
+        } else {
+            (dh, dw)
+        }
+    } else if dh >= dw {
+        (dw, dh)
+    } else {
+        (dh, dw)
+    }
+}
+
+/// Aspect-preserving downscale into a box. Never upscales.
+pub fn fit_resolution(src_w: u32, src_h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
+    let mut w = src_w.max(2);
+    let mut h = src_h.max(2);
+    if w > max_w || h > max_h {
+        let scale = (max_w as f64 / w as f64).min(max_h as f64 / h as f64);
+        w = ((w as f64 * scale) as u32) & !1;
+        h = ((h as f64 * scale) as u32) & !1;
+    }
+    (w.max(2), h.max(2))
+}
+
+/// Final encode size: always clamp to the tablet panel when known, then ResCap
+/// ceiling, then decoder limit, then quality scale. Primary can be 2K/4K —
+/// the stream must still fit the tablet.
+pub fn compute_encode_size(
+    src_w: u32,
+    src_h: u32,
+    screen_w: u32,
+    screen_h: u32,
+    max_w: u32,
+    max_h: u32,
+    scale: f32,
+    dec_w: u32,
+    dec_h: u32,
+) -> (u32, u32) {
+    let (cap_w, cap_h) = orient_box(src_w, src_h, max_w.max(16), max_h.max(16));
+    let (mut box_w, mut box_h) = if screen_w > 0 && screen_h > 0 {
+        let (sw, sh) = orient_box(src_w, src_h, screen_w, screen_h);
+        (sw.min(cap_w).max(16), sh.min(cap_h).max(16))
+    } else {
+        (cap_w, cap_h)
+    };
+    if dec_w > 0 && dec_h > 0 {
+        let (dw, dh) = orient_box(src_w, src_h, dec_w, dec_h);
+        box_w = box_w.min(dw.max(16));
+        box_h = box_h.min(dh.max(16));
+    }
+    let scale = (scale as f64).clamp(0.35, 1.0);
+    let out_w = ((box_w as f64 * scale) as u32).max(16);
+    let out_h = ((box_h as f64 * scale) as u32).max(16);
+    fit_resolution(src_w, src_h, out_w, out_h)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,7 +136,6 @@ mod tests {
         assert!(spiked > 28 && spiked < 400);
     }
 
-    #[test]
     #[test]
     fn vbv_targets_about_four_frames() {
         // 25 Mbps @ 60fps → ~1666 kb for 4 frames
@@ -106,5 +164,26 @@ mod tests {
         assert!(is_client_disconnect("os error 10054"));
         assert!(!is_client_disconnect("所选显示器不存在"));
         assert!(!is_client_disconnect("找不到 ffmpeg"));
+    }
+
+    #[test]
+    fn mirror_2k_desktop_fits_non_2k_tablet() {
+        // User bug: 2K primary mirrored to a 1920×1200 tablet must not stay 2560×1440,
+        // even when ResCap is「最高 2K」and the decoder claims 4K.
+        let (w, h) = compute_encode_size(2560, 1440, 1920, 1200, 2560, 1440, 1.0, 3840, 2160);
+        assert!(w <= 1920 && h <= 1200, "{w}×{h}");
+        assert_eq!((w, h), (1920, 1080));
+    }
+
+    #[test]
+    fn res_cap_fhd_still_clamps_below_tablet() {
+        let (w, h) = compute_encode_size(3840, 2160, 2560, 1600, 1920, 1080, 1.0, 3840, 2160);
+        assert!(w <= 1920 && h <= 1080, "{w}×{h}");
+    }
+
+    #[test]
+    fn missing_screen_falls_back_to_res_cap() {
+        let (w, h) = compute_encode_size(2560, 1440, 0, 0, 1920, 1080, 1.0, 3840, 2160);
+        assert!(w <= 1920 && h <= 1080, "{w}×{h}");
     }
 }

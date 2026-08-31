@@ -117,8 +117,23 @@ impl HostService {
             g.settings.share_mode
         };
 
-        // Mirror Win+P topology before we pick a capture target.
-        if let Err(err) = displays::apply_project_mode(mode) {
+        if matches!(mode, ShareMode::Extend | ShareMode::External) {
+            {
+                let mut g = self.inner.lock().expect("host lock");
+                g.notice = Some((
+                    Tone::Info,
+                    "正在准备扩展屏…首次可能弹出管理员确认".into(),
+                ));
+                g.last_error.clear();
+            }
+            if let Err(err) = displays::ensure_secondary_display(mode) {
+                let msg = format!("{err:#}");
+                let mut g = self.inner.lock().expect("host lock");
+                g.last_error = msg.clone();
+                g.notice = Some((Tone::Warn, msg.clone()));
+                return Err(msg);
+            }
+        } else if let Err(err) = displays::apply_project_mode(mode) {
             tracing::warn!("DisplaySwitch failed ({err:#}); continuing with current layout");
         }
 
@@ -136,7 +151,7 @@ impl HostService {
         }
         if matches!(mode, ShareMode::Extend | ShareMode::External) && !displays::has_secondary(&g.displays)
         {
-            let msg = "扩展模式需要第二块显示器。请安装虚拟显示驱动后在 Windows 里设为「扩展这些显示器」：winget install VirtualDrivers.Virtual-Display-Driver。也可先改成「镜像主屏」。".to_string();
+            let msg = "扩展屏尚未就绪，请重试「开始共享」，或检查是否取消了管理员确认。".to_string();
             g.last_error = msg.clone();
             g.notice = Some((Tone::Warn, msg.clone()));
             return Err(msg);
