@@ -18,7 +18,7 @@ class VideoDecoder {
     private var mime: String = MediaFormat.MIMETYPE_VIDEO_AVC
     private val running = AtomicBoolean(false)
     private val skipUntilKey = AtomicBoolean(false)
-    private val queue = ArrayBlockingQueue<Packet>(3)
+    private val queue = ArrayBlockingQueue<Packet>(1)
     private var worker: Thread? = null
     @Volatile var activeName: String = ""
         private set
@@ -93,20 +93,20 @@ class VideoDecoder {
     }
 
     private fun loop() {
-        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY)
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
         var frames = 0
         var skips = 0
         var lagSum = 0L
         while (running.get()) {
             val pkt = try {
-                queue.poll(4, TimeUnit.MILLISECONDS)
+                queue.poll(2, TimeUnit.MILLISECONDS)
             } catch (_: InterruptedException) {
                 break
             } ?: continue
             val decoder = codec ?: continue
             if (!configured) continue
             if (pkt.codecConfig) {
-                enqueue(decoder, pkt.data, MediaCodec.BUFFER_FLAG_CODEC_CONFIG, pkt.ptsUs, waitUs = 8_000)
+                enqueue(decoder, pkt.data, MediaCodec.BUFFER_FLAG_CODEC_CONFIG, pkt.ptsUs, waitUs = 4_000)
                 drain(decoder)
                 continue
             }
@@ -115,7 +115,7 @@ class VideoDecoder {
                 continue
             }
             val flags = if (pkt.keyframe) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
-            val wait = if (pkt.keyframe) 8_000L else 0L
+            val wait = if (pkt.keyframe) 4_000L else 0L
             if (!enqueue(decoder, pkt.data, flags, pkt.ptsUs, wait)) {
                 skipUntilKey.set(true)
                 skips++
@@ -175,12 +175,14 @@ class VideoDecoder {
         codecName: String,
     ): List<MediaFormat> {
         val out = ArrayList<MediaFormat>()
-        out.add(buildFormat(width, height, csd, lowLatency = false, operatingRate = false))
         val n = codecName.lowercase()
         val software = n.contains("google") || n.contains("c2.android") || n.contains("software")
+        // Prefer low-latency configure first on SoCs that tolerate it.
         if (caps.lowLatencySafe && !software) {
-            out.add(buildFormat(width, height, csd, lowLatency = true, operatingRate = true))
+            out.add(buildFormat(width, height, csd, lowLatency = true, operatingRate = true, fps = caps.decoderMaxFps))
+            out.add(buildFormat(width, height, csd, lowLatency = true, operatingRate = false, fps = caps.decoderMaxFps))
         }
+        out.add(buildFormat(width, height, csd, lowLatency = false, operatingRate = false, fps = caps.decoderMaxFps))
         return out
     }
 
@@ -190,13 +192,15 @@ class VideoDecoder {
         csd: ByteArray?,
         lowLatency: Boolean,
         operatingRate: Boolean,
+        fps: Int,
     ): MediaFormat {
         val format = MediaFormat.createVideoFormat(mime, width, height)
         format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 8 * 1024 * 1024)
         if (operatingRate) {
             try {
+                // 0 = realtime priority for MediaCodec.
                 format.setInteger(MediaFormat.KEY_PRIORITY, 0)
-                format.setInteger(MediaFormat.KEY_OPERATING_RATE, 60)
+                format.setInteger(MediaFormat.KEY_OPERATING_RATE, fps.coerceIn(60, 120))
             } catch (_: Throwable) {
             }
         }

@@ -145,6 +145,12 @@ class LitSocket(host: String, port: Int, connectTimeoutMs: Int = 1_500) : AutoCl
     val socket: Socket = Socket().apply {
         tcpNoDelay = true
         keepAlive = true
+        // Smaller buffers cut socket-level queuing on USB localhost reverse.
+        try {
+            receiveBufferSize = 256 * 1024
+            sendBufferSize = 256 * 1024
+        } catch (_: Exception) {
+        }
         try {
             connect(InetSocketAddress(host, port), connectTimeoutMs)
         } catch (t: Throwable) {

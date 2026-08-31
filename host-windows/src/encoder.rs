@@ -126,7 +126,9 @@ pub fn start_encoder(
         }
     });
 
-    let (tx, rx) = mpsc::sync_channel(24);
+    // Keep at most ~2 encoded AUs queued; annexb drops P-frames when full
+    // so USB backpressure cannot turn into hundreds of ms of glass latency.
+    let (tx, rx) = mpsc::sync_channel(2);
     let hevc = is_hevc(&settings.codec);
     thread::spawn(move || {
         if let Err(err) = annexb::pump_annexb(stdout, tx, hevc) {
@@ -162,13 +164,15 @@ fn build_args(display: &DisplayInfo, settings: &EncodeSettings, encoder: &str) -
         "-loglevel".into(),
         "warning".into(),
         "-fflags".into(),
-        "nobuffer".into(),
+        "nobuffer+flush_packets".into(),
         "-flags".into(),
         "low_delay".into(),
         "-probesize".into(),
         "32".into(),
         "-analyzeduration".into(),
         "0".into(),
+        "-thread_queue_size".into(),
+        "2".into(),
     ];
 
     // Desktop Duplication (low latency). output_idx matches DXGI order.
@@ -217,9 +221,15 @@ pub fn start_encoder_gdigrab(
         "-loglevel".into(),
         "warning".into(),
         "-fflags".into(),
-        "nobuffer".into(),
+        "nobuffer+flush_packets".into(),
         "-flags".into(),
         "low_delay".into(),
+        "-probesize".into(),
+        "32".into(),
+        "-analyzeduration".into(),
+        "0".into(),
+        "-thread_queue_size".into(),
+        "2".into(),
         "-f".into(),
         "gdigrab".into(),
         "-framerate".into(),
@@ -263,7 +273,7 @@ pub fn start_encoder_gdigrab(
             tracing::info!("ffmpeg stderr:\n{}", tail(&buf, 16));
         }
     });
-    let (tx, rx) = mpsc::sync_channel(24);
+    let (tx, rx) = mpsc::sync_channel(2);
     let hevc = is_hevc(&settings.codec);
     thread::spawn(move || {
         if let Err(err) = annexb::pump_annexb(stdout, tx, hevc) {
@@ -276,10 +286,17 @@ pub fn start_encoder_gdigrab(
     })
 }
 
+/// ~2-frame VBV so rate control does not hold frames for half a second.
+fn vbv_bufsize_kb(bitrate_kbps: u32, fps: u32) -> u32 {
+    lighting_host::session_policy::vbv_bufsize_kb(bitrate_kbps, fps)
+}
+
 fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
     let br = format!("{}k", settings.bitrate_kbps);
-    let buf = format!("{}k", (settings.bitrate_kbps / 2).max(4000));
-    let gop = (settings.fps / 2).max(15).to_string();
+    let buf = format!("{}k", vbv_bufsize_kb(settings.bitrate_kbps, settings.fps));
+    // Keyframe every ~1s: short enough to recover after drops, long enough
+    // that IDR spikes do not dominate USB3 bandwidth.
+    let gop = settings.fps.max(30).to_string();
     let level = avc_level(settings.width, settings.height, settings.fps).to_string();
     if encoder.contains("nvenc") {
         vec![
@@ -313,6 +330,10 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "0".into(),
             "-zerolatency".into(),
             "1".into(),
+            "-spatial-aq".into(),
+            "0".into(),
+            "-temporal-aq".into(),
+            "0".into(),
         ]
     } else if encoder.contains("qsv") {
         vec![
@@ -332,6 +353,8 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             settings.profile.clone(),
             "-look_ahead".into(),
             "0".into(),
+            "-async_depth".into(),
+            "1".into(),
         ]
     } else if encoder.contains("amf") {
         vec![
@@ -341,6 +364,10 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "cbr".into(),
             "-b:v".into(),
             br,
+            "-maxrate".into(),
+            format!("{}k", settings.bitrate_kbps),
+            "-bufsize".into(),
+            buf,
             "-bf".into(),
             "0".into(),
             "-g".into(),
@@ -393,7 +420,7 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             level,
             "-x264-params".into(),
             format!(
-                "repeat-headers=1:scenecut=0:sliced-threads=0:level={}",
+                "repeat-headers=1:scenecut=0:sliced-threads=0:sync-lookahead=0:rc-lookahead=0:level={}",
                 avc_level(settings.width, settings.height, settings.fps)
             )
             .into(),

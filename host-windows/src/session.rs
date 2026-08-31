@@ -442,7 +442,7 @@ async fn handle_client(
         start_live_encoder(&ffmpeg, &display, &settings, hevc)?;
     let t0 = std::time::Instant::now();
     let audio_stop = Arc::new(AtomicBool::new(false));
-    let (audio_tx, audio_rx) = std::sync::mpsc::sync_channel::<crate::audio::AudioPacket>(48);
+    let (audio_tx, audio_rx) = std::sync::mpsc::sync_channel::<crate::audio::AudioPacket>(4);
     if audio_enabled {
         match crate::audio::start_loopback(audio_tx, audio_stop.clone(), t0) {
             Ok(()) => tracing::info!("audio loopback started"),
@@ -537,7 +537,7 @@ async fn handle_client(
                 }
             }
         }
-        match session.rx.recv_timeout(Duration::from_millis(2)) {
+        match session.rx.recv_timeout(Duration::from_millis(1)) {
             Ok(pkt) => {
                 let mut sent = match write_video_packet(&mut writer, t0, &pkt).await {
                     Ok(bytes) => bytes,
