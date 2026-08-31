@@ -694,7 +694,7 @@ fn display_card(ui: &mut egui::Ui, snap: &Snapshot, settings: &mut Settings) {
             ui.add_space(4.0);
             ui.label(
                 egui::RichText::new(
-                    "尚未检测到扩展屏。点「开始共享」时会自动准备（可能弹出一次管理员确认）。",
+                    "尚未检测到扩展屏。点「开始共享」会自动创建虚拟屏，并在平板连接后设为平板分辨率。",
                 )
                 .size(11.0)
                 .color(theme::WARN),

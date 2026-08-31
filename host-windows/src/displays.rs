@@ -128,27 +128,31 @@ pub fn ensure_secondary_display(_mode: ShareMode) -> Result<()> {
     }
 
     tracing::info!("no secondary display; activating MttVDD virtual monitor");
-    // Driver package may already be present but with 0 monitors — pipe first.
-    if vdd_pipe_alive() {
-        ensure_resolution_listed(1920, 1080, 60)?;
-        vdd_set_display_count(1)?;
-    } else {
-        install_virtual_display_driver()?;
-        // Wait for the pipe / adapter to come up.
-        for _ in 0..20 {
-            std::thread::sleep(Duration::from_millis(500));
-            if vdd_pipe_alive() {
-                break;
-            }
-        }
-        if !vdd_pipe_alive() {
-            anyhow::bail!(
-                "虚拟显示驱动已安装但未启动。请打开 Virtual Driver Control 点一次 Install，或重启后再试。"
-            );
-        }
-        ensure_resolution_listed(1920, 1080, 60)?;
-        vdd_set_display_count(1)?;
+    ensure_resolution_listed(1920, 1080, 60)?;
+
+    if !vdd_pipe_alive() {
+        // Package may be installed while the Root\MttVDD device is disabled / missing.
+        let _ = enable_vdd_device();
+        wait_for_vdd_pipe(8);
     }
+    if !vdd_pipe_alive() {
+        let _ = install_virtual_display_driver();
+        let _ = enable_vdd_device();
+        wait_for_vdd_pipe(12);
+    }
+    if !vdd_pipe_alive() {
+        // winget/VDC often only drops the control app — install the actual INF.
+        install_mttvdd_driver_inf()?;
+        let _ = enable_vdd_device();
+        wait_for_vdd_pipe(16);
+    }
+    if !vdd_pipe_alive() {
+        anyhow::bail!(
+            "无法启动虚拟显示驱动。请确认已允许管理员权限后重试；仍失败可重启电脑再开一次扩展屏。"
+        );
+    }
+
+    vdd_set_display_count(1)?;
 
     for attempt in 0..30 {
         std::thread::sleep(Duration::from_millis(if attempt < 6 { 700 } else { 450 }));
@@ -158,12 +162,140 @@ pub fn ensure_secondary_display(_mode: ShareMode) -> Result<()> {
             return Ok(());
         }
         if attempt == 10 || attempt == 20 {
+            let _ = enable_vdd_device();
             let _ = vdd_set_display_count(1);
         }
     }
     anyhow::bail!(
         "未能创建虚拟扩展屏。请确认已允许管理员权限，并在 Windows「显示器」里能看到虚拟屏。"
     )
+}
+
+fn wait_for_vdd_pipe(attempts: u32) {
+    for _ in 0..attempts {
+        if vdd_pipe_alive() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// Enable a disabled / problem MttVDD PnP device (needs elevation).
+fn enable_vdd_device() -> Result<()> {
+    let ps = r#"
+$ErrorActionPreference = 'Continue'
+$script = @'
+$ErrorActionPreference = "Continue"
+$names = @(
+  "Virtual Display Driver",
+  "IddSampleDriver Device HDR",
+  "MttVDD Display Adapter",
+  "MttVDD"
+)
+$device = Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | Where-Object {
+  $names -contains $_.FriendlyName -or $_.InstanceId -like "*MttVDD*" -or $_.HardwareID -like "*MttVDD*"
+} | Select-Object -First 1
+if (-not $device) {
+  $device = Get-PnpDevice -HardwareID "Root\MttVDD" -ErrorAction SilentlyContinue | Select-Object -First 1
+}
+if (-not $device) {
+  # Broader sweep across all PnP classes
+  $device = Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object {
+    $_.InstanceId -like "*MttVDD*" -or ($_.FriendlyName -and $_.FriendlyName -match "Virtual Display|MttVDD|IddSample")
+  } | Select-Object -First 1
+}
+if ($device) {
+  try { Enable-PnpDevice -InstanceId $device.InstanceId -Confirm:$false -ErrorAction Stop } catch {}
+  try { pnputil /enable-device "$($device.InstanceId)" | Out-Null } catch {}
+  try { pnputil /restart-device "$($device.InstanceId)" | Out-Null } catch {}
+  Write-Output ("enabled:" + $device.InstanceId + ":" + $device.Status)
+} else {
+  try { pnputil /enable-device /deviceid "Root\MttVDD" | Out-Null } catch {}
+  Write-Output "device-not-found"
+}
+'@
+$path = Join-Path $env:TEMP ("lighting-enable-vdd-" + [guid]::NewGuid().ToString() + ".ps1")
+Set-Content -Path $path -Value $script -Encoding UTF8
+try {
+  $p = Start-Process -FilePath powershell.exe -ArgumentList @("-NoProfile","-ExecutionPolicy","Bypass","-File",$path) -Verb RunAs -PassThru -Wait -WindowStyle Hidden
+  if ($null -eq $p) { throw "用户取消了管理员确认" }
+} finally {
+  Remove-Item -Force $path -ErrorAction SilentlyContinue
+}
+"#;
+    let status = Command::new("powershell.exe")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .context("启用虚拟显示设备失败")?;
+    if !status.success() {
+        anyhow::bail!("启用虚拟显示设备失败（可能取消了管理员确认）");
+    }
+    Ok(())
+}
+
+/// Download driver-only package and install Root\MttVDD via nefcon (silent).
+fn install_mttvdd_driver_inf() -> Result<()> {
+    let ps = r#"
+$ErrorActionPreference = 'Stop'
+$script = @'
+$ErrorActionPreference = "Stop"
+$NefConURL = "https://github.com/nefarius/nefcon/releases/download/v1.14.0/nefcon_v1.14.0.zip"
+$DriverURL = "https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/download/25.7.23/VirtualDisplayDriver-x86.Driver.Only.zip"
+$tempDir = Join-Path $env:TEMP ("LightingVDD-" + [guid]::NewGuid().ToString())
+New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+try {
+  $nefZip = Join-Path $tempDir "nefcon.zip"
+  Invoke-WebRequest -Uri $NefConURL -OutFile $nefZip -UseBasicParsing
+  Expand-Archive -Path $nefZip -DestinationPath $tempDir -Force
+  $nef = Get-ChildItem -Path $tempDir -Recurse -Filter "nefconw.exe" | Select-Object -First 1
+  if (-not $nef) { throw "nefconw.exe missing" }
+  $drvZip = Join-Path $tempDir "driver.zip"
+  Invoke-WebRequest -Uri $DriverURL -OutFile $drvZip -UseBasicParsing
+  Expand-Archive -Path $drvZip -DestinationPath $tempDir -Force
+  $inf = Get-ChildItem -Path $tempDir -Recurse -Filter "MttVDD.inf" | Select-Object -First 1
+  if (-not $inf) { throw "MttVDD.inf missing" }
+  # Trust publisher certs from the cat when present
+  $cat = Get-ChildItem -Path $tempDir -Recurse -Filter "*.cat" | Select-Object -First 1
+  if ($cat) {
+    try {
+      $certs = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
+      $certs.Import([System.IO.File]::ReadAllBytes($cat.FullName))
+      foreach ($cert in $certs) {
+        $cer = Join-Path $tempDir ($cert.Thumbprint + ".cer")
+        [IO.File]::WriteAllBytes($cer, $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
+        Import-Certificate -FilePath $cer -CertStoreLocation "Cert:\LocalMachine\TrustedPublisher" | Out-Null
+      }
+    } catch {}
+  }
+  Push-Location $inf.DirectoryName
+  & $nef.FullName install $inf.Name "Root\MttVDD"
+  Pop-Location
+  Start-Sleep -Seconds 8
+} finally {
+  Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+'@
+$path = Join-Path $env:TEMP ("lighting-install-vdd-" + [guid]::NewGuid().ToString() + ".ps1")
+Set-Content -Path $path -Value $script -Encoding UTF8
+try {
+  $p = Start-Process -FilePath powershell.exe -ArgumentList @("-NoProfile","-ExecutionPolicy","Bypass","-File",$path) -Verb RunAs -PassThru -Wait -WindowStyle Hidden
+  if ($null -eq $p) { throw "用户取消了管理员确认" }
+  if ($p.ExitCode -ne 0) { throw ("静默安装驱动退出码 " + $p.ExitCode) }
+} finally {
+  Remove-Item -Force $path -ErrorAction SilentlyContinue
+}
+"#;
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .context("静默安装 MttVDD 失败")?;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("静默安装虚拟显示驱动失败: {err}");
+    }
+    Ok(())
 }
 
 /// After tablet Hello: make the virtual monitor match tablet pixels for 1:1 capture.
