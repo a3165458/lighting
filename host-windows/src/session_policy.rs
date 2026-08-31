@@ -31,6 +31,12 @@ pub fn smooth_latency_ms(prev: u32, sample: u32) -> u32 {
     }
 }
 
+/// ~2-frame VBV so rate control does not hold frames for half a second of bits.
+pub fn vbv_bufsize_kb(bitrate_kbps: u32, fps: u32) -> u32 {
+    let fps = fps.max(24);
+    ((bitrate_kbps * 2) / fps).clamp(800, bitrate_kbps.max(800))
+}
+
 /// I/O / pipe failures from a dropped tablet must not tear down the share.
 pub fn is_client_disconnect(err: &str) -> bool {
     let e = err.to_ascii_lowercase();
@@ -69,6 +75,15 @@ mod tests {
         assert_eq!(smooth_latency_ms(28, 28), 28);
         let spiked = smooth_latency_ms(28, 400);
         assert!(spiked > 28 && spiked < 400);
+    }
+
+    #[test]
+    fn vbv_targets_about_two_frames() {
+        assert_eq!(vbv_bufsize_kb(25_000, 60), 833);
+        assert!(vbv_bufsize_kb(8_000, 120) >= 800);
+        assert!(vbv_bufsize_kb(40_000, 30) <= 40_000);
+        // Old formula used bitrate/2; keep the new budget far below that.
+        assert!(vbv_bufsize_kb(25_000, 60) < 25_000 / 2);
     }
 
     #[test]
