@@ -44,7 +44,7 @@ export function Button({
       type={type}
       className={cn(
         'inline-flex items-center justify-center gap-[var(--space-icon-gap)]',
-        'rounded-[var(--radius-control)] font-semibold transition-ui',
+        'rounded-[var(--radius-control)] px-6 py-2.5 min-h-11 text-sm font-semibold transition-ui',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand/40',
         fullWidth && 'w-full',
         variants[variant],

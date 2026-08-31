@@ -165,11 +165,16 @@ pub struct AdbDevice {
     pub state: String,
     /// `Some(true/false)` after a package probe; `None` if not probed.
     pub client_installed: Option<bool>,
+    /// `versionName` from the installed client APK when available.
+    pub client_version: Option<String>,
 }
 
 impl AdbDevice {
     pub fn label(&self) -> String {
-        format!("{} ({})", self.serial, self.state)
+        match &self.client_version {
+            Some(v) if !v.is_empty() => format!("{} ({}) · v{v}", self.serial, self.state),
+            _ => format!("{} ({})", self.serial, self.state),
+        }
     }
 }
 
@@ -194,13 +199,19 @@ pub async fn list_devices(adb: &Path) -> Result<Vec<AdbDevice>> {
                 serial,
                 state,
                 client_installed: None,
+                client_version: None,
             });
         }
     }
     for device in &mut devices {
         if device.state == "device" {
-            device.client_installed =
-                Some(package_installed(adb, &device.serial, CLIENT_PACKAGE).await);
+            let installed = package_installed(adb, &device.serial, CLIENT_PACKAGE).await;
+            device.client_installed = Some(installed);
+            device.client_version = if installed {
+                package_version(adb, &device.serial, CLIENT_PACKAGE).await
+            } else {
+                None
+            };
         }
     }
     Ok(devices)
@@ -219,6 +230,35 @@ pub async fn package_installed(adb: &Path, serial: &str, package: &str) -> bool 
         }
         _ => false,
     }
+}
+
+/// Best-effort `versionName` via `dumpsys package`.
+pub async fn package_version(adb: &Path, serial: &str, package: &str) -> Option<String> {
+    let output = adb_command(adb)
+        .args(["-s", serial, "shell", "dumpsys", "package", package])
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_version_name(&stdout)
+}
+
+/// Extract `versionName=` from `dumpsys package` output.
+pub fn parse_version_name(dumpsys: &str) -> Option<String> {
+    for line in dumpsys.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed.strip_prefix("versionName=") else {
+            continue;
+        };
+        let ver = rest.trim().trim_matches('"').trim();
+        if !ver.is_empty() {
+            return Some(ver.to_string());
+        }
+    }
+    None
 }
 
 pub async fn install_apk(adb: &Path, serial: &str, apk: &Path) -> Result<()> {

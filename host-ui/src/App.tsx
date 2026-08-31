@@ -207,9 +207,17 @@ export default function App() {
             <h2 className="text-lg font-bold text-text">运行环境</h2>
             <p className="mt-2 text-md text-text-secondary">
               {host.connected
-                ? `已连接主机 v${host.hostVersion || '—'}。首次启动会自动准备 adb / ffmpeg。`
+                ? `应用 v${host.appVersion || host.hostVersion || '—'} · 主机 v${host.hostVersion || '—'}。首次启动会自动准备 adb / ffmpeg。`
                 : '正在连接本地主机，或首次启动正在下载运行组件…'}
             </p>
+            {host.connected &&
+              host.appVersion &&
+              host.hostVersion &&
+              host.appVersion !== host.hostVersion && (
+                <p className="mt-2 text-sm text-warning">
+                  检测到旧主机进程仍在运行，正在切换到本包内主机…
+                </p>
+              )}
           </section>
         </div>
       )}
