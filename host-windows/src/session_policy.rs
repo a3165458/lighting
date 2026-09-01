@@ -243,6 +243,46 @@ pub fn compute_encode_size(
     fit_resolution(src_w, src_h, out_w, out_h)
 }
 
+/// Parse AC/DC lid-close action indices from `powercfg /q SCHEME_CURRENT SUB_BUTTONS`.
+/// Looks up the LIDACTION block (language-independent GUID / alias), then the
+/// current AC and DC index lines (`Index:` or `索引:`).
+pub fn parse_lid_current_indices(text: &str) -> Option<(u32, u32)> {
+    let lower = text.to_ascii_lowercase();
+    let start = lower
+        .find("lidaction")
+        .or_else(|| lower.find("5ca83367-6e45-459f-a27b-476b1ee90026"))?;
+    let rest = &text[start..];
+    let rest_lower = rest.to_ascii_lowercase();
+    let end = rest_lower
+        .get(8..)
+        .and_then(|s| s.find("power setting guid"))
+        .map(|i| i + 8)
+        .unwrap_or(rest.len());
+    let block = &rest[..end];
+    let mut vals = Vec::new();
+    for line in block.lines() {
+        let l = line.to_ascii_lowercase();
+        if !(l.contains("index") || line.contains("索引")) {
+            continue;
+        }
+        let Some(hex_at) = l.rfind("0x") else {
+            continue;
+        };
+        let hex: String = l[hex_at + 2..]
+            .chars()
+            .take_while(|c| c.is_ascii_hexdigit())
+            .collect();
+        if let Ok(v) = u32::from_str_radix(&hex, 16) {
+            vals.push(v);
+        }
+    }
+    if vals.len() >= 2 {
+        Some((vals[0], vals[1]))
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,5 +482,37 @@ mod tests {
     fn missing_screen_falls_back_to_res_cap() {
         let (w, h) = compute_encode_size(2560, 1440, 0, 0, 1920, 1080, 1.0, 3840, 2160);
         assert!(w <= 1920 && h <= 1080, "{w}×{h}");
+    }
+
+    #[test]
+    fn parse_lid_indices_english_powercfg() {
+        let text = r#"
+Power Setting GUID: 5ca83367-6e45-459f-a27b-476b1ee90026  (Lid close action)
+  GUID Alias: LIDACTION
+  Minimum Possible Setting: 0x00000000
+  Maximum Possible Setting: 0x00000003
+Possible settings:
+  0x00000000    Do nothing
+  0x00000001    Sleep
+Current AC Power Setting Index: 0x00000001
+Current DC Power Setting Index: 0x00000002
+
+Power Setting GUID: 7648efa3-dd9c-4e3e-b566-50f929386280  (Power button action)
+  GUID Alias: PBUTTONACTION
+Current AC Power Setting Index: 0x00000003
+"#;
+        assert_eq!(parse_lid_current_indices(text), Some((1, 2)));
+    }
+
+    #[test]
+    fn parse_lid_indices_chinese_powercfg() {
+        let text = r#"
+电源设置 GUID: 5ca83367-6e45-459f-a27b-476b1ee90026  (合上盖子时的操作)
+  GUID Alias: LIDACTION
+当前交流电源设置索引: 0x00000000
+当前直流电源设置索引: 0x00000001
+电源设置 GUID: 7648efa3-dd9c-4e3e-b566-50f929386280
+"#;
+        assert_eq!(parse_lid_current_indices(text), Some((0, 1)));
     }
 }

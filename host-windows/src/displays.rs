@@ -17,6 +17,9 @@ use windows::Win32::Graphics::Gdi::{
     EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, DISPLAY_DEVICEW, HDC, HMONITOR,
     MONITORINFO,
 };
+use windows::Win32::System::Power::{
+    SetThreadExecutionState, ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED,
+};
 use windows::Win32::UI::WindowsAndMessaging::MONITORINFOF_PRIMARY;
 use windows::core::PCWSTR;
 
@@ -76,13 +79,28 @@ pub fn list_displays() -> Result<Vec<DisplayInfo>> {
     }
 }
 
-/// Lighting never uses DisplaySwitch `/external` — that blanks the PC monitor
-/// (and our host UI). Both extend modes use `/extend` and capture the secondary.
+/// Apply Win+P topology. External (tablet-only) still uses `/extend` here so the
+/// Lighting window stays on a visible monitor until the tablet Hello arrives;
+/// [`apply_tablet_only_output`] blanks the PC panel afterwards.
 pub fn apply_project_mode(mode: ShareMode) -> Result<()> {
     let arg = match mode {
         ShareMode::Mirror => "/clone",
         ShareMode::Extend | ShareMode::External => "/extend",
     };
+    display_switch(arg)
+}
+
+/// Win+P “仅第二屏幕”: laptop panel off, desktop lives on the virtual display.
+pub fn apply_tablet_only_output() -> Result<()> {
+    display_switch("/external")
+}
+
+/// Bring the PC panel back after a tablet-only session.
+pub fn restore_pc_monitor() -> Result<()> {
+    display_switch("/extend")
+}
+
+fn display_switch(arg: &str) -> Result<()> {
     let status = Command::new("DisplaySwitch.exe")
         .arg(arg)
         .creation_flags(CREATE_NO_WINDOW)
@@ -96,27 +114,25 @@ pub fn apply_project_mode(mode: ShareMode) -> Result<()> {
 }
 
 pub fn pick_display_index(displays: &[DisplayInfo], mode: ShareMode) -> Option<usize> {
-    match mode {
-        ShareMode::Mirror => displays
-            .iter()
-            .position(|d| d.primary)
-            .or(Some(0).filter(|_| !displays.is_empty())),
-        ShareMode::Extend | ShareMode::External => displays
-            .iter()
-            .position(|d| d.is_virtual && !d.primary)
-            .or_else(|| displays.iter().position(|d| !d.primary))
-            .or_else(|| displays.iter().position(|d| d.primary)),
-    }
+    let items: Vec<(bool, bool)> = displays
+        .iter()
+        .map(|d| (d.primary, d.is_virtual))
+        .collect();
+    lighting_host::view::pick_share_target_index(&items, mode)
 }
 
 pub fn has_secondary(displays: &[DisplayInfo]) -> bool {
     displays.iter().any(|d| !d.primary)
 }
 
+pub fn has_virtual_display(displays: &[DisplayInfo]) -> bool {
+    displays.iter().any(|d| d.is_virtual)
+}
+
 pub fn pick_virtual(displays: &[DisplayInfo]) -> Option<&DisplayInfo> {
     displays
         .iter()
-        .find(|d| d.is_virtual && !d.primary)
+        .find(|d| d.is_virtual)
         .or_else(|| displays.iter().find(|d| !d.primary))
 }
 
@@ -673,6 +689,110 @@ impl Drop for ModeRestoreGuard {
             }
         }
     }
+}
+
+/// Holds `SetThreadExecutionState` on a dedicated thread so idle timeout cannot
+/// lock the session (DXGI cannot capture the secure desktop).
+pub struct KeepAwakeGuard {
+    stop: Option<std::sync::mpsc::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl KeepAwakeGuard {
+    pub fn acquire() -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let thread = std::thread::Builder::new()
+            .name("lighting-keep-awake".into())
+            .spawn(move || {
+                unsafe {
+                    let _ = SetThreadExecutionState(
+                        ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED,
+                    );
+                }
+                let _ = rx.recv();
+                unsafe {
+                    let _ = SetThreadExecutionState(ES_CONTINUOUS);
+                }
+            })
+            .ok();
+        Self {
+            stop: Some(tx),
+            thread,
+        }
+    }
+}
+
+impl Drop for KeepAwakeGuard {
+    fn drop(&mut self) {
+        drop(self.stop.take());
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// Best-effort: lid close → do nothing while sharing, then restore.
+pub struct LidCloseGuard {
+    prev: Option<(u32, u32)>,
+}
+
+impl LidCloseGuard {
+    pub fn apply() -> Self {
+        let prev = query_lid_actions();
+        apply_lid_action(0);
+        if prev.is_none() {
+            tracing::info!("lid close set to do-nothing (previous value unknown)");
+        }
+        Self { prev }
+    }
+}
+
+impl Drop for LidCloseGuard {
+    fn drop(&mut self) {
+        if let Some((ac, dc)) = self.prev.take() {
+            apply_lid_ac_dc(ac, dc);
+        }
+        // If we never parsed the previous values, leave "do nothing" in place —
+        // that is the setting the user needs for bed use.
+    }
+}
+
+fn powercfg(args: &[&str]) -> Option<std::process::Output> {
+    Command::new("powercfg.exe")
+        .args(args)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()
+}
+
+fn query_lid_actions() -> Option<(u32, u32)> {
+    let out = powercfg(&["/q", "SCHEME_CURRENT", "SUB_BUTTONS"])?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    lighting_host::session_policy::parse_lid_current_indices(&text)
+}
+
+fn apply_lid_action(index: u32) {
+    apply_lid_ac_dc(index, index);
+}
+
+fn apply_lid_ac_dc(ac: u32, dc: u32) {
+    let ac_s = ac.to_string();
+    let dc_s = dc.to_string();
+    let _ = powercfg(&[
+        "/SETACVALUEINDEX",
+        "SCHEME_CURRENT",
+        "SUB_BUTTONS",
+        "LIDACTION",
+        &ac_s,
+    ]);
+    let _ = powercfg(&[
+        "/SETDCVALUEINDEX",
+        "SCHEME_CURRENT",
+        "SUB_BUTTONS",
+        "LIDACTION",
+        &dc_s,
+    ]);
+    let _ = powercfg(&["/SETACTIVE", "SCHEME_CURRENT"]);
 }
 
 /// Enumerate modes the adapter exposes for `device_name` (e.g. `\\.\DISPLAY1`).

@@ -228,7 +228,7 @@ export default function App() {
       {nav === 'about' && (
         <Placeholder
           title="关于我们"
-          body="Lighting 副屏 — 镜像主屏，或把 Android 平板变成独立第二屏（虚拟显示器 1:1）。双击便携版即可使用。"
+          body="Lighting 副屏 — 镜像主屏、双屏扩展，或「仅平板」关掉电脑屏躺着用。Windows 锁屏后无法抓屏，躺着用请关自动锁屏、合盖设为不采取任何操作。"
         />
       )}
     </AppShell>
