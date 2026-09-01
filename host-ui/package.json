@@ -12,10 +12,10 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "electron:dev": "concurrently -k \"vite\" \"wait-on http://127.0.0.1:5173 && electron .\"",
-    "electron:pack": "npm run build && electron-builder --dir",
-    "electron:build": "npm run build && electron-builder --win portable nsis",
-    "electron:build:win": "npm run build && electron-builder --win portable nsis",
-    "electron:build:portable": "npm run build && electron-builder --win portable"
+    "electron:pack": "npm run build && electron-builder --dir --publish never",
+    "electron:build": "npm run build && electron-builder --win portable nsis --publish never",
+    "electron:build:win": "npm run build && electron-builder --win portable nsis --publish never",
+    "electron:build:portable": "npm run build && electron-builder --win portable --publish never"
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -69,11 +69,7 @@
           ]
         }
       ],
-      "artifactName": "${productName}-${version}-Setup.${ext}",
-      "signingHashAlgorithms": [
-        "sha256"
-      ],
-      "rfc3161TimeStampServer": "http://timestamp.digicert.com"
+      "artifactName": "${productName}-${version}-Setup.${ext}"
     },
     "nsis": {
       "oneClick": true,
