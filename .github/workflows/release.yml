@@ -90,6 +90,13 @@ jobs:
           npm ci
           npm run electron:build:win
         env:
+          # Optional Authenticode signing (see docs/WINDOWS-SMARTSCREEN.md).
+          # Secrets: WINDOWS_CSC_LINK = base64(.pfx), WINDOWS_CSC_KEY_PASSWORD = pfx password.
+          # When unset, build stays unsigned (SmartScreen "unknown publisher").
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          WIN_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
       - name: Stage release assets (ASCII names for GitHub upload)

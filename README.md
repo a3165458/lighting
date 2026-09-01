@@ -56,6 +56,12 @@ cargo run --release
 
 说明：系统 Win+P「仅第二屏幕」会熄灭电脑主屏，Lighting 窗口也会一起没掉，因此产品内不采用该投影方式。
 
+### SmartScreen / 360 提示「有病毒」？
+
+未签名的 Windows 程序常被提示「发布者未知」或被 360 误报，**不等于真有木马**。  
+临时处理：SmartScreen 点「仍要运行」；360 选允许/加入信任。  
+长期方案见 [`docs/WINDOWS-SMARTSCREEN.md`](docs/WINDOWS-SMARTSCREEN.md)（代码签名证书）。
+
 启动主机：
 
 ```powershell
