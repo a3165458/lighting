@@ -56,6 +56,12 @@ cargo run --release
 
 说明：系统 Win+P「仅第二屏幕」会熄灭电脑主屏，Lighting 窗口也会一起没掉，因此产品内不采用该投影方式。
 
+### 扩展屏驱动（方案 B：自有 IddCx）
+
+仓库 `driver-idd/` 是基于微软 Indirect Display 样例的 **LightingIdd**（`Root\LightingIdd`）。
+需在 Windows + WDK 编译出 `LightingIdd.dll`，开发机开 testsigning；正式发布需 Attestation 签名。
+说明见 [`driver-idd/README.md`](driver-idd/README.md)。未就绪时主机仍回退开源 MttVDD，默认投屏模式为镜像。
+
 ### SmartScreen / 360 提示「有病毒」？
 
 未签名的 Windows 程序常被提示「发布者未知」或被 360 误报，**不等于真有木马**。  

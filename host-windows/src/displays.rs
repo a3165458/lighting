@@ -122,10 +122,9 @@ pub fn pick_virtual(displays: &[DisplayInfo]) -> Option<&DisplayInfo> {
 
 /// Ensure a virtual secondary exists and Windows is in extend topology.
 ///
-/// GlideX-class flow (not “manual driver hunting”):
-/// 1) write official `vdd_settings.xml` + registry `VDDPATH`
-/// 2) enable / soft-restart the IddCx device (avoid broken in-pipe RELOAD)
-/// 3) wait for pipe, force `/extend`, poll DXGI for a secondary
+/// Option B (preferred): LightingIdd — our IddCx UMDF (`Root\LightingIdd`).
+/// Enabling the device makes one monitor arrive (GlideX-class lifecycle).
+/// Legacy fallback: bundled MttVDD + named-pipe SETDISPLAYCOUNT.
 pub fn ensure_secondary_display(_mode: ShareMode) -> Result<()> {
     let list = list_displays().unwrap_or_default();
     if has_secondary(&list) {
@@ -133,8 +132,17 @@ pub fn ensure_secondary_display(_mode: ShareMode) -> Result<()> {
         return Ok(());
     }
 
-    tracing::info!("no secondary display; provisioning bundled MttVDD (GlideX-style)");
-    // Prepare settings before any device restart so the driver boots with count=1.
+    if find_idd_bundle().is_some() {
+        tracing::info!("no secondary; provisioning LightingIdd (IddCx Option B)");
+        match ensure_via_lighting_idd() {
+            Ok(()) => return Ok(()),
+            Err(err) => tracing::warn!("LightingIdd failed ({err:#}); falling back to MttVDD"),
+        }
+    } else {
+        tracing::info!("LightingIdd bundle absent; using legacy MttVDD path");
+    }
+
+    tracing::info!("provisioning bundled MttVDD (legacy fallback)");
     let _ = prepare_vdd_settings(1920, 1080, 60);
 
     if !vdd_pipe_alive() {
@@ -154,11 +162,9 @@ pub fn ensure_secondary_display(_mode: ShareMode) -> Result<()> {
         anyhow::bail!("VDD_PIPE_DOWN");
     }
 
-    // Prefer soft device restart over SETDISPLAYCOUNT (upstream RELOAD_DRIVER is flaky).
     let _ = run_vdd_provision(VddProvisionMode::EnableOnly);
     wait_for_vdd_pipe(16);
     if vdd_pipe_alive() {
-        // Nudge count only if pipe is healthy; then wait for reload to settle.
         let _ = vdd_set_display_count(1);
         wait_for_pipe_reload(20);
     }
@@ -167,7 +173,6 @@ pub fn ensure_secondary_display(_mode: ShareMode) -> Result<()> {
         return Ok(());
     }
 
-    // Last chance: rewrite settings + soft-restart again.
     let _ = prepare_vdd_settings(1920, 1080, 60);
     let _ = run_vdd_provision(VddProvisionMode::EnableOnly);
     wait_for_vdd_pipe(16);
@@ -178,6 +183,131 @@ pub fn ensure_secondary_display(_mode: ShareMode) -> Result<()> {
     }
     anyhow::bail!("VDD_NO_MONITOR");
 }
+
+fn ensure_via_lighting_idd() -> Result<()> {
+    let _ = run_idd_provision(IddProvisionMode::EnableOnly);
+    if poll_secondary(12) {
+        return Ok(());
+    }
+    run_idd_provision(IddProvisionMode::Full)?;
+    if poll_secondary(40) {
+        return Ok(());
+    }
+    let _ = run_idd_provision(IddProvisionMode::EnableOnly);
+    if poll_secondary(20) {
+        return Ok(());
+    }
+    anyhow::bail!("IDD_NO_MONITOR")
+}
+
+#[derive(Clone, Copy)]
+enum IddProvisionMode {
+    Full,
+    EnableOnly,
+}
+
+fn find_idd_bundle() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("idd"));
+            candidates.push(dir.join("resources").join("idd"));
+        }
+    }
+    if let Ok(runtime) = std::env::var("LIGHTING_RUNTIME_DIR") {
+        candidates.push(PathBuf::from(runtime).join("idd"));
+    }
+    if let Ok(resources) = std::env::var("LIGHTING_RESOURCES_DIR") {
+        candidates.push(PathBuf::from(resources).join("idd"));
+    }
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("host-ui")
+            .join("resources")
+            .join("idd"),
+    );
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("scripts")
+            .join("idd"),
+    );
+    candidates
+        .into_iter()
+        .find(|p| p.join("LightingIdd.inf").is_file())
+}
+
+fn run_idd_provision(mode: IddProvisionMode) -> Result<()> {
+    let bundle = find_idd_bundle().context("IDD_BUNDLE_MISSING")?;
+    let script = bundle.join("provision.ps1");
+    let script = if script.is_file() {
+        script
+    } else {
+        let alt = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("scripts")
+            .join("idd")
+            .join("provision.ps1");
+        if !alt.is_file() {
+            anyhow::bail!("IDD_SCRIPT_MISSING");
+        }
+        alt
+    };
+    let mode_s = match mode {
+        IddProvisionMode::Full => "Full",
+        IddProvisionMode::EnableOnly => "EnableOnly",
+    };
+    run_elevated_provision_script(&script, &bundle, mode_s)
+}
+
+fn run_elevated_provision_script(
+    script: &std::path::Path,
+    bundle: &std::path::Path,
+    mode: &str,
+) -> Result<()> {
+    let result_file = std::env::temp_dir().join(format!(
+        "lighting-idd-{}.txt",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    ));
+    let bundle_s = bundle.to_string_lossy().replace('\'', "''");
+    let script_s = script.to_string_lossy().replace('\'', "''");
+    let result_s = result_file.to_string_lossy().replace('\'', "''");
+    let ps = format!(
+        r#"$ErrorActionPreference='Stop'
+$rf='{result_s}'
+$bd='{bundle_s}'
+$scr='{script_s}'
+$m='{mode}'
+$p=Start-Process powershell.exe -Verb RunAs -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$scr,'-BundleDir',$bd,'-ResultFile',$rf,'-Mode',$m) -PassThru -Wait -WindowStyle Hidden
+if($null -eq $p){{Set-Content -Path $rf -Value 'FAIL|UAC_DENIED' -Encoding ASCII -NoNewline; exit 1}}
+if(-not (Test-Path $rf)){{Set-Content -Path $rf -Value 'FAIL|UAC_CANCELLED' -Encoding ASCII -NoNewline; exit 1}}
+exit 0"#
+    );
+    let status = Command::new("powershell.exe")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &ps])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .context("IddCx provision launcher failed")?;
+    if !status.success() {
+        anyhow::bail!("IDD_LAUNCHER_FAILED");
+    }
+    let raw = std::fs::read_to_string(&result_file).unwrap_or_default();
+    let _ = std::fs::remove_file(&result_file);
+    let line = raw.trim();
+    if line.starts_with("OK|") {
+        tracing::info!("idd provision ok: {line}");
+        return Ok(());
+    }
+    if line.starts_with("FAIL|") {
+        anyhow::bail!("{}", line.trim_start_matches("FAIL|"));
+    }
+    anyhow::bail!("IDD_UNKNOWN_RESULT")
+}
+
 
 fn poll_secondary(attempts: u32) -> bool {
     for attempt in 0..attempts {

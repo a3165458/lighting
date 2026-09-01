@@ -73,6 +73,8 @@ impl ShareMode {
 pub fn looks_virtual_display(name: &str, friendly: &str) -> bool {
     let blob = format!("{name} {friendly}").to_ascii_lowercase();
     blob.contains("virtual")
+        || blob.contains("lightingidd")
+        || blob.contains("lighting virtual")
         || blob.contains("iddsample")
         || blob.contains("idd ")
         || blob.contains("mttvdd")
