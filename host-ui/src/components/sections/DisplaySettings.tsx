@@ -35,9 +35,9 @@ export function DisplaySettings({
   const settings = host.settings
   const displays = host.displays.map((d) => ({ id: d.id, label: d.label }))
   const displayId = String(settings?.selectedDisplay ?? 0)
-  const shareMode = settings?.shareMode ?? 'extend'
+  const shareMode = settings?.shareMode ?? 'mirror'
   const shareMeta =
-    SHARE_MODE_OPTIONS.find((o) => o.id === shareMode) ?? SHARE_MODE_OPTIONS[1]
+    SHARE_MODE_OPTIONS.find((o) => o.id === shareMode) ?? SHARE_MODE_OPTIONS[0]
   const quality = settings?.qualityPct ?? 100
   const fps = settings?.fps ?? 60
   const bitrate = settings?.bitrateKbps ?? 25000
