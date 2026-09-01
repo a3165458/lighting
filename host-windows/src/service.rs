@@ -164,15 +164,20 @@ impl HostService {
         let mode = g.settings.share_mode;
         if matches!(mode, ShareMode::Extend | ShareMode::External) && !displays::has_secondary(&g.displays)
         {
-            // Final safety net — still no secondary after ensure; switch to mirror.
+            // Seamless GlideX-like recovery: switch to mirror and continue this click.
+            tracing::warn!("secondary still missing after ensure; continuing as mirror");
             g.settings.share_mode = ShareMode::Mirror;
             let _ = displays::apply_project_mode(ShareMode::Mirror);
             g.notice = Some((
                 Tone::Warn,
-                "扩展屏尚未出现，已自动改为「镜像主屏」。请再点一次「开始共享」。".into(),
+                "扩展虚拟屏未能创建（第三方驱动未就绪）。已自动用「镜像主屏」开始投屏——无需再点一次。".into(),
             ));
-            return Err("已改用镜像模式，请再点一次「开始共享」。".into());
+            // Refresh display list after topology change.
+            if let Ok(list) = displays::list_displays() {
+                g.displays = list;
+            }
         }
+        let mode = g.settings.share_mode;
         if let Some(idx) = displays::pick_display_index(&g.displays, mode) {
             g.settings.selected_display = idx;
         }

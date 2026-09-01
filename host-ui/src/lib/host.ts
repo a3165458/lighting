@@ -121,18 +121,18 @@ export function hasHostBridge(): boolean {
 export const SHARE_MODE_OPTIONS = [
   {
     id: 'mirror',
-    label: '镜像主屏',
-    hint: '与主屏同画面，并自动缩放到平板分辨率。',
+    label: '镜像主屏（推荐·免驱动）',
+    hint: '与主屏同画面并缩放到平板。不装虚拟显示驱动也能用，开箱即用。',
   },
   {
     id: 'extend',
-    label: '扩展屏（推荐）',
-    hint: '创建虚拟扩展桌面（与华硕 GlideX 同类）。平板按自身分辨率输出；失败时会自动改用镜像。',
+    label: '扩展虚拟屏（需驱动）',
+    hint: '把平板变成独立桌面（类似华硕 GlideX）。需要虚拟显示驱动；失败会自动改回镜像。',
   },
   {
     id: 'external',
-    label: '仅投扩展屏',
-    hint: '只把扩展桌面投到平板（按平板分辨率 1:1）。不会关掉电脑主屏。',
+    label: '仅投扩展屏（需驱动）',
+    hint: '只把扩展桌面投到平板。同样需要驱动；不会关掉电脑主屏。',
   },
 ] as const
 

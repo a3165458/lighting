@@ -25,17 +25,17 @@ impl ShareMode {
 
     pub fn label(self) -> &'static str {
         match self {
-            ShareMode::Mirror => "镜像主屏",
-            ShareMode::Extend => "扩展屏（推荐）",
-            ShareMode::External => "仅投扩展屏",
+            ShareMode::Mirror => "镜像主屏（推荐·免驱动）",
+            ShareMode::Extend => "扩展虚拟屏（需驱动）",
+            ShareMode::External => "仅投扩展屏（需驱动）",
         }
     }
 
     pub fn hint(self) -> &'static str {
         match self {
-            ShareMode::Mirror => "平板与电脑主屏同画面，并自动缩放到平板分辨率。",
-            ShareMode::Extend => "创建虚拟扩展桌面；平板连接后会按平板分辨率输出。电脑主屏照常可用。",
-            ShareMode::External => "只把扩展桌面投到平板（按平板分辨率 1:1）。不会关掉电脑主屏（避免 Lighting 界面消失）。",
+            ShareMode::Mirror => "与主屏同画面并缩放到平板。不装虚拟显示驱动也能用，开箱即用。",
+            ShareMode::Extend => "把平板变成独立桌面（类似华硕 GlideX）。需要虚拟显示驱动；失败时会自动改回镜像。",
+            ShareMode::External => "只把扩展桌面投到平板。同样需要虚拟显示驱动；不会关掉电脑主屏。",
         }
     }
 
@@ -202,7 +202,9 @@ impl Default for Settings {
         Self {
             selected_display: 0,
             selected_device: 0,
-            share_mode: ShareMode::Extend,
+            // Mirror needs no virtual display driver. GlideX ships a private signed
+            // IddCx driver; until we have equivalent, first-run must succeed without it.
+            share_mode: ShareMode::Mirror,
             quality_pct: 100,
             fps: 60,
             bitrate_kbps: 25_000,
