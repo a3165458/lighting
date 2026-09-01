@@ -1,0 +1,5 @@
+LightingIdd is derived from Microsoft Windows-driver-samples
+  video/IndirectDisplay / IddSampleDriver
+License: MIT (Microsoft Corporation)
+Source: https://github.com/microsoft/Windows-driver-samples
+Lighting Project modifications: branding, Root\LightingIdd hardware ID, install scripts.

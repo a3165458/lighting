@@ -300,6 +300,10 @@ pub fn human_vdd_error(raw: &str) -> Option<String> {
         "虚拟显示驱动安装失败。请右键 Lighting 选「以管理员身份运行」后再试；仍失败可到 GitHub 手动安装 Virtual Display Driver。"
     } else if code_upper.contains("VDD_PIPE_DOWN") {
         "虚拟显示驱动未响应。请完全退出 Lighting 后重试；若刚点过 UAC「是」，请等几秒再点「开始共享」。"
+    } else if code_upper.contains("IDD_NO_MONITOR") || code_upper.contains("BUNDLE_DLL_MISSING") {
+        "Lighting 自有虚拟显示驱动未能创建扩展屏。开发机需开启测试签名并编译 LightingIdd；正式版需 Microsoft Attestation 签名。已可改用镜像投屏。"
+    } else if code_upper.contains("DRIVER_SIGNATURE") {
+        "虚拟显示驱动签名不被系统接受。开发请开 testsigning；发布需 Attestation 签名。可先用镜像模式。"
     } else if code_upper.contains("VDD_NO_MONITOR") || code_upper.contains("DEVICE_STILL_MISSING") {
         "扩展屏尚未出现。已按华硕 GlideX 同类方案自动改用镜像；也可使用安装包重装以预装驱动后再试扩展。"
     } else if code_upper.contains("DEVICE_NOT_FOUND") || code_upper.contains("DEVICE_STILL_MISSING") {
