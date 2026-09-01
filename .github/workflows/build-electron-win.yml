@@ -62,7 +62,9 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item host-windows/target/release/lighting-host.exe host-ui/resources/lighting-host.exe -Force
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/vdd/stage-vdd-bundle.ps1
           Get-ChildItem host-ui/resources | Format-Table Name, Length
+          Get-ChildItem host-ui/resources/vdd -ErrorAction SilentlyContinue | Format-Table Name, Length
 
       - name: Setup Node
         uses: actions/setup-node@v4

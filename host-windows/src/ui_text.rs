@@ -281,13 +281,56 @@ pub fn human_detail_text(phase: &str, detail: &str) -> String {
     detail.to_string()
 }
 
+/// Map bundled virtual-display (MttVDD) error codes to beginner copy.
+pub fn human_vdd_error(raw: &str) -> Option<String> {
+    let upper = raw.to_uppercase();
+    let code = raw
+        .split_whitespace()
+        .find(|t| t.chars().all(|c| c.is_ascii_uppercase() || c == '_'))
+        .unwrap_or(raw);
+    let code_upper = code.to_uppercase();
+
+    let msg = if code_upper.contains("UAC_DENIED") {
+        "需要管理员权限才能安装虚拟显示驱动。请在弹出的 UAC 窗口点「是」。"
+    } else if code_upper.contains("VDD_BUNDLE_MISSING") || code_upper.contains("BUNDLE_INF_MISSING") {
+        "安装包缺少虚拟显示驱动文件。请从 GitHub 下载最新版 Lighting 便携版/安装包。"
+    } else if code_upper.contains("VDD_SCRIPT_MISSING") {
+        "虚拟显示驱动安装脚本缺失。请重新下载完整安装包。"
+    } else if code_upper.contains("DRIVER_INSTALL_FAILED") {
+        "虚拟显示驱动安装失败。请右键 Lighting 选「以管理员身份运行」后再试；仍失败可到 GitHub 手动安装 Virtual Display Driver。"
+    } else if code_upper.contains("VDD_PIPE_DOWN") {
+        "虚拟显示驱动未响应。请完全退出 Lighting 后重试；若刚点过 UAC「是」，请等几秒再点「开始共享」。"
+    } else if code_upper.contains("VDD_NO_MONITOR") || code_upper.contains("DEVICE_STILL_MISSING") {
+        "扩展屏尚未出现。若刚安装驱动，请等几秒后再点一次「开始共享」。"
+    } else if code_upper.contains("DEVICE_NOT_FOUND") {
+        "未找到虚拟显示设备。请允许管理员安装后重试。"
+    } else if code_upper.contains("VDD_LAUNCHER_FAILED") || code_upper.contains("VDD_UNKNOWN_RESULT") {
+        "无法启动虚拟显示驱动安装程序。请用管理员身份运行 Lighting。"
+    } else if upper.contains("静默安装")
+        || upper.contains("NEFCON")
+        || upper.contains("EXITCODE")
+        || raw.contains('�')
+    {
+        "虚拟显示驱动安装失败（v0.1.7 及更早版本已知问题）。请升级到 v0.1.8 或更新版，并以管理员身份运行。"
+    } else {
+        return None;
+    };
+    Some(msg.into())
+}
+
 pub fn human_last_error(raw: &str) -> String {
+    if let Some(vdd) = human_vdd_error(raw) {
+        return vdd;
+    }
     let lower = raw.to_lowercase();
     if raw.contains("找不到 adb") || lower.contains("adb.exe") {
         return "未检测到 USB 驱动。请安装平台工具，或换一根能传数据的线。".into();
     }
     if raw.contains("没有可用显示器") {
         return "没有可用显示器".into();
+    }
+    if raw.contains("扩展屏尚未就绪") {
+        return raw.lines().next().unwrap_or(raw).to_string();
     }
     if looks_like_bind_or_port(raw) {
         return "无法开始共享，请稍后重试".into();
@@ -486,6 +529,9 @@ mod tests {
             human_last_error("绑定端口: os error 10048"),
             "无法开始共享，请稍后重试"
         );
+        assert!(human_vdd_error("VDD_PIPE_DOWN").unwrap().contains("未响应"));
+        assert!(human_vdd_error("FAIL|UAC_DENIED").unwrap().contains("管理员"));
+        assert!(human_last_error("VDD_BUNDLE_MISSING").contains("缺少"));
         assert!(looks_like_bind_or_port("connection refused"));
         assert!(looks_technical("adb reverse tcp:17400"));
         assert!(!looks_technical("没有可用显示器"));

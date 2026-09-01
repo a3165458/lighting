@@ -22,6 +22,10 @@ if (-not (Test-Path (Join-Path $resDir "Lighting.apk"))) {
     throw "missing host-ui\resources\Lighting.apk"
 }
 
+Write-Host "==> Stage virtual display driver bundle (MttVDD + nefconw)"
+& (Join-Path $Root "scripts\vdd\stage-vdd-bundle.ps1")
+if ($LASTEXITCODE -ne 0) { throw "vdd bundle staging failed" }
+
 Set-Location (Join-Path $Root "host-ui")
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
     throw "npm not found. Install Node.js LTS first."

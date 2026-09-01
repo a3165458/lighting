@@ -127,7 +127,8 @@ impl HostService {
                 g.last_error.clear();
             }
             if let Err(err) = displays::ensure_secondary_display(mode) {
-                let msg = format!("{err:#}");
+                let raw = format!("{err:#}");
+                let msg = ui_text::human_last_error(&raw);
                 let mut g = self.inner.lock().expect("host lock");
                 g.last_error = msg.clone();
                 g.notice = Some((Tone::Warn, msg.clone()));
