@@ -173,6 +173,17 @@ async fn run_session_inner(
     set_status(&status, "监听", format!("绑定 {bind}"));
     let listener = TcpListener::bind(&bind).await.context("绑定端口")?;
 
+    // DXGI cannot capture the lock screen. Hold the display/system idle
+    // timeout for the whole share (including wait-for-tablet).
+    let _keep_awake = displays::KeepAwakeGuard::acquire();
+    let _lid = if req.share_mode.blanks_pc_monitor() {
+        Some(displays::LidCloseGuard::apply())
+    } else {
+        None
+    };
+    let tablet_only = Arc::new(AtomicBool::new(false));
+    let _restore_pc = TabletOnlyRestoreGuard(tablet_only.clone());
+
     let adb_path = adb::find_adb().ok();
     let mut reverse_serial: Option<String> = None;
     let mut wait_detail = "请在平板上打开 Lighting 并连接".to_string();
@@ -284,6 +295,7 @@ async fn run_session_inner(
             status.clone(),
             stop.clone(),
             controls.clone(),
+            tablet_only.clone(),
         )
         .await
         {
@@ -322,6 +334,20 @@ async fn cleanup_reverse(adb: Option<&std::path::PathBuf>, serial: Option<&str>)
     }
 }
 
+struct TabletOnlyRestoreGuard(Arc<AtomicBool>);
+
+impl Drop for TabletOnlyRestoreGuard {
+    fn drop(&mut self) {
+        if self.0.swap(false, Ordering::SeqCst) {
+            if let Err(err) = displays::restore_pc_monitor() {
+                tracing::warn!("restore PC monitor after tablet-only failed: {err:#}");
+            } else {
+                tracing::info!("restored PC monitor after tablet-only session");
+            }
+        }
+    }
+}
+
 async fn handle_client(
     stream: TcpStream,
     mut display: DisplayInfo,
@@ -330,6 +356,7 @@ async fn handle_client(
     status: Arc<Mutex<SessionStatus>>,
     stop: Arc<AtomicBool>,
     controls: Arc<Controls>,
+    tablet_only: Arc<AtomicBool>,
 ) -> Result<()> {
     stream.set_nodelay(true)?;
     let (mut reader, mut writer) = stream.into_split();
@@ -478,6 +505,46 @@ async fn handle_client(
                 hello.screen_width, hello.screen_height
             ),
         );
+    }
+
+    if req.share_mode.blanks_pc_monitor() {
+        set_status(&status, "仅平板", "正在关闭电脑屏（Win+P 仅第二屏幕）…");
+        match tokio::task::spawn_blocking(displays::apply_tablet_only_output).await {
+            Ok(Ok(())) => {
+                tablet_only.store(true, Ordering::SeqCst);
+                if let Ok(list) = displays::list_displays() {
+                    if let Some(idx) = displays::pick_display_index(&list, req.share_mode) {
+                        if let Some(updated) = list.get(idx).cloned() {
+                            display = updated;
+                        }
+                    } else if let Some(updated) = displays::pick_virtual(&list)
+                        .cloned()
+                        .or_else(|| list.first().cloned())
+                    {
+                        display = updated;
+                    }
+                }
+                set_status(
+                    &status,
+                    "仅平板",
+                    format!(
+                        "电脑屏已关 · 捕获 {}×{}。合盖可用；请勿锁屏。",
+                        display.width, display.height
+                    ),
+                );
+            }
+            Ok(Err(err)) => {
+                tracing::warn!("tablet-only DisplaySwitch /external failed: {err:#}");
+                set_status(
+                    &status,
+                    "仅平板",
+                    format!("未能关闭电脑屏，将继续双屏推流。{err}"),
+                );
+            }
+            Err(err) => {
+                tracing::warn!("tablet-only join failed: {err:#}");
+            }
+        }
     }
 
     let codec = pick_codec(&hello, req.prefer_hevc);

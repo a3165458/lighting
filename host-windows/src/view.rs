@@ -14,29 +14,33 @@ pub enum ShareMode {
     /// Mirror the primary monitor, encoded at the tablet panel size.
     #[default]
     Mirror,
-    /// Independent second desktop on a virtual monitor, set to tablet pixels (1:1).
+    /// Independent second desktop; PC monitor stays on.
     Extend,
-    /// Legacy wire value — treated as [`ShareMode::Extend`].
+    /// Tablet-only (Win+P “仅第二屏幕”): PC panel off. Best for using in bed.
     External,
 }
 
 impl ShareMode {
-    pub const ALL: [ShareMode; 2] = [ShareMode::Mirror, ShareMode::Extend];
+    pub const ALL: [ShareMode; 3] = [ShareMode::Mirror, ShareMode::Extend, ShareMode::External];
 
     pub fn label(self) -> &'static str {
         match self {
             ShareMode::Mirror => "镜像主屏（按平板分辨率）",
-            ShareMode::Extend | ShareMode::External => "独立第二屏（虚拟显示器·1:1）",
+            ShareMode::Extend => "双屏扩展（电脑屏仍亮）",
+            ShareMode::External => "仅平板（电脑屏关闭·躺着用）",
         }
     }
 
     pub fn hint(self) -> &'static str {
         match self {
             ShareMode::Mirror => {
-                "镜像电脑主屏并按平板分辨率输出。免驱动；「跟随平板」时会临时切电脑分辨率。"
+                "镜像电脑主屏。电脑锁屏后无法抓屏；躺着用请改选「仅平板」。"
             }
-            ShareMode::Extend | ShareMode::External => {
-                "平板作为独立桌面（类似 GlideX）。虚拟屏直接设为平板分辨率，1:1 抓取最流畅，且不改主屏。"
+            ShareMode::Extend => {
+                "平板作为独立桌面，电脑屏继续亮。适合坐在电脑前；锁屏同样会中断。"
+            }
+            ShareMode::External => {
+                "虚拟屏 1:1 铺满平板，并关掉电脑屏（Win+P 仅第二屏幕）。投屏期间防休眠；合盖请设为不休眠。不要锁屏。"
             }
         }
     }
@@ -44,32 +48,58 @@ impl ShareMode {
     pub fn as_wire(self) -> &'static str {
         match self {
             ShareMode::Mirror => "mirror",
-            // Collapse the legacy external value: Lighting never blanks the PC.
-            ShareMode::Extend | ShareMode::External => "extend",
+            ShareMode::Extend => "extend",
+            ShareMode::External => "external",
         }
     }
 
     pub fn from_wire(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "mirror" | "clone" | "duplicate" => Some(ShareMode::Mirror),
-            "extend" | "extended" | "external" | "second" | "externalonly" => {
-                Some(ShareMode::Extend)
-            }
+            "extend" | "extended" => Some(ShareMode::Extend),
+            "external" | "second" | "externalonly" | "tablet" | "bed" => Some(ShareMode::External),
             _ => None,
         }
     }
 
-    /// `/external` would blank the PC monitor (and our own window), so extend
-    /// modes always use `/extend`.
     pub fn display_switch_arg(self) -> &'static str {
         match self {
             ShareMode::Mirror => "/clone",
-            ShareMode::Extend | ShareMode::External => "/extend",
+            ShareMode::Extend => "/extend",
+            ShareMode::External => "/external",
         }
     }
 
     pub fn uses_virtual_display(self) -> bool {
         matches!(self, ShareMode::Extend | ShareMode::External)
+    }
+
+    /// After the tablet connects, turn the laptop panel off so the virtual
+    /// display (the tablet) is the only desktop.
+    pub fn blanks_pc_monitor(self) -> bool {
+        matches!(self, ShareMode::External)
+    }
+}
+
+/// Pick a DXGI-order index for `mode`. Each item is `(primary, is_virtual)`.
+pub fn pick_share_target_index(items: &[(bool, bool)], mode: ShareMode) -> Option<usize> {
+    if items.is_empty() {
+        return None;
+    }
+    match mode {
+        ShareMode::Mirror => items.iter().position(|(primary, _)| *primary).or(Some(0)),
+        ShareMode::Extend => items
+            .iter()
+            .position(|(primary, virt)| *virt && !*primary)
+            .or_else(|| items.iter().position(|(primary, _)| !*primary))
+            .or_else(|| items.iter().position(|(primary, _)| *primary)),
+        // After Win+P /external the virtual panel is often the only screen and
+        // becomes primary — still capture it.
+        ShareMode::External => items
+            .iter()
+            .position(|(_, virt)| *virt)
+            .or_else(|| items.iter().position(|(primary, _)| !*primary))
+            .or(Some(0)),
     }
 }
 
@@ -107,13 +137,33 @@ mod share_mode_tests {
     }
 
     #[test]
-    fn legacy_external_collapses_into_extend() {
-        assert_eq!(ShareMode::from_wire("external"), Some(ShareMode::Extend));
-        assert_eq!(ShareMode::External.as_wire(), "extend");
-        assert!(ShareMode::Extend.uses_virtual_display());
-        assert!(!ShareMode::Mirror.uses_virtual_display());
-        // Extend must never blank the PC monitor.
+    fn tablet_only_mode_blanks_pc_and_uses_virtual() {
+        assert_eq!(ShareMode::from_wire("external"), Some(ShareMode::External));
+        assert_eq!(ShareMode::from_wire("bed"), Some(ShareMode::External));
+        assert_eq!(ShareMode::External.as_wire(), "external");
+        assert_eq!(ShareMode::External.display_switch_arg(), "/external");
+        assert!(ShareMode::External.uses_virtual_display());
+        assert!(ShareMode::External.blanks_pc_monitor());
+        assert!(!ShareMode::Extend.blanks_pc_monitor());
         assert_eq!(ShareMode::Extend.display_switch_arg(), "/extend");
+    }
+
+    #[test]
+    fn pick_share_target_tablet_only_keeps_virtual_when_it_is_primary() {
+        let two = [(true, false), (false, true)];
+        assert_eq!(pick_share_target_index(&two, ShareMode::Mirror), Some(0));
+        assert_eq!(pick_share_target_index(&two, ShareMode::Extend), Some(1));
+        assert_eq!(pick_share_target_index(&two, ShareMode::External), Some(1));
+
+        let only_virtual = [(true, true)];
+        assert_eq!(
+            pick_share_target_index(&only_virtual, ShareMode::External),
+            Some(0)
+        );
+        assert_eq!(
+            pick_share_target_index(&only_virtual, ShareMode::Extend),
+            Some(0)
+        );
     }
 
     #[test]
@@ -723,7 +773,11 @@ fn display_card(ui: &mut egui::Ui, snap: &Snapshot, settings: &mut Settings) {
             ui.add_space(4.0);
             ui.label(
                 egui::RichText::new(
-                    "尚未看到虚拟屏。点「开始共享」会自动启用驱动（首次可能需管理员确认），并在平板连接后设为平板分辨率。",
+                    if settings.share_mode.blanks_pc_monitor() {
+                        "尚未看到虚拟屏。点「开始共享」会启用驱动；平板连上后再关掉电脑屏（避免本窗口跟着消失）。"
+                    } else {
+                        "尚未看到虚拟屏。点「开始共享」会自动启用驱动（首次可能需管理员确认），并在平板连接后设为平板分辨率。"
+                    },
                 )
                 .size(11.0)
                 .color(theme::WARN),

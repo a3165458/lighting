@@ -122,7 +122,12 @@ impl HostService {
                 let mut g = self.inner.lock().expect("host lock");
                 g.notice = Some((
                     Tone::Info,
-                    "正在启用虚拟显示器（独立第二屏，首次可能需管理员确认）…".into(),
+                    if mode.blanks_pc_monitor() {
+                        "正在启用虚拟显示器。平板连上后会关掉电脑屏（仅平板）。首次可能需管理员确认…"
+                            .into()
+                    } else {
+                        "正在启用虚拟显示器（独立第二屏，首次可能需管理员确认）…".into()
+                    },
                 ));
                 g.last_error.clear();
             }
@@ -158,7 +163,10 @@ impl HostService {
         }
         // Re-read: the extend attempt above may have fallen back to mirror.
         let mut mode = g.settings.share_mode;
-        if mode.uses_virtual_display() && !displays::has_secondary(&g.displays) {
+        if mode.uses_virtual_display()
+            && !displays::has_secondary(&g.displays)
+            && !displays::has_virtual_display(&g.displays)
+        {
             tracing::warn!("secondary still missing after ensure; continuing as mirror");
             g.settings.share_mode = ShareMode::Mirror;
             mode = ShareMode::Mirror;

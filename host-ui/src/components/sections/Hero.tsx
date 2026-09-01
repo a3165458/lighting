@@ -10,7 +10,7 @@ export function Hero() {
       <div className="min-w-0 max-w-xl">
         <h1 className="text-3xl font-bold leading-tight text-text">Lighting 副屏</h1>
         <p className="mt-2 text-md text-text-secondary">
-          将你的平板变成电脑的独立第二屏，或镜像主屏
+          将平板变成电脑的独立第二屏、镜像主屏，或关掉电脑屏只躺着用平板
         </p>
         <p className="mt-3 text-base font-semibold text-brand">
           低延迟 · 高画质 · 流畅回传

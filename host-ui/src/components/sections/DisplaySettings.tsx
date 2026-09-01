@@ -45,7 +45,14 @@ export function DisplaySettings({
   const shareMeta =
     SHARE_MODE_OPTIONS.find((o) => o.id === shareMode) ?? SHARE_MODE_OPTIONS[0]
   const isExtend = shareMode === 'extend' || shareMode === 'external'
+  const isTabletOnly = shareMode === 'external'
   const hasSecondary = host.displays.some((d) => !d.primary)
+  const hasVirtual = host.displays.some((d) => d.virtualDisplay)
+  const modeBanner = isTabletOnly
+    ? '仅平板：平板连上后关掉电脑屏（Win+P 仅第二屏幕），适合合盖躺着用。投屏期间防休眠。Windows 锁屏后无法抓屏，请关掉自动锁屏。'
+    : isExtend
+      ? '双屏扩展：平板变成单独桌面，虚拟屏直接设为平板分辨率（1:1 抓取，电脑屏仍亮）。首次可能需管理员确认；失败会自动改用镜像。'
+      : '镜像主屏：电脑画面同步到平板。「跟随平板」只切电脑原生比例（16:9 电脑不会切到 1920×1200，避免拉伸卡顿）。锁屏后无法抓屏；躺着用请改选「仅平板」。'
 
   return (
     <section className="glass-card p-[var(--space-card-pad)]" aria-label="投屏设置">
@@ -58,9 +65,7 @@ export function DisplaySettings({
 
       <div className="flex flex-col gap-[var(--space-form-gap)]">
         <p className="rounded-[var(--radius-control)] bg-brand-soft/60 px-3 py-2 text-sm text-text-secondary">
-          {isExtend
-            ? '独立第二屏：平板变成单独桌面，虚拟屏直接设为平板分辨率（1:1 抓取，不改电脑主屏）。首次可能需管理员确认；失败会自动改用镜像。'
-            : '镜像主屏：电脑画面同步到平板。「跟随平板」只切电脑原生比例（16:9 电脑不会切到 1920×1200，避免拉伸卡顿）。要 1:1 铺满 1920×1200，请用独立第二屏。'}
+          {modeBanner}
         </p>
 
         <SettingRow
@@ -69,9 +74,9 @@ export function DisplaySettings({
           description={shareMeta.hint}
           tall
           control={
-            <div className="w-[280px] max-w-full">
+            <div className="w-[320px] max-w-full">
               <Dropdown
-                value={isExtend ? 'extend' : 'mirror'}
+                value={shareMode}
                 options={SHARE_MODE_OPTIONS.map((o) => ({ id: o.id, label: o.label }))}
                 onChange={(id) => onChange({ shareMode: id })}
                 disabled={disabled}
@@ -81,9 +86,11 @@ export function DisplaySettings({
           }
         />
 
-        {isExtend && !hasSecondary && (
+        {isExtend && !hasSecondary && !hasVirtual && (
           <p className="rounded-[var(--radius-control)] bg-warning/10 px-3 py-2 text-sm text-warning">
-            尚未看到虚拟屏。点「开始共享」会自动启用驱动（首次可能需管理员确认），平板连接后会设为平板分辨率。失败则自动镜像，保证能投屏。
+            {isTabletOnly
+              ? '尚未看到虚拟屏。点「开始共享」会启用驱动；平板连上后再关掉电脑屏（避免本窗口跟着消失）。失败则自动镜像。'
+              : '尚未看到虚拟屏。点「开始共享」会自动启用驱动（首次可能需管理员确认），平板连接后会设为平板分辨率。失败则自动镜像，保证能投屏。'}
           </p>
         )}
 
