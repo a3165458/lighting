@@ -140,9 +140,13 @@ class HostIpcClient {
     }
     if (this.child && !this.child.killed) return
 
+    const resourcesDir =
+      process.resourcesPath || path.dirname(exe)
+
     const env = {
       ...bootstrap.runtimeEnv(),
       [PORT_ENV]: String(this.port),
+      LIGHTING_RESOURCES_DIR: resourcesDir,
     }
 
     this.child = spawn(exe, ['--ipc-only'], {

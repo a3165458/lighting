@@ -302,8 +302,20 @@ pub fn human_vdd_error(raw: &str) -> Option<String> {
         "虚拟显示驱动未响应。请完全退出 Lighting 后重试；若刚点过 UAC「是」，请等几秒再点「开始共享」。"
     } else if code_upper.contains("VDD_NO_MONITOR") || code_upper.contains("DEVICE_STILL_MISSING") {
         "扩展屏尚未出现。若刚安装驱动，请等几秒后再点一次「开始共享」。"
-    } else if code_upper.contains("DEVICE_NOT_FOUND") {
-        "未找到虚拟显示设备。请允许管理员安装后重试。"
+    } else if code_upper.contains("DEVICE_NOT_FOUND") || code_upper.contains("DEVICE_STILL_MISSING") {
+        "未找到虚拟显示设备。请在 UAC 弹窗点「是」允许安装驱动后重试。"
+    } else if code_upper.contains("UAC_CANCELLED") {
+        "已取消管理员授权。扩展屏需要安装虚拟显示驱动，请在弹窗中点「是」。"
+    } else if code_upper.contains("ACCESS_DENIED") {
+        "权限不足，无法安装虚拟显示驱动。请右键 Lighting 选「以管理员身份运行」。"
+    } else if code_upper.contains("DRIVER_SIGNATURE") {
+        "驱动签名未被系统信任。请关闭「内存完整性」/核心隔离后再试，或用管理员身份运行。"
+    } else if code_upper.contains("PNP_QUERY_FAILED") {
+        "无法查询显示设备。请重启 Lighting 并以管理员身份运行后再试。"
+    } else if code_upper.contains("BUNDLE_DIR_MISSING") {
+        "找不到虚拟显示驱动目录。请重新下载完整安装包。"
+    } else if code_upper.contains("UNEXPECTED") || code_upper.starts_with("ERR_") {
+        "虚拟显示驱动安装遇到未知错误。请右键 Lighting「以管理员身份运行」；仍失败可到 GitHub 手动安装 Virtual Display Driver。"
     } else if code_upper.contains("VDD_LAUNCHER_FAILED") || code_upper.contains("VDD_UNKNOWN_RESULT") {
         "无法启动虚拟显示驱动安装程序。请用管理员身份运行 Lighting。"
     } else if upper.contains("静默安装")
@@ -530,6 +542,8 @@ mod tests {
             "无法开始共享，请稍后重试"
         );
         assert!(human_vdd_error("VDD_PIPE_DOWN").unwrap().contains("未响应"));
+        assert!(human_vdd_error("UNEXPECTED").unwrap().contains("未知错误"));
+        assert!(human_vdd_error("UAC_CANCELLED").unwrap().contains("取消"));
         assert!(human_vdd_error("FAIL|UAC_DENIED").unwrap().contains("管理员"));
         assert!(human_last_error("VDD_BUNDLE_MISSING").contains("缺少"));
         assert!(looks_like_bind_or_port("connection refused"));

@@ -180,6 +180,9 @@ fn find_vdd_bundle() -> Option<PathBuf> {
     if let Ok(runtime) = std::env::var("LIGHTING_RUNTIME_DIR") {
         candidates.push(PathBuf::from(runtime).join("vdd"));
     }
+    if let Ok(resources) = std::env::var("LIGHTING_RESOURCES_DIR") {
+        candidates.push(PathBuf::from(resources).join("vdd"));
+    }
     candidates.push(
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
@@ -224,7 +227,8 @@ $bd='{bundle_s}'
 $scr='{script_s}'
 $m='{mode_s}'
 $p=Start-Process powershell.exe -Verb RunAs -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$scr,'-BundleDir',$bd,'-ResultFile',$rf,'-Mode',$m) -PassThru -Wait -WindowStyle Hidden
-if($null -eq $p){{Set-Content $rf 'FAIL|UAC_DENIED' -Encoding ASCII; exit 1}}
+if($null -eq $p){{Set-Content -Path $rf -Value 'FAIL|UAC_DENIED' -Encoding ASCII -NoNewline; exit 1}}
+if(-not (Test-Path $rf)){{Set-Content -Path $rf -Value 'FAIL|UAC_CANCELLED' -Encoding ASCII -NoNewline; exit 1}}
 exit 0"#
     );
     let status = Command::new("powershell.exe")
