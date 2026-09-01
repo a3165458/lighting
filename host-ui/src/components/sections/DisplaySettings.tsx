@@ -19,7 +19,7 @@ type Props = {
 }
 
 const RES_OPTIONS = [
-  { id: 'device', label: '跟随平板（切换电脑分辨率）' },
+  { id: 'device', label: '跟随平板（保持电脑比例）' },
   { id: 'fhd', label: '最高 1080p' },
   { id: 'uhd2k', label: '最高 2K' },
   { id: 'uhd4k', label: '最高 4K' },
@@ -60,7 +60,7 @@ export function DisplaySettings({
         <p className="rounded-[var(--radius-control)] bg-brand-soft/60 px-3 py-2 text-sm text-text-secondary">
           {isExtend
             ? '独立第二屏：平板变成单独桌面，虚拟屏直接设为平板分辨率（1:1 抓取，不改电脑主屏）。首次可能需管理员确认；失败会自动改用镜像。'
-            : '镜像主屏：电脑画面同步到平板。「跟随平板」会尽量切电脑分辨率，但不会牺牲刷新率（避免切完变卡）。'}
+            : '镜像主屏：电脑画面同步到平板。「跟随平板」只切电脑原生比例（16:9 电脑不会切到 1920×1200，避免拉伸卡顿）。要 1:1 铺满 1920×1200，请用独立第二屏。'}
         </p>
 
         <SettingRow
