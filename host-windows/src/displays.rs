@@ -758,6 +758,8 @@ pub fn pick_closest_mode(
     target_w: u32,
     target_h: u32,
     prefer_fps: u32,
+    native_w: u32,
+    native_h: u32,
 ) -> Option<DisplayMode> {
     let tuples: Vec<(u32, u32, u32)> = modes
         .iter()
@@ -768,6 +770,8 @@ pub fn pick_closest_mode(
         target_w,
         target_h,
         prefer_fps,
+        native_w,
+        native_h,
     )
     .map(|(w, h, fps)| DisplayMode {
         width: w,
@@ -831,10 +835,8 @@ Write-Output ("{{0}}x{{1}}@{{2}}" -f $dm.dmPelsWidth, $dm.dmPelsHeight, $dm.dmDi
 }
 
 /// Follow-tablet: temporarily switch the captured monitor toward the tablet panel.
-/// Returns `(applied, restore)`. Caller must keep [`ModeRestoreGuard`] until session end.
-///
-/// Refuses switches that would cost refresh rate — a 165 Hz desktop dropped to
-/// 60 Hz reads as stutter even though the tablet resolution now matches.
+/// Never puts a 16:9 laptop onto 1920×1200 just because the tablet is 16:10 —
+/// that scaled timing is what made 1080p smooth and 1200p stutter.
 pub fn apply_follow_tablet_mode(
     device_name: &str,
     current_size: DisplayMode,
@@ -845,39 +847,44 @@ pub fn apply_follow_tablet_mode(
     let target_w = tablet_w.max(16);
     let target_h = tablet_h.max(16);
 
-    // Live mode carries the real refresh rate; DXGI only gave us pixels.
     let current = current_display_mode(device_name).unwrap_or(current_size);
     let min_fps = min_fps.max(30).min(current.fps.max(30));
-
-    if current.width == target_w && current.height == target_h {
-        return Ok((
-            current,
-            ModeRestore {
-                device: device_name.to_string(),
-                mode: current,
-            },
-        ));
-    }
-
     let modes = list_display_modes(device_name).unwrap_or_default();
-    let chosen = pick_closest_mode(&modes, target_w, target_h, min_fps).context(
-        "显示器没有可用的分辨率列表",
-    )?;
+    let tuples: Vec<(u32, u32, u32)> = modes
+        .iter()
+        .map(|m| (m.width, m.height, m.fps))
+        .collect();
+    let (native_w, native_h) = lighting_host::session_policy::native_panel_mode(&tuples)
+        .map(|(w, h, _)| (w, h))
+        .unwrap_or((current.width, current.height));
+
+    let chosen = pick_closest_mode(
+        &modes,
+        target_w,
+        target_h,
+        min_fps,
+        native_w,
+        native_h,
+    )
+    .context("显示器没有可用的分辨率列表")?;
 
     if !lighting_host::session_policy::should_switch_desktop_mode(
         (current.width, current.height, current.fps),
         (chosen.width, chosen.height, chosen.fps),
         target_w,
         target_h,
+        native_w,
+        native_h,
     ) {
         anyhow::bail!(
-            "为避免掉刷新率/卡顿，保持电脑 {}×{}@{}Hz（可选模式 {}×{}@{}Hz）",
+            "电脑保持 {}×{}@{}Hz（原生比例 {}×{}，不切 16:10 的 {}×{} 以免卡顿）",
             current.width,
             current.height,
             current.fps,
-            chosen.width,
-            chosen.height,
-            chosen.fps
+            native_w,
+            native_h,
+            target_w,
+            target_h
         );
     }
 

@@ -66,34 +66,83 @@ pub fn orient_box(sw: u32, sh: u32, dw: u32, dh: u32) -> (u32, u32) {
     }
 }
 
-/// Pick the closest `(w,h,fps)` mode to an oriented tablet panel.
+/// 16:9 vs 16:10 differs by ~11%. Keep a 4% band so 1920×1080 and 2560×1440
+/// stay in one family, while 1920×1200 is rejected on a 16:9 laptop panel.
+pub fn aspects_compatible(w1: u32, h1: u32, w2: u32, h2: u32) -> bool {
+    if w1 == 0 || h1 == 0 || w2 == 0 || h2 == 0 {
+        return false;
+    }
+    let a = w1 as f64 / h1 as f64;
+    let b = w2 as f64 / h2 as f64;
+    let denom = a.max(b);
+    if denom <= f64::EPSILON {
+        return false;
+    }
+    (a - b).abs() / denom <= 0.04
+}
+
+/// Largest listed mode is almost always the panel's native timing.
+pub fn native_panel_mode(modes: &[(u32, u32, u32)]) -> Option<(u32, u32, u32)> {
+    modes
+        .iter()
+        .copied()
+        .filter(|&(w, h, _)| w >= 16 && h >= 16)
+        .max_by_key(|&(w, h, fps)| (w as u64 * h as u64, fps))
+}
+
+/// Pick a PC mode near the tablet without leaving the panel's native aspect.
 ///
-/// Size closeness dominates, but among candidates of the same size the highest
-/// refresh wins: dropping a 165 Hz desktop to 60 Hz reads as "卡顿" even though
-/// the stream itself is fine.
+/// A 1920×1200 (16:10) tablet on a 16:9 laptop must NOT pick 1920×1200: that
+/// CVT scaled timing is what made “跟随平板” stutter after 1080p felt fine.
 pub fn pick_closest_display_mode(
     modes: &[(u32, u32, u32)],
     target_w: u32,
     target_h: u32,
     min_fps: u32,
+    native_w: u32,
+    native_h: u32,
 ) -> Option<(u32, u32, u32)> {
     if modes.is_empty() || target_w == 0 || target_h == 0 {
         return None;
     }
     let min_fps = min_fps.max(30);
-    // First pass: only modes that keep the refresh rate we need.
-    let fast: Vec<(u32, u32, u32)> = modes
+    let (nw, nh) = if native_w >= 16 && native_h >= 16 {
+        (native_w, native_h)
+    } else {
+        native_panel_mode(modes).map(|(w, h, _)| (w, h)).unwrap_or((target_w, target_h))
+    };
+
+    let same_aspect: Vec<(u32, u32, u32)> = modes
         .iter()
         .copied()
-        .filter(|&(w, h, fps)| w >= 16 && h >= 16 && fps >= min_fps)
+        .filter(|&(w, h, fps)| {
+            w >= 16 && h >= 16 && fps >= min_fps && aspects_compatible(w, h, nw, nh)
+        })
         .collect();
-    let pool = if fast.is_empty() { modes } else { &fast };
+    let pool: &[(u32, u32, u32)] = if !same_aspect.is_empty() {
+        &same_aspect
+    } else {
+        // No native-aspect mode at min_fps — still refuse foreign aspect.
+        let any_aspect: Vec<(u32, u32, u32)> = modes
+            .iter()
+            .copied()
+            .filter(|&(w, h, _)| w >= 16 && h >= 16 && aspects_compatible(w, h, nw, nh))
+            .collect();
+        if any_aspect.is_empty() {
+            return None;
+        }
+        return pick_in_pool(&any_aspect, target_w, target_h);
+    };
+    pick_in_pool(pool, target_w, target_h)
+}
 
+fn pick_in_pool(
+    pool: &[(u32, u32, u32)],
+    target_w: u32,
+    target_h: u32,
+) -> Option<(u32, u32, u32)> {
     let mut best: Option<((u128, u32), (u32, u32, u32))> = None;
     for &(w, h, fps) in pool {
-        if w < 16 || h < 16 {
-            continue;
-        }
         let dw = w.abs_diff(target_w) as u128;
         let dh = h.abs_diff(target_h) as u128;
         let size_score = if dw == 0 && dh == 0 {
@@ -101,8 +150,6 @@ pub fn pick_closest_display_mode(
         } else {
             dw * dw + dh * dh + 1
         };
-        // Rank by (size distance, then highest refresh) — never trade fps away
-        // for a marginally closer resolution.
         let key = (size_score, u32::MAX - fps);
         match best {
             None => best = Some((key, (w, h, fps))),
@@ -115,22 +162,34 @@ pub fn pick_closest_display_mode(
 
 /// Whether switching the desktop to `candidate` is actually worth it.
 ///
-/// Refuses the switch when it would cost refresh rate (the main cause of the
-/// "分辨率对了但很卡" report) or when it gets no closer to the tablet panel.
+/// Never move a 16:9 laptop onto 1920×1200 (16:10) just because the tablet is
+/// 1920×1200 — GPU scaling that timing is the stutter the user reported.
+/// Leaving an already-scaled 16:10 mode back to native 16:9 is allowed.
 pub fn should_switch_desktop_mode(
     current: (u32, u32, u32),
     candidate: (u32, u32, u32),
     target_w: u32,
     target_h: u32,
+    native_w: u32,
+    native_h: u32,
 ) -> bool {
     let (cw, ch, cfps) = current;
     let (nw, nh, nfps) = candidate;
     if nw == cw && nh == ch {
         return false;
     }
-    // Losing more than ~10% refresh feels worse than letting the encoder scale.
     if cfps > 0 && nfps * 10 < cfps * 9 {
         return false;
+    }
+    let native_ok = native_w >= 16 && native_h >= 16;
+    if native_ok && !aspects_compatible(nw, nh, native_w, native_h) {
+        return false;
+    }
+    if native_ok
+        && !aspects_compatible(cw, ch, native_w, native_h)
+        && aspects_compatible(nw, nh, native_w, native_h)
+    {
+        return true;
     }
     let dist = |w: u32, h: u32| -> u64 {
         let dw = w.abs_diff(target_w) as u64;
@@ -248,9 +307,9 @@ mod tests {
             (2000, 1200, 60),
             (2000, 1200, 120),
         ];
-        // Same size available at two refresh rates — take the faster one.
+        // Native 16:10 panel: exact tablet size at the higher refresh.
         assert_eq!(
-            pick_closest_display_mode(&modes, 2000, 1200, 60),
+            pick_closest_display_mode(&modes, 2000, 1200, 60, 2000, 1200),
             Some((2000, 1200, 120))
         );
     }
@@ -258,55 +317,109 @@ mod tests {
     #[test]
     fn picks_nearest_when_exact_missing() {
         let modes = [(3840, 2160, 60), (2560, 1440, 60), (1920, 1080, 60)];
-        // 2560×1440 is 372800 away, 1920×1080 only 20800 → 1080p is closer.
         assert_eq!(
-            pick_closest_display_mode(&modes, 2000, 1200, 60),
+            pick_closest_display_mode(&modes, 2000, 1200, 60, 3840, 2160),
             Some((1920, 1080, 60))
         );
     }
 
     #[test]
     fn keeps_high_refresh_over_closer_size() {
-        // 165 Hz desktop: a 60 Hz exact-size mode must not win, or the user
-        // sees a "resolution matched but stuttering" session.
         let modes = [(2000, 1200, 60), (1920, 1200, 165)];
         assert_eq!(
-            pick_closest_display_mode(&modes, 2000, 1200, 120),
+            pick_closest_display_mode(&modes, 2000, 1200, 120, 1920, 1200),
             Some((1920, 1200, 165))
         );
     }
 
     #[test]
-    fn refuses_switch_that_costs_refresh() {
-        // 2560×1440@165 → 1920×1200@60 is closer in size but much slower.
+    fn sixteen_ten_tablet_stays_on_sixteen_nine_1080() {
+        // User: tablet 1920×1200, 1080p felt fine, follow-tablet 1200p stuttered.
+        let modes = [
+            (2560, 1440, 60),
+            (1920, 1080, 60),
+            (1920, 1200, 60),
+            (1280, 800, 60),
+        ];
+        assert_eq!(
+            pick_closest_display_mode(&modes, 1920, 1200, 60, 2560, 1440),
+            Some((1920, 1080, 60))
+        );
+        assert!(!aspects_compatible(1920, 1080, 1920, 1200));
+        assert!(aspects_compatible(1920, 1080, 2560, 1440));
+    }
+
+    #[test]
+    fn refuses_1080_to_1200_on_sixteen_nine_panel() {
         assert!(!should_switch_desktop_mode(
-            (2560, 1440, 165),
+            (1920, 1080, 60),
             (1920, 1200, 60),
             1920,
-            1200
+            1200,
+            2560,
+            1440
         ));
-        // Same refresh, closer size → worth it.
+    }
+
+    #[test]
+    fn restores_scaled_1200_back_to_native_aspect_1080() {
         assert!(should_switch_desktop_mode(
+            (1920, 1200, 60),
+            (1920, 1080, 60),
+            1920,
+            1200,
+            2560,
+            1440
+        ));
+    }
+
+    #[test]
+    fn refuses_switch_that_costs_refresh() {
+        assert!(!should_switch_desktop_mode(
+            (2560, 1440, 165),
+            (1920, 1080, 60),
+            1920,
+            1200,
+            2560,
+            1440
+        ));
+        // Same 16:9 family, same refresh, closer to tablet → 1080p is OK.
+        assert!(should_switch_desktop_mode(
+            (2560, 1440, 60),
+            (1920, 1080, 60),
+            1920,
+            1200,
+            2560,
+            1440
+        ));
+        // 16:10 1200p is never OK on a 16:9 panel.
+        assert!(!should_switch_desktop_mode(
             (2560, 1440, 60),
             (1920, 1200, 60),
             1920,
-            1200
+            1200,
+            2560,
+            1440
         ));
     }
 
     #[test]
     fn refuses_switch_that_is_not_closer() {
         assert!(!should_switch_desktop_mode(
-            (1920, 1200, 60),
-            (1920, 1200, 60),
+            (1920, 1080, 60),
+            (1920, 1080, 60),
             1920,
-            1200
+            1200,
+            2560,
+            1440
         ));
         assert!(!should_switch_desktop_mode(
-            (1920, 1200, 60),
+            (1920, 1080, 60),
             (1280, 720, 60),
             1920,
-            1200
+            1200,
+            2560,
+            1440
         ));
     }
 
