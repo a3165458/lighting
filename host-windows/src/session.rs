@@ -346,41 +346,23 @@ async fn handle_client(
         s.client_name = hello.device.trim().to_string();
     }
 
-    // Extend / 仅投扩展屏：把虚拟屏切到平板物理分辨率，实现 1:1 抓取（最高效率）。
-    if req.share_mode.uses_virtual_display()
-        && hello.screen_width > 0
-        && hello.screen_height > 0
-    {
+    // Path A: capture primary, encode at tablet panel size (from Hello). No virtual display.
+    if hello.screen_width > 0 && hello.screen_height > 0 {
         set_status(
             &status,
-            "扩展屏",
+            "适配平板",
             format!(
-                "正在按平板分辨率设置虚拟屏 {}×{}",
+                "按平板分辨率编码 {}×{}",
                 hello.screen_width, hello.screen_height
             ),
         );
-        let (tw, th) = (hello.screen_width, hello.screen_height);
-        match displays::configure_virtual_for_tablet(tw, th, hello.max_fps.max(req.fps).min(120)) {
-            Ok(updated) => {
-                tracing::info!(
-                    "virtual display now {}×{} (dxgi {})",
-                    updated.width,
-                    updated.height,
-                    updated.dxgi_index
-                );
-                display = updated;
-            }
-            Err(err) => {
-                tracing::warn!("configure virtual for tablet failed: {err:#}");
-            }
-        }
     }
 
     let codec = pick_codec(&hello, req.prefer_hevc);
     let (dec_w, dec_h, dec_fps, hw) = codec_limit(&hello, &codec);
     // Always clamp to the tablet panel when Hello reports it — a 2K desktop
     // must not stream 2K to a 1080p/1200p pad just because ResCap is「最高 2K」.
-    let scale = if req.match_device || req.share_mode.uses_virtual_display() {
+    let scale = if req.match_device {
         req.scale
     } else {
         1.0

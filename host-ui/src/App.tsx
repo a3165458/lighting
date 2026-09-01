@@ -228,7 +228,7 @@ export default function App() {
       {nav === 'about' && (
         <Placeholder
           title="关于我们"
-          body="Lighting 副屏 — 将 Android 平板 / 手机变成 Windows 电脑扩展屏。双击便携版即可使用。"
+          body="Lighting 副屏 — 按平板物理分辨率，把 Windows 画面镜像投到 Android 平板 / 手机。双击便携版即可使用。"
         />
       )}
     </AppShell>

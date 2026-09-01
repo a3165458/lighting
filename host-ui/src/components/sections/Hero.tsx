@@ -10,7 +10,7 @@ export function Hero() {
       <div className="min-w-0 max-w-xl">
         <h1 className="text-3xl font-bold leading-tight text-text">Lighting 副屏</h1>
         <p className="mt-2 text-md text-text-secondary">
-          将你的平板 / 手机变成电脑扩展屏
+          按平板分辨率，把电脑画面投到你的平板 / 手机
         </p>
         <p className="mt-3 text-base font-semibold text-brand">
           低延迟 · 高画质 · 流畅回传
