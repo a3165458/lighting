@@ -707,7 +707,7 @@ $dm.dmSize = [System.Runtime.InteropServices.Marshal]::SizeOf([type][DEVMODE])
 $i = 0
 while ([Disp]::EnumDisplaySettings('{device}', $i, [ref]$dm)) {{
   if ($dm.dmPelsWidth -gt 0 -and $dm.dmPelsHeight -gt 0) {{
-    Write-Output ("{0}x{1}@{2}" -f $dm.dmPelsWidth, $dm.dmPelsHeight, [Math]::Max(30, $dm.dmDisplayFrequency))
+    Write-Output ("{{0}}x{{1}}@{{2}}" -f $dm.dmPelsWidth, $dm.dmPelsHeight, [Math]::Max(30, $dm.dmDisplayFrequency))
   }}
   $i++
   if ($i -gt 512) {{ break }}
