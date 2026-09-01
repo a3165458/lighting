@@ -346,8 +346,86 @@ async fn handle_client(
         s.client_name = hello.device.trim().to_string();
     }
 
-    // Path A: capture primary, encode at tablet panel size (from Hello). No virtual display.
-    if hello.screen_width > 0 && hello.screen_height > 0 {
+    // Path A + 跟随平板: temporarily switch the captured PC monitor toward the
+    // tablet panel size so Windows「显示设置」shows the tablet resolution
+    // (not the native 2K laptop panel). Restore when this client session ends.
+    let mut mode_guard = displays::ModeRestoreGuard(None);
+    if req.match_device && hello.screen_width > 0 && hello.screen_height > 0 {
+        let (tw, th) = lighting_host::session_policy::orient_box(
+            display.width,
+            display.height,
+            hello.screen_width,
+            hello.screen_height,
+        );
+        let prefer_fps = req
+            .fps
+            .max(30)
+            .min(hello.max_fps.max(60))
+            .min(120);
+        let device = display.name.clone();
+        let current = displays::DisplayMode {
+            width: display.width,
+            height: display.height,
+            fps: prefer_fps,
+        };
+        set_status(
+            &status,
+            "适配平板",
+            format!("正在把电脑分辨率切到平板面板 {tw}×{th}…"),
+        );
+        let switched = tokio::task::spawn_blocking(move || {
+            displays::apply_follow_tablet_mode(&device, current, tw, th, prefer_fps)
+        })
+        .await;
+        match switched {
+            Ok(Ok((applied, restore))) => {
+                let changed =
+                    restore.mode.width != applied.width || restore.mode.height != applied.height;
+                if changed {
+                    mode_guard.0 = Some(restore);
+                }
+                let device_name = display.name.clone();
+                let dxgi = display.dxgi_index;
+                if let Ok(list) = displays::list_displays() {
+                    if let Some(updated) = list
+                        .iter()
+                        .find(|d| d.name == device_name)
+                        .or_else(|| list.iter().find(|d| d.dxgi_index == dxgi))
+                        .cloned()
+                    {
+                        display = updated;
+                    } else {
+                        display.width = applied.width;
+                        display.height = applied.height;
+                    }
+                } else {
+                    display.width = applied.width;
+                    display.height = applied.height;
+                }
+                set_status(
+                    &status,
+                    "适配平板",
+                    format!(
+                        "电脑分辨率已切换为 {}×{}（跟随平板 {}×{}）",
+                        display.width, display.height, hello.screen_width, hello.screen_height
+                    ),
+                );
+            }
+            Ok(Err(err)) => {
+                tracing::warn!("follow-tablet mode switch failed: {err:#}");
+                set_status(
+                    &status,
+                    "适配平板",
+                    format!(
+                        "电脑屏无法切到平板分辨率，已改为缩放推流（显示设置仍可能是电脑分辨率）。{err}"
+                    ),
+                );
+            }
+            Err(err) => {
+                tracing::warn!("follow-tablet mode switch join failed: {err:#}");
+            }
+        }
+    } else if hello.screen_width > 0 && hello.screen_height > 0 {
         set_status(
             &status,
             "适配平板",
@@ -608,6 +686,8 @@ async fn handle_client(
     reader_task.abort();
     let _ = writer.shutdown().await;
     session.stop_in_background();
+    // Restore PC resolution after capture stops so DXGI isn't mid-grab.
+    drop(mode_guard);
     Ok(())
 }
 

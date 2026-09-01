@@ -629,9 +629,210 @@ fn default_vdd_settings_xml_with(width: u32, height: u32, fps: u32) -> String {
     )
 }
 
-fn set_display_mode(device_name: &str, width: u32, height: u32, fps: u32) -> Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DisplayMode {
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+}
+
+/// Snapshot used to restore the PC monitor after a follow-tablet session.
+#[derive(Debug, Clone)]
+pub struct ModeRestore {
+    pub device: String,
+    pub mode: DisplayMode,
+}
+
+/// RAII: put the monitor back when the cast client session ends.
+pub struct ModeRestoreGuard(pub Option<ModeRestore>);
+
+impl Drop for ModeRestoreGuard {
+    fn drop(&mut self) {
+        if let Some(restore) = self.0.take() {
+            if let Err(err) = set_display_mode(
+                &restore.device,
+                restore.mode.width,
+                restore.mode.height,
+                restore.mode.fps.max(30),
+            ) {
+                tracing::warn!(
+                    "restore display mode {}×{}@{} on {} failed: {err:#}",
+                    restore.mode.width,
+                    restore.mode.height,
+                    restore.mode.fps,
+                    restore.device
+                );
+            } else {
+                tracing::info!(
+                    "restored display {} to {}×{}@{}",
+                    restore.device,
+                    restore.mode.width,
+                    restore.mode.height,
+                    restore.mode.fps
+                );
+            }
+        }
+    }
+}
+
+/// Enumerate modes the adapter exposes for `device_name` (e.g. `\\.\DISPLAY1`).
+pub fn list_display_modes(device_name: &str) -> Result<Vec<DisplayMode>> {
+    let device = device_name.replace('\'', "''");
+    let ps = format!(
+        r#"
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+public struct DEVMODE {{
+  [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+  public short dmSpecVersion; public short dmDriverVersion; public short dmSize; public short dmDriverExtra;
+  public int dmFields; public int dmPositionX; public int dmPositionY; public int dmDisplayOrientation;
+  public int dmDisplayFixedOutput; public short dmColor; public short dmDuplex; public short dmYResolution;
+  public short dmTTOption; public short dmCollate;
+  [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+  public short dmLogPixels; public int dmBitsPerPel; public int dmPelsWidth; public int dmPelsHeight;
+  public int dmDisplayFlags; public int dmDisplayFrequency; public int dmICMMethod; public int dmICMIntent;
+  public int dmMediaType; public int dmDitherType; public int dmReserved1; public int dmReserved2;
+  public int dmPanningWidth; public int dmPanningHeight;
+}}
+public static class Disp {{
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+  public static extern bool EnumDisplaySettings(string deviceName, int modeNum, ref DEVMODE devMode);
+}}
+"@
+$dm = New-Object DEVMODE
+$dm.dmSize = [System.Runtime.InteropServices.Marshal]::SizeOf([type][DEVMODE])
+$i = 0
+while ([Disp]::EnumDisplaySettings('{device}', $i, [ref]$dm)) {{
+  if ($dm.dmPelsWidth -gt 0 -and $dm.dmPelsHeight -gt 0) {{
+    Write-Output ("{0}x{1}@{2}" -f $dm.dmPelsWidth, $dm.dmPelsHeight, [Math]::Max(30, $dm.dmDisplayFrequency))
+  }}
+  $i++
+  if ($i -gt 512) {{ break }}
+}}
+"#
+    );
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &ps])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .context("枚举显示器模式失败")?;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("枚举显示器模式失败: {err}");
+    }
+    let mut modes = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // 2560x1440@60
+        let (wh, fps) = match line.split_once('@') {
+            Some(pair) => pair,
+            None => continue,
+        };
+        let (w, h) = match wh.split_once('x') {
+            Some(pair) => pair,
+            None => continue,
+        };
+        let (Ok(w), Ok(h), Ok(fps)) = (w.parse::<u32>(), h.parse::<u32>(), fps.parse::<u32>()) else {
+            continue;
+        };
+        modes.push(DisplayMode {
+            width: w,
+            height: h,
+            fps: fps.max(30),
+        });
+    }
+    modes.sort_by_key(|m| (m.width, m.height, m.fps));
+    modes.dedup();
+    Ok(modes)
+}
+
+/// Pick the closest hardware mode to the oriented tablet panel.
+pub fn pick_closest_mode(
+    modes: &[DisplayMode],
+    target_w: u32,
+    target_h: u32,
+    prefer_fps: u32,
+) -> Option<DisplayMode> {
+    let tuples: Vec<(u32, u32, u32)> = modes
+        .iter()
+        .map(|m| (m.width, m.height, m.fps))
+        .collect();
+    lighting_host::session_policy::pick_closest_display_mode(
+        &tuples,
+        target_w,
+        target_h,
+        prefer_fps,
+    )
+    .map(|(w, h, fps)| DisplayMode {
+        width: w,
+        height: h,
+        fps,
+    })
+}
+
+/// Follow-tablet: temporarily switch the captured monitor toward the tablet panel.
+/// Returns `(applied, restore)`. Caller must keep [`ModeRestoreGuard`] until session end.
+pub fn apply_follow_tablet_mode(
+    device_name: &str,
+    current: DisplayMode,
+    tablet_w: u32,
+    tablet_h: u32,
+    prefer_fps: u32,
+) -> Result<(DisplayMode, ModeRestore)> {
+    let target_w = tablet_w.max(16);
+    let target_h = tablet_h.max(16);
+    let prefer_fps = prefer_fps.clamp(30, 120);
+
+    if current.width == target_w && current.height == target_h {
+        return Ok((
+            current,
+            ModeRestore {
+                device: device_name.to_string(),
+                mode: current,
+            },
+        ));
+    }
+
+    let modes = list_display_modes(device_name).unwrap_or_default();
+    let chosen = pick_closest_mode(&modes, target_w, target_h, prefer_fps).unwrap_or(DisplayMode {
+        width: target_w,
+        height: target_h,
+        fps: prefer_fps,
+    });
+
+    if chosen.width == current.width && chosen.height == current.height {
+        // Already as close as the panel can get — no mode change, encode will scale.
+        anyhow::bail!(
+            "显示器没有更接近平板的模式（当前 {}×{}，目标 {}×{}）",
+            current.width,
+            current.height,
+            target_w,
+            target_h
+        );
+    }
+
+    set_display_mode(device_name, chosen.width, chosen.height, chosen.fps)?;
+    std::thread::sleep(Duration::from_millis(700));
+    Ok((
+        chosen,
+        ModeRestore {
+            device: device_name.to_string(),
+            mode: current,
+        },
+    ))
+}
+
+pub fn set_display_mode(device_name: &str, width: u32, height: u32, fps: u32) -> Result<()> {
     // DEVMODEW layout differs across windows-rs versions; use a tiny elevated-free
     // PowerShell P/Invoke so we stay compatible with windows 0.58.
+    // Use a *temporary* mode change (no CDS_UPDATEREGISTRY) so casting does not
+    // permanently rewrite the user's preferred resolution.
     let device = device_name.replace('\'', "''");
     let ps = format!(
         r#"
@@ -654,8 +855,6 @@ public struct DEVMODE {{
 }}
 public static class Disp {{
   public const int ENUM_CURRENT_SETTINGS = -1;
-  public const int CDS_UPDATEREGISTRY = 0x01;
-  public const int CDS_NORESET = 0x10000000;
   public const int DM_PELSWIDTH = 0x80000;
   public const int DM_PELSHEIGHT = 0x100000;
   public const int DM_DISPLAYFREQUENCY = 0x400000;
@@ -663,8 +862,6 @@ public static class Disp {{
   public static extern bool EnumDisplaySettings(string deviceName, int modeNum, ref DEVMODE devMode);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)]
   public static extern int ChangeDisplaySettingsEx(string lpszDeviceName, ref DEVMODE lpDevMode, IntPtr hwnd, int dwflags, IntPtr lParam);
-  [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-  public static extern int ChangeDisplaySettingsEx(string lpszDeviceName, IntPtr lpDevMode, IntPtr hwnd, int dwflags, IntPtr lParam);
 }}
 "@
 $dm = New-Object DEVMODE
@@ -673,25 +870,23 @@ if (-not [Disp]::EnumDisplaySettings('{device}', [Disp]::ENUM_CURRENT_SETTINGS, 
 $dm.dmPelsWidth = {width}
 $dm.dmPelsHeight = {height}
 $dm.dmDisplayFrequency = {fps}
-$dm.dmFields = $dm.dmFields -bor [Disp]::DM_PELSWIDTH -bor [Disp]::DM_PELSHEIGHT -bor [Disp]::DM_DISPLAYFREQUENCY
-$r = [Disp]::ChangeDisplaySettingsEx('{device}', [ref]$dm, [IntPtr]::Zero, ([Disp]::CDS_UPDATEREGISTRY -bor [Disp]::CDS_NORESET), [IntPtr]::Zero)
+$dm.dmFields = [Disp]::DM_PELSWIDTH -bor [Disp]::DM_PELSHEIGHT -bor [Disp]::DM_DISPLAYFREQUENCY
+$r = [Disp]::ChangeDisplaySettingsEx('{device}', [ref]$dm, [IntPtr]::Zero, 0, [IntPtr]::Zero)
 if ($r -ne 0) {{
   $dm.dmFields = [Disp]::DM_PELSWIDTH -bor [Disp]::DM_PELSHEIGHT
-  $r = [Disp]::ChangeDisplaySettingsEx('{device}', [ref]$dm, [IntPtr]::Zero, ([Disp]::CDS_UPDATEREGISTRY -bor [Disp]::CDS_NORESET), [IntPtr]::Zero)
-  if ($r -ne 0) {{ throw "ChangeDisplaySettingsEx stage failed: $r" }}
+  $r = [Disp]::ChangeDisplaySettingsEx('{device}', [ref]$dm, [IntPtr]::Zero, 0, [IntPtr]::Zero)
+  if ($r -ne 0) {{ throw "ChangeDisplaySettingsEx failed: $r" }}
 }}
-$r2 = [Disp]::ChangeDisplaySettingsEx([NullString]::Value, [IntPtr]::Zero, [IntPtr]::Zero, 0, [IntPtr]::Zero)
-if ($r2 -ne 0) {{ throw "ChangeDisplaySettingsEx apply failed: $r2" }}
 "#
     );
     let output = Command::new("powershell.exe")
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &ps])
         .creation_flags(CREATE_NO_WINDOW)
         .output()
-        .context("设置虚拟屏分辨率失败")?;
+        .context("设置显示器分辨率失败")?;
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("设置虚拟屏分辨率失败: {err}");
+        anyhow::bail!("设置显示器分辨率失败: {err}");
     }
     Ok(())
 }

@@ -66,6 +66,45 @@ pub fn orient_box(sw: u32, sh: u32, dw: u32, dh: u32) -> (u32, u32) {
     }
 }
 
+/// Pick the closest `(w,h,fps)` mode to an oriented tablet panel.
+/// Prefers exact size, then minimal pixel distance, then fps closeness.
+pub fn pick_closest_display_mode(
+    modes: &[(u32, u32, u32)],
+    target_w: u32,
+    target_h: u32,
+    prefer_fps: u32,
+) -> Option<(u32, u32, u32)> {
+    if modes.is_empty() || target_w == 0 || target_h == 0 {
+        return None;
+    }
+    let prefer_fps = prefer_fps.max(30);
+    let mut best: Option<(u128, u32, (u32, u32, u32))> = None;
+    for &(w, h, fps) in modes {
+        if w < 16 || h < 16 {
+            continue;
+        }
+        let dw = w.abs_diff(target_w) as u128;
+        let dh = h.abs_diff(target_h) as u128;
+        // Exact match wins; otherwise weight size heavily over fps.
+        let size_score = if dw == 0 && dh == 0 {
+            0u128
+        } else {
+            dw * dw + dh * dh + 1
+        };
+        let fps_score = fps.abs_diff(prefer_fps) as u128;
+        let score = size_score.saturating_mul(1_000).saturating_add(fps_score);
+        let cand = (score, fps, (w, h, fps));
+        match best {
+            None => best = Some(cand),
+            Some(prev) if cand.0 < prev.0 || (cand.0 == prev.0 && cand.1 > prev.1) => {
+                best = Some(cand);
+            }
+            _ => {}
+        }
+    }
+    best.map(|(_, _, mode)| mode)
+}
+
 /// Aspect-preserving downscale into a box. Never upscales.
 pub fn fit_resolution(src_w: u32, src_h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
     let mut w = src_w.max(2);
@@ -164,6 +203,35 @@ mod tests {
         assert!(is_client_disconnect("os error 10054"));
         assert!(!is_client_disconnect("所选显示器不存在"));
         assert!(!is_client_disconnect("找不到 ffmpeg"));
+    }
+
+    #[test]
+    fn picks_exact_tablet_mode_when_available() {
+        let modes = [
+            (1920, 1080, 60),
+            (2560, 1440, 60),
+            (2000, 1200, 60),
+            (2000, 1200, 120),
+        ];
+        assert_eq!(
+            pick_closest_display_mode(&modes, 2000, 1200, 60),
+            Some((2000, 1200, 60))
+        );
+        assert_eq!(
+            pick_closest_display_mode(&modes, 2000, 1200, 120),
+            Some((2000, 1200, 120))
+        );
+    }
+
+    #[test]
+    fn picks_nearest_when_exact_missing() {
+        let modes = [(3840, 2160, 60), (2560, 1440, 60), (1920, 1080, 60)];
+        // Tablet 2000×1200 → closest among common PC modes is 1920×1080 by pixel distance? 
+        // 2560x1440 distance: 560^2+240^2=372800; 1920x1080: 80^2+120^2=20800 → 1080p wins.
+        assert_eq!(
+            pick_closest_display_mode(&modes, 2000, 1200, 60),
+            Some((1920, 1080, 60))
+        );
     }
 
     #[test]

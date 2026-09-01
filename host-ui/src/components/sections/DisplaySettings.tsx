@@ -15,7 +15,7 @@ type Props = {
 }
 
 const RES_OPTIONS = [
-  { id: 'device', label: '跟随平板（推荐）' },
+  { id: 'device', label: '跟随平板（切换电脑分辨率）' },
   { id: 'fhd', label: '最高 1080p' },
   { id: 'uhd2k', label: '最高 2K' },
   { id: 'uhd4k', label: '最高 4K' },
@@ -49,7 +49,7 @@ export function DisplaySettings({
 
       <div className="flex flex-col gap-[var(--space-form-gap)]">
         <p className="rounded-[var(--radius-control)] bg-brand-soft/60 px-3 py-2 text-sm text-text-secondary">
-          按平板物理分辨率输出：镜像电脑主屏，并缩放到平板面板尺寸。无需虚拟显示驱动。
+          「跟随平板」会在投屏时尽量把<strong>电脑显示器分辨率</strong>切到平板面板尺寸，可在 Windows「显示设置」里核对；停止共享后自动恢复。若显示器不支持该模式，则回退为缩放推流（此时显示设置仍可能是电脑原生分辨率）。
         </p>
 
         <SettingRow
