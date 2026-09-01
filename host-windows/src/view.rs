@@ -853,7 +853,7 @@ fn advanced_modal(
             ui.add_space(8.0);
             setting_row(ui, Glyph::Monitor, "输出上限", |ui| {
                 egui::ComboBox::from_id_salt("res_cap")
-                    .width(160.0)
+                    .width(220.0)
                     .selected_text(egui::RichText::new(settings.res_cap.label()).size(12.0))
                     .show_ui(ui, |ui| {
                         for cap in ResCap::ALL {
@@ -861,6 +861,11 @@ fn advanced_modal(
                         }
                     });
             });
+            ui.label(
+                egui::RichText::new(settings.res_cap.hint())
+                    .size(11.0)
+                    .color(theme::DIM),
+            );
             toggle_row(
                 ui,
                 Glyph::Chip,
