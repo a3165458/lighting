@@ -109,46 +109,20 @@ impl HostService {
     }
 
     pub fn start_share(&self) -> Result<(), String> {
-        let mode = {
+        {
             let g = self.inner.lock().expect("host lock");
             if g.running {
                 return Ok(());
             }
-            g.settings.share_mode
-        };
+        }
 
-        if matches!(mode, ShareMode::Extend | ShareMode::External) {
-            {
-                let mut g = self.inner.lock().expect("host lock");
-                g.notice = Some((
-                    Tone::Info,
-                    "正在启用虚拟扩展屏（与华硕 GlideX 同类：首次可能需管理员确认）…".into(),
-                ));
-                g.last_error.clear();
-            }
-            if let Err(err) = displays::ensure_secondary_display(mode) {
-                // GlideX-like UX: never leave the user stuck — fall back to mirror so sharing still works.
-                let raw = format!("{err:#}");
-                let detail = ui_text::human_last_error(&raw);
-                tracing::warn!("extend/virtual display failed ({raw}); falling back to mirror");
-                let _ = displays::apply_project_mode(ShareMode::Mirror);
-                {
-                    let mut g = self.inner.lock().expect("host lock");
-                    g.settings.share_mode = ShareMode::Mirror;
-                    g.notice = Some((
-                        Tone::Warn,
-                        format!(
-                            "扩展屏暂不可用（{detail}）。已自动改为「镜像主屏」，可立即投屏。也可安装版重装一次以预装驱动。"
-                        ),
-                    ));
-                    g.last_error.clear();
-                }
-            }
-        } else if let Err(err) = displays::apply_project_mode(mode) {
+        // Product path A: mirror primary + encode to tablet panel. No VDD / IddCx.
+        if let Err(err) = displays::apply_project_mode(ShareMode::Mirror) {
             tracing::warn!("DisplaySwitch failed ({err:#}); continuing with current layout");
         }
 
         let mut g = self.inner.lock().expect("host lock");
+        g.settings.share_mode = ShareMode::Mirror;
         match displays::list_displays() {
             Ok(list) => g.displays = list,
             Err(err) => {
@@ -160,39 +134,18 @@ impl HostService {
             g.last_error = "没有可用显示器".into();
             return Err(g.last_error.clone());
         }
-        // Re-read mode after possible auto-fallback to mirror.
-        let mode = g.settings.share_mode;
-        if matches!(mode, ShareMode::Extend | ShareMode::External) && !displays::has_secondary(&g.displays)
-        {
-            // Seamless GlideX-like recovery: switch to mirror and continue this click.
-            tracing::warn!("secondary still missing after ensure; continuing as mirror");
-            g.settings.share_mode = ShareMode::Mirror;
-            let _ = displays::apply_project_mode(ShareMode::Mirror);
-            g.notice = Some((
-                Tone::Warn,
-                "扩展虚拟屏未能创建（第三方驱动未就绪）。已自动用「镜像主屏」开始投屏——无需再点一次。".into(),
-            ));
-            // Refresh display list after topology change.
-            if let Ok(list) = displays::list_displays() {
-                g.displays = list;
-            }
-        }
-        let mode = g.settings.share_mode;
+        let mode = ShareMode::Mirror;
         if let Some(idx) = displays::pick_display_index(&g.displays, mode) {
             g.settings.selected_display = idx;
         }
 
         let quality = (g.settings.quality_pct.clamp(40, 100) as f32) / 100.0;
-        // Extend modes always follow the tablet panel (set on Hello); ResCap is a ceiling.
-        let (match_device, scale, max_width, max_height) = if mode.uses_virtual_display() {
-            (true, quality, 3840, 2560)
-        } else {
-            match g.settings.res_cap {
-                ResCap::Device => (true, quality, 3840, 2560),
-                ResCap::Fhd => (false, 1.0, scaled(1920, quality), scaled(1080, quality)),
-                ResCap::Uhd2k => (false, 1.0, scaled(2560, quality), scaled(1440, quality)),
-                ResCap::Uhd4k => (false, 1.0, scaled(3840, quality), scaled(2160, quality)),
-            }
+        // Default ResCap::Device → always match tablet Hello size (path A).
+        let (match_device, scale, max_width, max_height) = match g.settings.res_cap {
+            ResCap::Device => (true, quality, 3840, 2560),
+            ResCap::Fhd => (false, 1.0, scaled(1920, quality), scaled(1080, quality)),
+            ResCap::Uhd2k => (false, 1.0, scaled(2560, quality), scaled(1440, quality)),
+            ResCap::Uhd4k => (false, 1.0, scaled(3840, quality), scaled(2160, quality)),
         };
         let serial = g
             .devices

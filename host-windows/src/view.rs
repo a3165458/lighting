@@ -11,47 +11,40 @@ use crate::ui_text::{self, Tone};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum ShareMode {
-    /// Stream the primary monitor (Windows “Duplicate”).
-    Mirror,
-    /// Stream a secondary / virtual monitor (Windows “Extend”). Default for 副屏.
+    /// Stream the primary monitor, scaled to the tablet panel (product path A).
     #[default]
+    Mirror,
+    /// Legacy wire values — coerced to Mirror. Kept so old settings/UI still parse.
     Extend,
-    /// Prefer the secondary only (Windows “Second screen only”).
+    /// Legacy wire values — coerced to Mirror.
     External,
 }
 
 impl ShareMode {
-    pub const ALL: [ShareMode; 3] = [ShareMode::Mirror, ShareMode::Extend, ShareMode::External];
+    /// Product path A: only mirror (tablet-native encode). Extend/External stay for wire compat.
+    pub const ALL: [ShareMode; 1] = [ShareMode::Mirror];
 
     pub fn label(self) -> &'static str {
         match self {
-            ShareMode::Mirror => "镜像主屏（推荐·免驱动）",
-            ShareMode::Extend => "扩展虚拟屏（需驱动）",
-            ShareMode::External => "仅投扩展屏（需驱动）",
+            ShareMode::Mirror => "按平板分辨率输出",
+            ShareMode::Extend | ShareMode::External => "按平板分辨率输出",
         }
     }
 
     pub fn hint(self) -> &'static str {
-        match self {
-            ShareMode::Mirror => "与主屏同画面并缩放到平板。不装虚拟显示驱动也能用，开箱即用。",
-            ShareMode::Extend => "把平板变成独立桌面（类似华硕 GlideX）。需要虚拟显示驱动；失败时会自动改回镜像。",
-            ShareMode::External => "只把扩展桌面投到平板。同样需要虚拟显示驱动；不会关掉电脑主屏。",
-        }
+        "镜像电脑主屏，并按平板物理分辨率编码推流。无需虚拟显示驱动，开箱即用。"
     }
 
     pub fn as_wire(self) -> &'static str {
-        match self {
-            ShareMode::Mirror => "mirror",
-            ShareMode::Extend => "extend",
-            ShareMode::External => "external",
-        }
+        // Always advertise mirror on the wire for product path A.
+        "mirror"
     }
 
     pub fn from_wire(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "mirror" | "clone" | "duplicate" => Some(ShareMode::Mirror),
-            "extend" | "extended" => Some(ShareMode::Extend),
-            "external" | "second" | "externalonly" => Some(ShareMode::External),
+            // Path A: any historical extend/external preference becomes mirror.
+            "mirror" | "clone" | "duplicate" | "extend" | "extended" | "external"
+            | "second" | "externalonly" => Some(ShareMode::Mirror),
             _ => None,
         }
     }
@@ -64,8 +57,13 @@ impl ShareMode {
         }
     }
 
+    /// Path A never uses a virtual display driver.
     pub fn uses_virtual_display(self) -> bool {
-        matches!(self, ShareMode::Extend | ShareMode::External)
+        false
+    }
+
+    pub fn coerce_product(self) -> Self {
+        ShareMode::Mirror
     }
 }
 
@@ -100,6 +98,15 @@ mod share_mode_tests {
         for mode in ShareMode::ALL {
             assert_eq!(ShareMode::from_wire(mode.as_wire()), Some(mode));
         }
+    }
+
+    #[test]
+    fn path_a_coerces_legacy_extend_to_mirror() {
+        assert_eq!(ShareMode::from_wire("extend"), Some(ShareMode::Mirror));
+        assert_eq!(ShareMode::from_wire("external"), Some(ShareMode::Mirror));
+        assert_eq!(ShareMode::Extend.coerce_product(), ShareMode::Mirror);
+        assert!(!ShareMode::Extend.uses_virtual_display());
+        assert_eq!(ShareMode::Mirror.as_wire(), "mirror");
     }
 
     #[test]
@@ -667,43 +674,13 @@ fn connection_card(
 }
 
 fn display_card(ui: &mut egui::Ui, snap: &Snapshot, settings: &mut Settings) {
-    theme::card(ui, "扩展屏设置", |ui| {
-        form_row(
-            ui,
-            Glyph::Share,
-            "投屏模式",
-            FORM_ROW_H,
-            FORM_TRAIL,
-            |ui, w| {
-                egui::ComboBox::from_id_salt("share_mode")
-                    .width(w.max(80.0))
-                    .selected_text(egui::RichText::new(settings.share_mode.label()).size(12.0))
-                    .show_ui(ui, |ui| {
-                        for mode in ShareMode::ALL {
-                            ui.selectable_value(&mut settings.share_mode, mode, mode.label());
-                        }
-                    });
-            },
-            |_| {},
-        );
-        ui.add_space(2.0);
+    settings.share_mode = ShareMode::Mirror;
+    theme::card(ui, "投屏设置", |ui| {
         ui.label(
-            egui::RichText::new(settings.share_mode.hint())
-                .size(11.0)
+            egui::RichText::new(ShareMode::Mirror.hint())
+                .size(11.5)
                 .color(theme::MUTED),
         );
-        if matches!(settings.share_mode, ShareMode::Extend | ShareMode::External)
-            && !snap.displays.iter().any(|d| d.contains("副屏") || d.contains("虚拟"))
-        {
-            ui.add_space(4.0);
-            ui.label(
-                egui::RichText::new(
-                    "尚未检测到扩展屏。点「开始共享」会自动创建虚拟屏，并在平板连接后设为平板分辨率。",
-                )
-                .size(11.0)
-                .color(theme::WARN),
-            );
-        }
         ui.add_space(6.0);
         // Reserve the same trailing column as sliders so the dropdown's right
         // edge lines up with the slider tracks.

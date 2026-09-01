@@ -1,14 +1,10 @@
-import { Download, Gauge, Monitor, Sparkles, SquareStack, Volume2, Waves } from 'lucide-react'
+import { Download, Gauge, Monitor, Sparkles, Volume2, Waves } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Dropdown } from '@/components/ui/Dropdown'
 import { SettingRow } from '@/components/ui/SettingRow'
 import { SliderControl } from '@/components/ui/SliderControl'
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch'
-import {
-  SHARE_MODE_OPTIONS,
-  type HostSettingsPatch,
-  type HostState,
-} from '@/lib/host'
+import { type HostSettingsPatch, type HostState } from '@/lib/host'
 
 type Props = {
   host: HostState
@@ -35,54 +31,26 @@ export function DisplaySettings({
   const settings = host.settings
   const displays = host.displays.map((d) => ({ id: d.id, label: d.label }))
   const displayId = String(settings?.selectedDisplay ?? 0)
-  const shareMode = settings?.shareMode ?? 'mirror'
-  const shareMeta =
-    SHARE_MODE_OPTIONS.find((o) => o.id === shareMode) ?? SHARE_MODE_OPTIONS[0]
   const quality = settings?.qualityPct ?? 100
   const fps = settings?.fps ?? 60
   const bitrate = settings?.bitrateKbps ?? 25000
   const audioSync = settings?.sendAudio ?? true
   const preferHevc = settings?.preferHevc ?? false
   const resCap = settings?.resCap ?? 'device'
-  const hasSecondary = host.displays.some((d) => !d.primary)
-  const needsSecondary = shareMode === 'extend' || shareMode === 'external'
-  const showVddHint = needsSecondary && !hasSecondary
 
   return (
-    <section className="glass-card p-[var(--space-card-pad)]" aria-label="扩展屏设置">
+    <section className="glass-card p-[var(--space-card-pad)]" aria-label="投屏设置">
       <header className="mb-5 flex items-center gap-3">
         <span className="flex size-9 items-center justify-center rounded-[var(--radius-icon)] bg-brand-soft text-brand">
           <Monitor className="size-4" strokeWidth={2} />
         </span>
-        <h2 className="text-lg font-bold text-text">扩展屏设置</h2>
+        <h2 className="text-lg font-bold text-text">投屏设置</h2>
       </header>
 
       <div className="flex flex-col gap-[var(--space-form-gap)]">
-        <SettingRow
-          icon={SquareStack}
-          label="投屏模式"
-          description={shareMeta.hint}
-          tall
-          control={
-            <div className="w-[280px] max-w-full">
-              <Dropdown
-                value={shareMode}
-                options={SHARE_MODE_OPTIONS.map((o) => ({ id: o.id, label: o.label }))}
-                onChange={(id) => onChange({ shareMode: id })}
-                disabled={disabled}
-                ariaLabel="投屏模式"
-              />
-            </div>
-          }
-        />
-
-        {showVddHint && (
-          <p className="rounded-[var(--radius-control)] bg-warning/10 px-3 py-2 text-sm text-warning">
-            尚未看到虚拟扩展屏。点「开始共享」会自动启用驱动（与华硕 GlideX 同类技术，首次可能需管理员确认）。若失败会自动改用镜像，保证能投屏。
-            推荐使用「安装包」：安装时会预装驱动，之后扩展模式通常无需再弹窗。
-            不需要再手动打开 Virtual Driver Control。
-          </p>
-        )}
+        <p className="rounded-[var(--radius-control)] bg-brand-soft/60 px-3 py-2 text-sm text-text-secondary">
+          按平板物理分辨率输出：镜像电脑主屏，并缩放到平板面板尺寸。无需虚拟显示驱动。
+        </p>
 
         <SettingRow
           icon={Monitor}
