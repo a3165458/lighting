@@ -127,7 +127,7 @@ export const SHARE_MODE_OPTIONS = [
   {
     id: 'extend',
     label: '扩展屏（推荐）',
-    hint: '创建虚拟扩展桌面；平板连上后按平板分辨率输出。电脑主屏照常可用。',
+    hint: '创建虚拟扩展桌面（与华硕 GlideX 同类）。平板按自身分辨率输出；失败时会自动改用镜像。',
   },
   {
     id: 'external',

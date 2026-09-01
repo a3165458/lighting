@@ -1,7 +1,7 @@
 {
   "name": "lighting-host-ui",
   "private": true,
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Lighting secondary display — one-click Windows portable app",
   "author": "Lighting",
   "type": "module",
@@ -73,8 +73,9 @@
     },
     "nsis": {
       "oneClick": true,
-      "perMachine": false,
+      "perMachine": true,
       "allowToChangeInstallationDirectory": false,
+      "include": "build/installer.nsh",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Lighting副屏",

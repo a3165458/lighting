@@ -24,7 +24,9 @@ use lighting_host::view::{looks_virtual_display, ShareMode};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const VDD_PIPE: &str = r"\\.\pipe\MTTVirtualDisplayPipe";
-const VDD_SETTINGS: &str = r"C:\VirtualDisplayDriver\vdd_settings.xml";
+/// Official MttVDD default when registry `VDDPATH` is absent.
+const VDD_SETTINGS_DEFAULT: &str = r"C:\VirtualDisplayDriver\vdd_settings.xml";
+const VDD_REG_KEY: &str = r"HKLM:\SOFTWARE\MikeTheTech\VirtualDisplayDriver";
 
 #[derive(Debug, Clone)]
 pub struct DisplayInfo {
@@ -119,6 +121,11 @@ pub fn pick_virtual(displays: &[DisplayInfo]) -> Option<&DisplayInfo> {
 }
 
 /// Ensure a virtual secondary exists and Windows is in extend topology.
+///
+/// GlideX-class flow (not “manual driver hunting”):
+/// 1) write official `vdd_settings.xml` + registry `VDDPATH`
+/// 2) enable / soft-restart the IddCx device (avoid broken in-pipe RELOAD)
+/// 3) wait for pipe, force `/extend`, poll DXGI for a secondary
 pub fn ensure_secondary_display(_mode: ShareMode) -> Result<()> {
     let list = list_displays().unwrap_or_default();
     if has_secondary(&list) {
@@ -126,41 +133,74 @@ pub fn ensure_secondary_display(_mode: ShareMode) -> Result<()> {
         return Ok(());
     }
 
-    tracing::info!("no secondary display; provisioning bundled MttVDD");
-    ensure_resolution_listed(1920, 1080, 60)?;
+    tracing::info!("no secondary display; provisioning bundled MttVDD (GlideX-style)");
+    // Prepare settings before any device restart so the driver boots with count=1.
+    let _ = prepare_vdd_settings(1920, 1080, 60);
 
     if !vdd_pipe_alive() {
         let _ = run_vdd_provision(VddProvisionMode::EnableOnly);
-        wait_for_vdd_pipe(6);
+        wait_for_vdd_pipe(10);
     }
     if !vdd_pipe_alive() {
         run_vdd_provision(VddProvisionMode::Full)?;
-        wait_for_vdd_pipe(16);
+        wait_for_vdd_pipe(24);
     }
     if !vdd_pipe_alive() {
         let _ = install_virtual_display_driver_winget();
         let _ = run_vdd_provision(VddProvisionMode::Full);
-        wait_for_vdd_pipe(12);
+        wait_for_vdd_pipe(16);
     }
     if !vdd_pipe_alive() {
         anyhow::bail!("VDD_PIPE_DOWN");
     }
 
-    vdd_set_display_count(1)?;
+    // Prefer soft device restart over SETDISPLAYCOUNT (upstream RELOAD_DRIVER is flaky).
+    let _ = run_vdd_provision(VddProvisionMode::EnableOnly);
+    wait_for_vdd_pipe(16);
+    if vdd_pipe_alive() {
+        // Nudge count only if pipe is healthy; then wait for reload to settle.
+        let _ = vdd_set_display_count(1);
+        wait_for_pipe_reload(20);
+    }
 
-    for attempt in 0..30 {
-        std::thread::sleep(Duration::from_millis(if attempt < 6 { 700 } else { 450 }));
+    if poll_secondary(40) {
+        return Ok(());
+    }
+
+    // Last chance: rewrite settings + soft-restart again.
+    let _ = prepare_vdd_settings(1920, 1080, 60);
+    let _ = run_vdd_provision(VddProvisionMode::EnableOnly);
+    wait_for_vdd_pipe(16);
+    let _ = vdd_set_display_count(1);
+    wait_for_pipe_reload(24);
+    if poll_secondary(30) {
+        return Ok(());
+    }
+    anyhow::bail!("VDD_NO_MONITOR");
+}
+
+fn poll_secondary(attempts: u32) -> bool {
+    for attempt in 0..attempts {
+        std::thread::sleep(Duration::from_millis(if attempt < 8 { 800 } else { 500 }));
         let _ = apply_project_mode(ShareMode::Extend);
         let list = list_displays().unwrap_or_default();
         if has_secondary(&list) {
-            return Ok(());
-        }
-        if attempt == 10 || attempt == 20 {
-            let _ = run_vdd_provision(VddProvisionMode::EnableOnly);
-            let _ = vdd_set_display_count(1);
+            return true;
         }
     }
-    anyhow::bail!("VDD_NO_MONITOR");
+    false
+}
+
+/// SETDISPLAYCOUNT triggers an adapter reload; pipe drops then returns.
+fn wait_for_pipe_reload(attempts: u32) {
+    // Brief window for disconnect.
+    for _ in 0..6 {
+        if !vdd_pipe_alive() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    wait_for_vdd_pipe(attempts);
 }
 
 #[derive(Clone, Copy)]
@@ -268,11 +308,13 @@ pub fn configure_virtual_for_tablet(width: u32, height: u32, fps: u32) -> Result
     let h = (height.max(16) & !1).max(16);
     let fps = fps.clamp(30, 120);
 
-    ensure_resolution_listed(w, h, fps)?;
+    let _ = prepare_vdd_settings(w, h, fps);
     if vdd_pipe_alive() {
-        // Reload so the new mode is advertised by the IDD.
+        // Soft-restart is preferred; SETDISPLAYCOUNT reload is a fallback nudge.
+        let _ = run_vdd_provision(VddProvisionMode::EnableOnly);
+        wait_for_vdd_pipe(10);
         let _ = vdd_set_display_count(1);
-        std::thread::sleep(Duration::from_millis(1200));
+        wait_for_pipe_reload(12);
     }
     let _ = apply_project_mode(ShareMode::Extend);
 
@@ -329,56 +371,87 @@ fn vdd_send_command(cmd: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
-fn ensure_resolution_listed(width: u32, height: u32, fps: u32) -> Result<()> {
-    let path = PathBuf::from(VDD_SETTINGS);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+/// Resolve MttVDD settings directory (registry `VDDPATH`, else official default).
+fn resolve_vdd_dir() -> PathBuf {
+    let ps = format!(
+        r#"$ErrorActionPreference='SilentlyContinue'; $p=(Get-ItemProperty -Path '{VDD_REG_KEY}' -Name VDDPATH).VDDPATH; if($p){{$p}}"#
+    );
+    if let Ok(out) = Command::new("powershell.exe")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &ps])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !path.is_empty() {
+            return PathBuf::from(path);
+        }
     }
+    PathBuf::from(r"C:\VirtualDisplayDriver")
+}
+
+/// Write official-schema `vdd_settings.xml` with count=1 and best-effort registry VDDPATH.
+/// Matches GlideX-style “driver already knows it should expose one monitor”.
+fn prepare_vdd_settings(width: u32, height: u32, fps: u32) -> Result<()> {
+    let dir = resolve_vdd_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("vdd_settings.xml");
+    let fallback = PathBuf::from(VDD_SETTINGS_DEFAULT);
+
     let mut xml = if path.exists() {
         std::fs::read_to_string(&path).unwrap_or_default()
+    } else if fallback.exists() {
+        std::fs::read_to_string(&fallback).unwrap_or_default()
     } else {
-        default_vdd_settings_xml()
+        String::new()
     };
-    if xml.is_empty() {
-        xml = default_vdd_settings_xml();
+    if xml.is_empty() || !xml.contains("<vdd_settings>") {
+        xml = default_vdd_settings_xml_with(width, height, fps);
     }
 
     let marker = format!("<width>{width}</width>");
     let height_tag = format!("<height>{height}</height>");
-    let already = xml.contains(&marker) && xml.contains(&height_tag);
-    if !already {
+    if !(xml.contains(&marker) && xml.contains(&height_tag)) {
         let entry = format!(
             "        <resolution>\n            <width>{width}</width>\n            <height>{height}</height>\n            <refresh_rate>{fps}</refresh_rate>\n        </resolution>\n"
         );
         if let Some(idx) = xml.find("</resolutions>") {
             xml.insert_str(idx, &entry);
-        } else if let Some(idx) = xml.find("</vdd_settings>") {
-            let block = format!("    <resolutions>\n{entry}    </resolutions>\n");
-            xml.insert_str(idx, &block);
         } else {
             xml = default_vdd_settings_xml_with(width, height, fps);
         }
     }
 
-    // Keep at least one monitor enabled in XML.
-    if !xml.contains("<count>") {
+    if xml.contains("<count>0</count>") {
+        xml = xml.replace("<count>0</count>", "<count>1</count>");
+    } else if !xml.contains("<count>") {
         if let Some(idx) = xml.find("<monitors>") {
             let end = idx + "<monitors>".len();
             xml.insert_str(end, "\n        <count>1</count>");
         }
-    } else if xml.contains("<count>0</count>") {
-        xml = xml.replace("<count>0</count>", "<count>1</count>");
     }
 
-    std::fs::write(&path, xml).with_context(|| format!("写入 {VDD_SETTINGS} 失败"))?;
+    std::fs::write(&path, &xml).with_context(|| format!("写入 {} 失败", path.display()))?;
+    if path != fallback {
+        if let Some(parent) = fallback.parent() {
+            let _ = std::fs::create_dir_all(parent);
+            let _ = std::fs::write(&fallback, &xml);
+        }
+    }
+
+    // Best-effort registry (elevated provision.ps1 also writes this).
+    let dir_s = dir.to_string_lossy().replace('\'', "''");
+    let reg_ps = format!(
+        r#"$ErrorActionPreference='SilentlyContinue'; New-Item -Path '{VDD_REG_KEY}' -Force | Out-Null; Set-ItemProperty -Path '{VDD_REG_KEY}' -Name VDDPATH -Value '{dir_s}' -Type String"#
+    );
+    let _ = Command::new("powershell.exe")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &reg_ps])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
     Ok(())
 }
 
-fn default_vdd_settings_xml() -> String {
-    default_vdd_settings_xml_with(1920, 1080, 60)
-}
-
 fn default_vdd_settings_xml_with(width: u32, height: u32, fps: u32) -> String {
+    // Schema matches VirtualDrivers/Virtual-Display-Driver 25.7.23 sample.
     format!(
         r#"<?xml version='1.0' encoding='utf-8'?>
 <vdd_settings>
@@ -392,6 +465,7 @@ fn default_vdd_settings_xml_with(width: u32, height: u32, fps: u32) -> String {
         <g_refresh_rate>60</g_refresh_rate>
         <g_refresh_rate>90</g_refresh_rate>
         <g_refresh_rate>120</g_refresh_rate>
+        <g_refresh_rate>144</g_refresh_rate>
     </global>
     <resolutions>
         <resolution>
@@ -402,6 +476,16 @@ fn default_vdd_settings_xml_with(width: u32, height: u32, fps: u32) -> String {
         <resolution>
             <width>1920</width>
             <height>1080</height>
+            <refresh_rate>60</refresh_rate>
+        </resolution>
+        <resolution>
+            <width>2560</width>
+            <height>1440</height>
+            <refresh_rate>60</refresh_rate>
+        </resolution>
+        <resolution>
+            <width>3840</width>
+            <height>2160</height>
             <refresh_rate>60</refresh_rate>
         </resolution>
     </resolutions>
