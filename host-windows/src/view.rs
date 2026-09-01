@@ -130,10 +130,21 @@ impl ResCap {
 
     pub fn label(self) -> &'static str {
         match self {
-            ResCap::Device => "跟随平板",
+            ResCap::Device => "跟随平板（切换电脑分辨率）",
             ResCap::Fhd => "最高 1080p",
             ResCap::Uhd2k => "最高 2K",
             ResCap::Uhd4k => "最高 4K",
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            ResCap::Device => {
+                "投屏时尽量把电脑分辨率切到平板面板；显示设置应接近平板分辨率。停止后恢复。"
+            }
+            ResCap::Fhd => "编码不超过 1080p（不改电脑分辨率）。",
+            ResCap::Uhd2k => "编码不超过 2K（不改电脑分辨率）。",
+            ResCap::Uhd4k => "编码不超过 4K（不改电脑分辨率）。",
         }
     }
 
