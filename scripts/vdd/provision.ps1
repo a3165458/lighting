@@ -1,5 +1,8 @@
-# Lighting bundled virtual display provisioning (ASCII output only).
+# Lighting bundled virtual display provisioning (ASCII result file only).
 # Writes "<STATUS>|<DETAIL>" to -ResultFile. STATUS is OK or FAIL.
+#
+# GlideX-class setup: install IddCx driver + official settings/registry once,
+# then soft-restart the device. Avoid relying solely on in-pipe RELOAD_DRIVER.
 param(
     [Parameter(Mandatory = $true)]
     [string]$BundleDir,
@@ -10,16 +13,78 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$VddDir = 'C:\VirtualDisplayDriver'
+$VddReg = 'HKLM:\SOFTWARE\MikeTheTech\VirtualDisplayDriver'
 
 function Write-Result([string]$Status, [string]$Detail) {
     $safe = ($Detail -replace '[^a-zA-Z0-9_\-:.]', '_')
     if ($safe.Length -gt 120) { $safe = $safe.Substring(0, 120) }
-    $line = "$Status|$safe"
     $parent = Split-Path -Parent $ResultFile
     if ($parent -and -not (Test-Path $parent)) {
         New-Item -ItemType Directory -Force -Path $parent | Out-Null
     }
-    Set-Content -Path $ResultFile -Value $line -Encoding ASCII -NoNewline
+    Set-Content -Path $ResultFile -Value ($Status + '|' + $safe) -Encoding ASCII -NoNewline
+}
+
+function Ensure-VddSettings {
+    if (-not (Test-Path $VddDir)) {
+        New-Item -ItemType Directory -Force -Path $VddDir | Out-Null
+    }
+    $xmlPath = Join-Path $VddDir 'vdd_settings.xml'
+    if (-not (Test-Path $xmlPath)) {
+        $xml = @"
+<?xml version='1.0' encoding='utf-8'?>
+<vdd_settings>
+    <monitors>
+        <count>1</count>
+    </monitors>
+    <gpu>
+        <friendlyname>default</friendlyname>
+    </gpu>
+    <global>
+        <g_refresh_rate>60</g_refresh_rate>
+        <g_refresh_rate>90</g_refresh_rate>
+        <g_refresh_rate>120</g_refresh_rate>
+        <g_refresh_rate>144</g_refresh_rate>
+    </global>
+    <resolutions>
+        <resolution>
+            <width>1920</width>
+            <height>1080</height>
+            <refresh_rate>60</refresh_rate>
+        </resolution>
+        <resolution>
+            <width>2560</width>
+            <height>1440</height>
+            <refresh_rate>60</refresh_rate>
+        </resolution>
+        <resolution>
+            <width>3840</width>
+            <height>2160</height>
+            <refresh_rate>60</refresh_rate>
+        </resolution>
+    </resolutions>
+    <logging>
+        <SendLogsThroughPipe>true</SendLogsThroughPipe>
+        <logging>false</logging>
+        <debuglogging>false</debuglogging>
+    </logging>
+</vdd_settings>
+"@
+        Set-Content -Path $xmlPath -Value $xml -Encoding UTF8
+    } else {
+        try {
+            $raw = Get-Content -Path $xmlPath -Raw -ErrorAction SilentlyContinue
+            if ($raw -and $raw.Contains('<count>0</count>')) {
+                $raw = $raw.Replace('<count>0</count>', '<count>1</count>')
+                Set-Content -Path $xmlPath -Value $raw -Encoding UTF8
+            }
+        } catch {}
+    }
+    try {
+        New-Item -Path $VddReg -Force | Out-Null
+        Set-ItemProperty -Path $VddReg -Name VDDPATH -Value $VddDir -Type String
+    } catch {}
 }
 
 function Find-MttDevice {
@@ -51,6 +116,7 @@ function Find-MttDevice {
 }
 
 function Enable-MttDevice {
+    Ensure-VddSettings
     $device = Find-MttDevice
     if (-not $device) {
         try { pnputil /enable-device /deviceid 'Root\MttVDD' 2>&1 | Out-Null } catch {}
@@ -60,7 +126,7 @@ function Enable-MttDevice {
     try { Enable-PnpDevice -InstanceId $device.InstanceId -Confirm:$false -ErrorAction SilentlyContinue } catch {}
     try { pnputil /enable-device $device.InstanceId 2>&1 | Out-Null } catch {}
     try { pnputil /restart-device $device.InstanceId 2>&1 | Out-Null } catch {}
-    Start-Sleep -Seconds 2
+    Start-Sleep -Seconds 3
     return (Find-MttDevice)
 }
 
@@ -71,6 +137,7 @@ function Test-PnpSuccess([int]$ExitCode) {
 
 function Install-FromBundle([string]$Dir) {
     if (-not (Test-Path $Dir)) { throw 'BUNDLE_DIR_MISSING' }
+    Ensure-VddSettings
 
     $inf = Get-ChildItem -Path $Dir -Recurse -Filter 'MttVDD.inf' -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $inf) { throw 'BUNDLE_INF_MISSING' }
@@ -116,40 +183,38 @@ function Install-FromBundle([string]$Dir) {
     }
 
     if (-not $added) {
-        if (-not $nef) {
-            throw "DRIVER_INSTALL_FAILED:pnputil=$pnputilEc"
-        }
+        if (-not $nef) { throw "DRIVER_INSTALL_FAILED:pnputil=$pnputilEc" }
         throw "DRIVER_INSTALL_FAILED:pnputil=$pnputilEc,nefcon=$nefEc"
     }
     Start-Sleep -Seconds 6
 }
 
 function Map-ProvisionError([string]$Message) {
-    $m = $Message
-    if ($m -match 'BUNDLE_INF_MISSING|BUNDLE_DIR_MISSING|DRIVER_INSTALL_FAILED|DEVICE') {
-        return ($Matches[0])
+    if ($Message -match 'BUNDLE_INF_MISSING|BUNDLE_DIR_MISSING|DRIVER_INSTALL_FAILED|DEVICE') {
+        return $Matches[0]
     }
-    if ($m -match 'access|denied|authorized|elevation|administrator|0x5|5\)|1326') {
+    if ($Message -match 'access|denied|authorized|elevation|administrator|0x5|5\)|1326') {
         return 'ACCESS_DENIED'
     }
-    if ($m -match 'sign|certificate|catalog|trust|blocked') {
+    if ($Message -match 'sign|certificate|catalog|trust|blocked') {
         return 'DRIVER_SIGNATURE'
     }
-    if ($m -match 'PnP|Get-PnpDevice|CIM|Win32') {
+    if ($Message -match 'PnP|Get-PnpDevice|CIM|Win32') {
         return 'PNP_QUERY_FAILED'
     }
-    $slug = ($m -replace '[^a-zA-Z0-9_ ]', '') -replace '\s+', '_'
+    $slug = ($Message -replace '[^a-zA-Z0-9_ ]', '') -replace '\s+', '_'
     if ($slug.Length -gt 48) { $slug = $slug.Substring(0, 48) }
     if ([string]::IsNullOrWhiteSpace($slug)) { return 'UNEXPECTED' }
     return "ERR_$slug"
 }
 
 try {
+    Ensure-VddSettings
+
     if ($Mode -eq 'EnableOnly') {
         $dev = Enable-MttDevice
         if ($dev) {
-            $id = if ($dev.InstanceId) { $dev.InstanceId } else { 'unknown' }
-            Write-Result 'OK' ('ENABLED:' + $id)
+            Write-Result 'OK' ('ENABLED:' + $(if ($dev.InstanceId) { $dev.InstanceId } else { 'unknown' }))
             exit 0
         }
         Write-Result 'FAIL' 'DEVICE_NOT_FOUND'
@@ -167,11 +232,9 @@ try {
         exit 1
     }
 
-    $id = if ($dev.InstanceId) { $dev.InstanceId } else { 'unknown' }
-    Write-Result 'OK' ('READY:' + $id)
+    Write-Result 'OK' ('READY:' + $(if ($dev.InstanceId) { $dev.InstanceId } else { 'unknown' }))
     exit 0
 } catch {
-    $code = Map-ProvisionError $_.Exception.Message
-    Write-Result 'FAIL' $code
+    Write-Result 'FAIL' (Map-ProvisionError $_.Exception.Message)
     exit 1
 }

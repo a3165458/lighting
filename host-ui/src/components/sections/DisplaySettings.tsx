@@ -78,7 +78,8 @@ export function DisplaySettings({
 
         {showVddHint && (
           <p className="rounded-[var(--radius-control)] bg-warning/10 px-3 py-2 text-sm text-warning">
-            尚未看到虚拟扩展屏。点「开始共享」会自动启用/安装虚拟显示驱动（可能弹出管理员确认），并把分辨率设成平板尺寸。
+            尚未看到虚拟扩展屏。点「开始共享」会自动启用驱动（与华硕 GlideX 同类技术，首次可能需管理员确认）。若失败会自动改用镜像，保证能投屏。
+            推荐使用「安装包」：安装时会预装驱动，之后扩展模式通常无需再弹窗。
             不需要再手动打开 Virtual Driver Control。
           </p>
         )}

@@ -301,7 +301,7 @@ pub fn human_vdd_error(raw: &str) -> Option<String> {
     } else if code_upper.contains("VDD_PIPE_DOWN") {
         "虚拟显示驱动未响应。请完全退出 Lighting 后重试；若刚点过 UAC「是」，请等几秒再点「开始共享」。"
     } else if code_upper.contains("VDD_NO_MONITOR") || code_upper.contains("DEVICE_STILL_MISSING") {
-        "扩展屏尚未出现。若刚安装驱动，请等几秒后再点一次「开始共享」。"
+        "扩展屏尚未出现。已按华硕 GlideX 同类方案自动改用镜像；也可使用安装包重装以预装驱动后再试扩展。"
     } else if code_upper.contains("DEVICE_NOT_FOUND") || code_upper.contains("DEVICE_STILL_MISSING") {
         "未找到虚拟显示设备。请在 UAC 弹窗点「是」允许安装驱动后重试。"
     } else if code_upper.contains("UAC_CANCELLED") {

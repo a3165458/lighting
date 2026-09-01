@@ -122,17 +122,27 @@ impl HostService {
                 let mut g = self.inner.lock().expect("host lock");
                 g.notice = Some((
                     Tone::Info,
-                    "正在启用虚拟扩展屏（可能弹出管理员确认）…".into(),
+                    "正在启用虚拟扩展屏（与华硕 GlideX 同类：首次可能需管理员确认）…".into(),
                 ));
                 g.last_error.clear();
             }
             if let Err(err) = displays::ensure_secondary_display(mode) {
+                // GlideX-like UX: never leave the user stuck — fall back to mirror so sharing still works.
                 let raw = format!("{err:#}");
-                let msg = ui_text::human_last_error(&raw);
-                let mut g = self.inner.lock().expect("host lock");
-                g.last_error = msg.clone();
-                g.notice = Some((Tone::Warn, msg.clone()));
-                return Err(msg);
+                let detail = ui_text::human_last_error(&raw);
+                tracing::warn!("extend/virtual display failed ({raw}); falling back to mirror");
+                let _ = displays::apply_project_mode(ShareMode::Mirror);
+                {
+                    let mut g = self.inner.lock().expect("host lock");
+                    g.settings.share_mode = ShareMode::Mirror;
+                    g.notice = Some((
+                        Tone::Warn,
+                        format!(
+                            "扩展屏暂不可用（{detail}）。已自动改为「镜像主屏」，可立即投屏。也可安装版重装一次以预装驱动。"
+                        ),
+                    ));
+                    g.last_error.clear();
+                }
             }
         } else if let Err(err) = displays::apply_project_mode(mode) {
             tracing::warn!("DisplaySwitch failed ({err:#}); continuing with current layout");
@@ -150,12 +160,18 @@ impl HostService {
             g.last_error = "没有可用显示器".into();
             return Err(g.last_error.clone());
         }
+        // Re-read mode after possible auto-fallback to mirror.
+        let mode = g.settings.share_mode;
         if matches!(mode, ShareMode::Extend | ShareMode::External) && !displays::has_secondary(&g.displays)
         {
-            let msg = "扩展屏尚未就绪。若刚装完驱动，请再点一次「开始共享」。".to_string();
-            g.last_error = msg.clone();
-            g.notice = Some((Tone::Warn, msg.clone()));
-            return Err(msg);
+            // Final safety net — still no secondary after ensure; switch to mirror.
+            g.settings.share_mode = ShareMode::Mirror;
+            let _ = displays::apply_project_mode(ShareMode::Mirror);
+            g.notice = Some((
+                Tone::Warn,
+                "扩展屏尚未出现，已自动改为「镜像主屏」。请再点一次「开始共享」。".into(),
+            ));
+            return Err("已改用镜像模式，请再点一次「开始共享」。".into());
         }
         if let Some(idx) = displays::pick_display_index(&g.displays, mode) {
             g.settings.selected_display = idx;
