@@ -1,7 +1,7 @@
 {
   "name": "lighting-host-ui",
   "private": true,
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Lighting secondary display — one-click Windows portable app",
   "author": "Lighting",
   "type": "module",
@@ -95,6 +95,13 @@
         "filter": [
           "lighting-host.exe",
           "Lighting.apk"
+        ]
+      },
+      {
+        "from": "resources/vdd",
+        "to": "vdd",
+        "filter": [
+          "**/*"
         ]
       }
     ]
