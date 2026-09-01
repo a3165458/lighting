@@ -109,20 +109,42 @@ impl HostService {
     }
 
     pub fn start_share(&self) -> Result<(), String> {
-        {
+        let mode = {
             let g = self.inner.lock().expect("host lock");
             if g.running {
                 return Ok(());
             }
-        }
+            g.settings.share_mode
+        };
 
-        // Product path A: mirror primary + encode to tablet panel. No VDD / IddCx.
-        if let Err(err) = displays::apply_project_mode(ShareMode::Mirror) {
+        if mode.uses_virtual_display() {
+            {
+                let mut g = self.inner.lock().expect("host lock");
+                g.notice = Some((
+                    Tone::Info,
+                    "正在启用虚拟显示器（独立第二屏，首次可能需管理员确认）…".into(),
+                ));
+                g.last_error.clear();
+            }
+            if let Err(err) = displays::ensure_secondary_display(mode) {
+                // Never leave the user stuck: mirror still works without a driver.
+                let raw = format!("{err:#}");
+                let detail = ui_text::human_last_error(&raw);
+                tracing::warn!("virtual display failed ({raw}); falling back to mirror");
+                let _ = displays::apply_project_mode(ShareMode::Mirror);
+                let mut g = self.inner.lock().expect("host lock");
+                g.settings.share_mode = ShareMode::Mirror;
+                g.notice = Some((
+                    Tone::Warn,
+                    format!("独立第二屏不可用（{detail}）。已改为镜像主屏，可立即投屏。"),
+                ));
+                g.last_error.clear();
+            }
+        } else if let Err(err) = displays::apply_project_mode(mode) {
             tracing::warn!("DisplaySwitch failed ({err:#}); continuing with current layout");
         }
 
         let mut g = self.inner.lock().expect("host lock");
-        g.settings.share_mode = ShareMode::Mirror;
         match displays::list_displays() {
             Ok(list) => g.displays = list,
             Err(err) => {
@@ -134,18 +156,36 @@ impl HostService {
             g.last_error = "没有可用显示器".into();
             return Err(g.last_error.clone());
         }
-        let mode = ShareMode::Mirror;
+        // Re-read: the extend attempt above may have fallen back to mirror.
+        let mut mode = g.settings.share_mode;
+        if mode.uses_virtual_display() && !displays::has_secondary(&g.displays) {
+            tracing::warn!("secondary still missing after ensure; continuing as mirror");
+            g.settings.share_mode = ShareMode::Mirror;
+            mode = ShareMode::Mirror;
+            let _ = displays::apply_project_mode(ShareMode::Mirror);
+            g.notice = Some((
+                Tone::Warn,
+                "虚拟屏未能创建（驱动未就绪）。已用镜像主屏开始投屏——无需再点一次。".into(),
+            ));
+            if let Ok(list) = displays::list_displays() {
+                g.displays = list;
+            }
+        }
         if let Some(idx) = displays::pick_display_index(&g.displays, mode) {
             g.settings.selected_display = idx;
         }
 
         let quality = (g.settings.quality_pct.clamp(40, 100) as f32) / 100.0;
-        // Default ResCap::Device → always match tablet Hello size (path A).
-        let (match_device, scale, max_width, max_height) = match g.settings.res_cap {
-            ResCap::Device => (true, quality, 3840, 2560),
-            ResCap::Fhd => (false, 1.0, scaled(1920, quality), scaled(1080, quality)),
-            ResCap::Uhd2k => (false, 1.0, scaled(2560, quality), scaled(1440, quality)),
-            ResCap::Uhd4k => (false, 1.0, scaled(3840, quality), scaled(2160, quality)),
+        // Extend always follows the tablet panel (virtual screen is set on Hello).
+        let (match_device, scale, max_width, max_height) = if mode.uses_virtual_display() {
+            (true, quality, 3840, 2560)
+        } else {
+            match g.settings.res_cap {
+                ResCap::Device => (true, quality, 3840, 2560),
+                ResCap::Fhd => (false, 1.0, scaled(1920, quality), scaled(1080, quality)),
+                ResCap::Uhd2k => (false, 1.0, scaled(2560, quality), scaled(1440, quality)),
+                ResCap::Uhd4k => (false, 1.0, scaled(3840, quality), scaled(2160, quality)),
+            }
         };
         let serial = g
             .devices

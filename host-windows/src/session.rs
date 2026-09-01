@@ -346,11 +346,55 @@ async fn handle_client(
         s.client_name = hello.device.trim().to_string();
     }
 
-    // Path A + 跟随平板: temporarily switch the captured PC monitor toward the
-    // tablet panel size so Windows「显示设置」shows the tablet resolution
-    // (not the native 2K laptop panel). Restore when this client session ends.
     let mut mode_guard = displays::ModeRestoreGuard(None);
-    if req.match_device && hello.screen_width > 0 && hello.screen_height > 0 {
+    if req.share_mode.uses_virtual_display() && hello.screen_width > 0 && hello.screen_height > 0 {
+        // Independent second screen: put the *virtual* monitor on tablet pixels so
+        // capture is 1:1 (no scaling anywhere) and the PC monitor is untouched.
+        set_status(
+            &status,
+            "独立第二屏",
+            format!(
+                "正在把虚拟屏设为平板分辨率 {}×{}",
+                hello.screen_width, hello.screen_height
+            ),
+        );
+        let (tw, th) = (hello.screen_width, hello.screen_height);
+        let want_fps = hello.max_fps.max(req.fps).min(120);
+        match tokio::task::spawn_blocking(move || {
+            displays::configure_virtual_for_tablet(tw, th, want_fps)
+        })
+        .await
+        {
+            Ok(Ok(updated)) => {
+                tracing::info!(
+                    "virtual display now {}×{} (dxgi {})",
+                    updated.width,
+                    updated.height,
+                    updated.dxgi_index
+                );
+                display = updated;
+                set_status(
+                    &status,
+                    "独立第二屏",
+                    format!("虚拟屏 {}×{} · 1:1 抓取", display.width, display.height),
+                );
+            }
+            Ok(Err(err)) => {
+                tracing::warn!("configure virtual for tablet failed: {err:#}");
+                set_status(
+                    &status,
+                    "独立第二屏",
+                    format!("虚拟屏未能设为平板分辨率，将缩放推流。{err}"),
+                );
+            }
+            Err(err) => {
+                tracing::warn!("configure virtual join failed: {err:#}");
+            }
+        }
+    } else if req.match_device && hello.screen_width > 0 && hello.screen_height > 0 {
+        // Mirror + 跟随平板: temporarily switch the captured PC monitor toward the
+        // tablet panel so Windows「显示设置」matches. Refresh rate is protected —
+        // dropping a high-Hz panel to 60 Hz reads as stutter.
         let (tw, th) = lighting_host::session_policy::orient_box(
             display.width,
             display.height,
@@ -440,7 +484,7 @@ async fn handle_client(
     let (dec_w, dec_h, dec_fps, hw) = codec_limit(&hello, &codec);
     // Always clamp to the tablet panel when Hello reports it — a 2K desktop
     // must not stream 2K to a 1080p/1200p pad just because ResCap is「最高 2K」.
-    let scale = if req.match_device {
+    let scale = if req.match_device || req.share_mode.uses_virtual_display() {
         req.scale
     } else {
         1.0

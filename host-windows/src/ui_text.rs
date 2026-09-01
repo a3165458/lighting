@@ -305,7 +305,7 @@ pub fn human_vdd_error(raw: &str) -> Option<String> {
     } else if code_upper.contains("DRIVER_SIGNATURE") {
         "虚拟显示驱动签名不被系统接受。开发请开 testsigning；发布需 Attestation 签名。可先用镜像模式。"
     } else if code_upper.contains("VDD_NO_MONITOR") || code_upper.contains("DEVICE_STILL_MISSING") {
-        "扩展屏尚未出现。已按华硕 GlideX 同类方案自动改用镜像；也可使用安装包重装以预装驱动后再试扩展。"
+        "虚拟屏尚未出现。已自动改用镜像主屏；也可使用安装包重装以预装驱动后再试独立第二屏。"
     } else if code_upper.contains("DEVICE_NOT_FOUND") || code_upper.contains("DEVICE_STILL_MISSING") {
         "未找到虚拟显示设备。请在 UAC 弹窗点「是」允许安装驱动后重试。"
     } else if code_upper.contains("UAC_CANCELLED") {

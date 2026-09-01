@@ -67,42 +67,77 @@ pub fn orient_box(sw: u32, sh: u32, dw: u32, dh: u32) -> (u32, u32) {
 }
 
 /// Pick the closest `(w,h,fps)` mode to an oriented tablet panel.
-/// Prefers exact size, then minimal pixel distance, then fps closeness.
+///
+/// Size closeness dominates, but among candidates of the same size the highest
+/// refresh wins: dropping a 165 Hz desktop to 60 Hz reads as "卡顿" even though
+/// the stream itself is fine.
 pub fn pick_closest_display_mode(
     modes: &[(u32, u32, u32)],
     target_w: u32,
     target_h: u32,
-    prefer_fps: u32,
+    min_fps: u32,
 ) -> Option<(u32, u32, u32)> {
     if modes.is_empty() || target_w == 0 || target_h == 0 {
         return None;
     }
-    let prefer_fps = prefer_fps.max(30);
-    let mut best: Option<(u128, u32, (u32, u32, u32))> = None;
-    for &(w, h, fps) in modes {
+    let min_fps = min_fps.max(30);
+    // First pass: only modes that keep the refresh rate we need.
+    let fast: Vec<(u32, u32, u32)> = modes
+        .iter()
+        .copied()
+        .filter(|&(w, h, fps)| w >= 16 && h >= 16 && fps >= min_fps)
+        .collect();
+    let pool = if fast.is_empty() { modes } else { &fast };
+
+    let mut best: Option<((u128, u32), (u32, u32, u32))> = None;
+    for &(w, h, fps) in pool {
         if w < 16 || h < 16 {
             continue;
         }
         let dw = w.abs_diff(target_w) as u128;
         let dh = h.abs_diff(target_h) as u128;
-        // Exact match wins; otherwise weight size heavily over fps.
         let size_score = if dw == 0 && dh == 0 {
             0u128
         } else {
             dw * dw + dh * dh + 1
         };
-        let fps_score = fps.abs_diff(prefer_fps) as u128;
-        let score = size_score.saturating_mul(1_000).saturating_add(fps_score);
-        let cand = (score, fps, (w, h, fps));
+        // Rank by (size distance, then highest refresh) — never trade fps away
+        // for a marginally closer resolution.
+        let key = (size_score, u32::MAX - fps);
         match best {
-            None => best = Some(cand),
-            Some(prev) if cand.0 < prev.0 || (cand.0 == prev.0 && cand.1 > prev.1) => {
-                best = Some(cand);
-            }
+            None => best = Some((key, (w, h, fps))),
+            Some((prev_key, _)) if key < prev_key => best = Some((key, (w, h, fps))),
             _ => {}
         }
     }
-    best.map(|(_, _, mode)| mode)
+    best.map(|(_, mode)| mode)
+}
+
+/// Whether switching the desktop to `candidate` is actually worth it.
+///
+/// Refuses the switch when it would cost refresh rate (the main cause of the
+/// "分辨率对了但很卡" report) or when it gets no closer to the tablet panel.
+pub fn should_switch_desktop_mode(
+    current: (u32, u32, u32),
+    candidate: (u32, u32, u32),
+    target_w: u32,
+    target_h: u32,
+) -> bool {
+    let (cw, ch, cfps) = current;
+    let (nw, nh, nfps) = candidate;
+    if nw == cw && nh == ch {
+        return false;
+    }
+    // Losing more than ~10% refresh feels worse than letting the encoder scale.
+    if cfps > 0 && nfps * 10 < cfps * 9 {
+        return false;
+    }
+    let dist = |w: u32, h: u32| -> u64 {
+        let dw = w.abs_diff(target_w) as u64;
+        let dh = h.abs_diff(target_h) as u64;
+        dw * dw + dh * dh
+    };
+    dist(nw, nh) < dist(cw, ch)
 }
 
 /// Aspect-preserving downscale into a box. Never upscales.
@@ -206,19 +241,16 @@ mod tests {
     }
 
     #[test]
-    fn picks_exact_tablet_mode_when_available() {
+    fn picks_exact_tablet_mode_at_highest_refresh() {
         let modes = [
             (1920, 1080, 60),
             (2560, 1440, 60),
             (2000, 1200, 60),
             (2000, 1200, 120),
         ];
+        // Same size available at two refresh rates — take the faster one.
         assert_eq!(
             pick_closest_display_mode(&modes, 2000, 1200, 60),
-            Some((2000, 1200, 60))
-        );
-        assert_eq!(
-            pick_closest_display_mode(&modes, 2000, 1200, 120),
             Some((2000, 1200, 120))
         );
     }
@@ -226,12 +258,56 @@ mod tests {
     #[test]
     fn picks_nearest_when_exact_missing() {
         let modes = [(3840, 2160, 60), (2560, 1440, 60), (1920, 1080, 60)];
-        // Tablet 2000×1200 → closest among common PC modes is 1920×1080 by pixel distance? 
-        // 2560x1440 distance: 560^2+240^2=372800; 1920x1080: 80^2+120^2=20800 → 1080p wins.
+        // 2560×1440 is 372800 away, 1920×1080 only 20800 → 1080p is closer.
         assert_eq!(
             pick_closest_display_mode(&modes, 2000, 1200, 60),
             Some((1920, 1080, 60))
         );
+    }
+
+    #[test]
+    fn keeps_high_refresh_over_closer_size() {
+        // 165 Hz desktop: a 60 Hz exact-size mode must not win, or the user
+        // sees a "resolution matched but stuttering" session.
+        let modes = [(2000, 1200, 60), (1920, 1200, 165)];
+        assert_eq!(
+            pick_closest_display_mode(&modes, 2000, 1200, 120),
+            Some((1920, 1200, 165))
+        );
+    }
+
+    #[test]
+    fn refuses_switch_that_costs_refresh() {
+        // 2560×1440@165 → 1920×1200@60 is closer in size but much slower.
+        assert!(!should_switch_desktop_mode(
+            (2560, 1440, 165),
+            (1920, 1200, 60),
+            1920,
+            1200
+        ));
+        // Same refresh, closer size → worth it.
+        assert!(should_switch_desktop_mode(
+            (2560, 1440, 60),
+            (1920, 1200, 60),
+            1920,
+            1200
+        ));
+    }
+
+    #[test]
+    fn refuses_switch_that_is_not_closer() {
+        assert!(!should_switch_desktop_mode(
+            (1920, 1200, 60),
+            (1920, 1200, 60),
+            1920,
+            1200
+        ));
+        assert!(!should_switch_desktop_mode(
+            (1920, 1200, 60),
+            (1280, 720, 60),
+            1920,
+            1200
+        ));
     }
 
     #[test]
