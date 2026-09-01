@@ -118,12 +118,16 @@ export function hasHostBridge(): boolean {
   return typeof window !== 'undefined' && Boolean(window.lightingHost)
 }
 
-/** Product path A: tablet-native encode only (mirror). Extend/external are legacy. */
 export const SHARE_MODE_OPTIONS = [
   {
     id: 'mirror',
-    label: '按平板分辨率输出',
-    hint: '镜像电脑主屏，并按平板物理分辨率编码推流。无需虚拟显示驱动。',
+    label: '镜像主屏（按平板分辨率）',
+    hint: '镜像电脑主屏并按平板分辨率输出。免驱动；「跟随平板」时会临时切电脑分辨率。',
+  },
+  {
+    id: 'extend',
+    label: '独立第二屏（虚拟显示器·1:1）',
+    hint: '平板作为独立桌面（类似 GlideX）。虚拟屏直接设为平板分辨率，1:1 抓取最流畅，且不改主屏。',
   },
 ] as const
 

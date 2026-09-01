@@ -776,18 +776,78 @@ pub fn pick_closest_mode(
     })
 }
 
+/// Read the monitor's live mode, including refresh rate.
+pub fn current_display_mode(device_name: &str) -> Result<DisplayMode> {
+    let device = device_name.replace('\'', "''");
+    let ps = format!(
+        r#"
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+public struct DEVMODE {{
+  [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+  public short dmSpecVersion; public short dmDriverVersion; public short dmSize; public short dmDriverExtra;
+  public int dmFields; public int dmPositionX; public int dmPositionY; public int dmDisplayOrientation;
+  public int dmDisplayFixedOutput; public short dmColor; public short dmDuplex; public short dmYResolution;
+  public short dmTTOption; public short dmCollate;
+  [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+  public short dmLogPixels; public int dmBitsPerPel; public int dmPelsWidth; public int dmPelsHeight;
+  public int dmDisplayFlags; public int dmDisplayFrequency; public int dmICMMethod; public int dmICMIntent;
+  public int dmMediaType; public int dmDitherType; public int dmReserved1; public int dmReserved2;
+  public int dmPanningWidth; public int dmPanningHeight;
+}}
+public static class DispCur {{
+  public const int ENUM_CURRENT_SETTINGS = -1;
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+  public static extern bool EnumDisplaySettings(string deviceName, int modeNum, ref DEVMODE devMode);
+}}
+"@
+$dm = New-Object DEVMODE
+$dm.dmSize = [System.Runtime.InteropServices.Marshal]::SizeOf([type][DEVMODE])
+if (-not [DispCur]::EnumDisplaySettings('{device}', [DispCur]::ENUM_CURRENT_SETTINGS, [ref]$dm)) {{ throw 'EnumDisplaySettings failed' }}
+Write-Output ("{{0}}x{{1}}@{{2}}" -f $dm.dmPelsWidth, $dm.dmPelsHeight, $dm.dmDisplayFrequency)
+"#
+    );
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &ps])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .context("读取当前显示模式失败")?;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("读取当前显示模式失败: {err}");
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let line = text.trim();
+    let (wh, fps) = line.split_once('@').context("解析当前显示模式失败")?;
+    let (w, h) = wh.split_once('x').context("解析当前显示模式失败")?;
+    Ok(DisplayMode {
+        width: w.trim().parse().context("解析宽度失败")?,
+        height: h.trim().parse().context("解析高度失败")?,
+        fps: fps.trim().parse::<u32>().unwrap_or(60).max(30),
+    })
+}
+
 /// Follow-tablet: temporarily switch the captured monitor toward the tablet panel.
 /// Returns `(applied, restore)`. Caller must keep [`ModeRestoreGuard`] until session end.
+///
+/// Refuses switches that would cost refresh rate — a 165 Hz desktop dropped to
+/// 60 Hz reads as stutter even though the tablet resolution now matches.
 pub fn apply_follow_tablet_mode(
     device_name: &str,
-    current: DisplayMode,
+    current_size: DisplayMode,
     tablet_w: u32,
     tablet_h: u32,
-    prefer_fps: u32,
+    min_fps: u32,
 ) -> Result<(DisplayMode, ModeRestore)> {
     let target_w = tablet_w.max(16);
     let target_h = tablet_h.max(16);
-    let prefer_fps = prefer_fps.clamp(30, 120);
+
+    // Live mode carries the real refresh rate; DXGI only gave us pixels.
+    let current = current_display_mode(device_name).unwrap_or(current_size);
+    let min_fps = min_fps.max(30).min(current.fps.max(30));
 
     if current.width == target_w && current.height == target_h {
         return Ok((
@@ -800,25 +860,29 @@ pub fn apply_follow_tablet_mode(
     }
 
     let modes = list_display_modes(device_name).unwrap_or_default();
-    let chosen = pick_closest_mode(&modes, target_w, target_h, prefer_fps).unwrap_or(DisplayMode {
-        width: target_w,
-        height: target_h,
-        fps: prefer_fps,
-    });
+    let chosen = pick_closest_mode(&modes, target_w, target_h, min_fps).context(
+        "显示器没有可用的分辨率列表",
+    )?;
 
-    if chosen.width == current.width && chosen.height == current.height {
-        // Already as close as the panel can get — no mode change, encode will scale.
+    if !lighting_host::session_policy::should_switch_desktop_mode(
+        (current.width, current.height, current.fps),
+        (chosen.width, chosen.height, chosen.fps),
+        target_w,
+        target_h,
+    ) {
         anyhow::bail!(
-            "显示器没有更接近平板的模式（当前 {}×{}，目标 {}×{}）",
+            "为避免掉刷新率/卡顿，保持电脑 {}×{}@{}Hz（可选模式 {}×{}@{}Hz）",
             current.width,
             current.height,
-            target_w,
-            target_h
+            current.fps,
+            chosen.width,
+            chosen.height,
+            chosen.fps
         );
     }
 
     set_display_mode(device_name, chosen.width, chosen.height, chosen.fps)?;
-    std::thread::sleep(Duration::from_millis(700));
+    std::thread::sleep(Duration::from_millis(900));
     Ok((
         chosen,
         ModeRestore {

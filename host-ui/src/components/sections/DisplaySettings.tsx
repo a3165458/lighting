@@ -1,10 +1,14 @@
-import { Download, Gauge, Monitor, Sparkles, Volume2, Waves } from 'lucide-react'
+import { Download, Gauge, Monitor, Sparkles, SquareStack, Volume2, Waves } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Dropdown } from '@/components/ui/Dropdown'
 import { SettingRow } from '@/components/ui/SettingRow'
 import { SliderControl } from '@/components/ui/SliderControl'
 import { ToggleSwitch } from '@/components/ui/ToggleSwitch'
-import { type HostSettingsPatch, type HostState } from '@/lib/host'
+import {
+  SHARE_MODE_OPTIONS,
+  type HostSettingsPatch,
+  type HostState,
+} from '@/lib/host'
 
 type Props = {
   host: HostState
@@ -37,6 +41,11 @@ export function DisplaySettings({
   const audioSync = settings?.sendAudio ?? true
   const preferHevc = settings?.preferHevc ?? false
   const resCap = settings?.resCap ?? 'device'
+  const shareMode = settings?.shareMode ?? 'mirror'
+  const shareMeta =
+    SHARE_MODE_OPTIONS.find((o) => o.id === shareMode) ?? SHARE_MODE_OPTIONS[0]
+  const isExtend = shareMode === 'extend' || shareMode === 'external'
+  const hasSecondary = host.displays.some((d) => !d.primary)
 
   return (
     <section className="glass-card p-[var(--space-card-pad)]" aria-label="投屏设置">
@@ -49,8 +58,34 @@ export function DisplaySettings({
 
       <div className="flex flex-col gap-[var(--space-form-gap)]">
         <p className="rounded-[var(--radius-control)] bg-brand-soft/60 px-3 py-2 text-sm text-text-secondary">
-          「跟随平板」会在投屏时尽量把<strong>电脑显示器分辨率</strong>切到平板面板尺寸，可在 Windows「显示设置」里核对；停止共享后自动恢复。若显示器不支持该模式，则回退为缩放推流（此时显示设置仍可能是电脑原生分辨率）。
+          {isExtend
+            ? '独立第二屏：平板变成单独桌面，虚拟屏直接设为平板分辨率（1:1 抓取，不改电脑主屏）。首次可能需管理员确认；失败会自动改用镜像。'
+            : '镜像主屏：电脑画面同步到平板。「跟随平板」会尽量切电脑分辨率，但不会牺牲刷新率（避免切完变卡）。'}
         </p>
+
+        <SettingRow
+          icon={SquareStack}
+          label="投屏模式"
+          description={shareMeta.hint}
+          tall
+          control={
+            <div className="w-[280px] max-w-full">
+              <Dropdown
+                value={isExtend ? 'extend' : 'mirror'}
+                options={SHARE_MODE_OPTIONS.map((o) => ({ id: o.id, label: o.label }))}
+                onChange={(id) => onChange({ shareMode: id })}
+                disabled={disabled}
+                ariaLabel="投屏模式"
+              />
+            </div>
+          }
+        />
+
+        {isExtend && !hasSecondary && (
+          <p className="rounded-[var(--radius-control)] bg-warning/10 px-3 py-2 text-sm text-warning">
+            尚未看到虚拟屏。点「开始共享」会自动启用驱动（首次可能需管理员确认），平板连接后会设为平板分辨率。失败则自动镜像，保证能投屏。
+          </p>
+        )}
 
         <SettingRow
           icon={Monitor}
@@ -81,7 +116,7 @@ export function DisplaySettings({
                 value={resCap}
                 options={RES_OPTIONS}
                 onChange={(id) => onChange({ resCap: id })}
-                disabled={disabled}
+                disabled={disabled || isExtend}
                 ariaLabel="分辨率上限"
               />
             </div>
