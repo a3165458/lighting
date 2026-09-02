@@ -47,9 +47,9 @@ pub fn tablet_only_abort_message(reason: &str) -> String {
 /// Copy shown while installing the virtual display driver.
 pub fn virtual_driver_install_copy(already_admin: bool) -> &'static str {
     if already_admin {
-        "已是管理员，正在直接安装虚拟显示驱动（不会再弹出确认窗口）…"
+        "已是管理员，正在直接安装虚拟显示驱动（不会再弹出确认窗口）。若弹出 360/杀毒软件请选允许…"
     } else {
-        "需要安装驱动。请在蓝底「用户账户控制」窗口点「是」；没有弹窗时请看任务栏是否在闪。"
+        "需要安装驱动。请在蓝底「用户账户控制」窗口点「是」；若弹出 360/杀毒软件也请选允许。"
     }
 }
 
@@ -57,13 +57,13 @@ pub fn virtual_driver_install_copy(already_admin: bool) -> &'static str {
 pub fn share_start_notice(mode: ShareMode, already_admin: bool) -> String {
     if mode.blanks_pc_monitor() {
         if already_admin {
-            "正在启用虚拟屏。已是管理员，不会再弹出确认窗口。".into()
+            "正在启用虚拟屏。已是管理员，不会再弹出确认窗口。若弹出 360/杀毒软件请选允许。".into()
         } else {
             "正在启用虚拟屏。当前步骤会显示在上方；请留意管理员确认窗口。".into()
         }
     } else if mode.uses_virtual_display() {
         if already_admin {
-            "正在启用独立第二屏。已是管理员，不会再弹出确认窗口。".into()
+            "正在启用独立第二屏。已是管理员，不会再弹出确认窗口。若弹出 360/杀毒软件请选允许。".into()
         } else {
             "正在启用独立第二屏（虚拟显示器）…".into()
         }
@@ -141,6 +141,66 @@ pub fn classify_provision_uac(
         return Err(ProvisionUacError::NoResult);
     }
     Ok(())
+}
+
+/// After an already-elevated provision child finishes. Missing file / killed
+/// child / timeout / unknown payload are never `UAC_CANCELLED`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProvisionFinishError {
+    Interrupted,
+    NoResult,
+    UnknownResult,
+    Timeout,
+}
+
+impl ProvisionFinishError {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Interrupted => "INSTALL_INTERRUPTED",
+            Self::NoResult => "DRIVER_NO_RESULT",
+            Self::UnknownResult => "DRIVER_UNKNOWN_RESULT",
+            Self::Timeout => "INSTALL_TIMEOUT",
+        }
+    }
+}
+
+pub fn classify_provision_finish(
+    timed_out: bool,
+    exit_success: bool,
+    result_file_present: bool,
+    result_line: &str,
+) -> Result<(), ProvisionFinishError> {
+    if timed_out {
+        return Err(ProvisionFinishError::Timeout);
+    }
+    if !result_file_present {
+        return Err(if exit_success {
+            ProvisionFinishError::NoResult
+        } else {
+            ProvisionFinishError::Interrupted
+        });
+    }
+    let line = result_line.trim();
+    if line.starts_with("OK|") || line.starts_with("FAIL|") {
+        return Ok(());
+    }
+    Err(ProvisionFinishError::UnknownResult)
+}
+
+/// Drop Electron's `Error invoking remote method '…': Error:` wrapper.
+pub fn strip_electron_ipc_error(raw: &str) -> &str {
+    let raw = raw.trim();
+    if let Some(rest) = raw.strip_prefix("Error invoking remote method '") {
+        if let Some(idx) = rest.find("': ") {
+            let after = &rest[idx + 3..];
+            return after
+                .strip_prefix("Error: ")
+                .or_else(|| after.strip_prefix("Error:"))
+                .unwrap_or(after)
+                .trim();
+        }
+    }
+    raw
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -465,9 +525,64 @@ mod tests {
     fn elevated_start_notice_says_no_extra_uac() {
         let tablet = share_start_notice(ShareMode::External, true);
         assert!(tablet.contains("不会再弹出"));
+        assert!(tablet.contains("360"));
         assert!(!tablet.contains("请留意管理员确认"));
         let unelevated = share_start_notice(ShareMode::External, false);
         assert!(unelevated.contains("管理员确认"));
         assert!(virtual_driver_install_copy(true).contains("不会再弹出"));
+        assert!(virtual_driver_install_copy(true).contains("360"));
+    }
+
+    #[test]
+    fn killed_child_or_missing_result_is_never_uac_cancelled() {
+        assert_eq!(
+            classify_provision_finish(false, false, false, ""),
+            Err(ProvisionFinishError::Interrupted)
+        );
+        assert_eq!(
+            classify_provision_finish(false, true, false, ""),
+            Err(ProvisionFinishError::NoResult)
+        );
+        assert_eq!(
+            classify_provision_finish(true, false, false, ""),
+            Err(ProvisionFinishError::Timeout)
+        );
+        assert_eq!(
+            classify_provision_finish(false, false, true, "garbage"),
+            Err(ProvisionFinishError::UnknownResult)
+        );
+        assert_eq!(
+            classify_provision_finish(false, true, true, "OK|READY"),
+            Ok(())
+        );
+        assert_eq!(
+            classify_provision_finish(false, false, true, "FAIL|DEVICE_NOT_FOUND"),
+            Ok(())
+        );
+        for kind in [
+            ProvisionFinishError::Interrupted,
+            ProvisionFinishError::NoResult,
+            ProvisionFinishError::UnknownResult,
+            ProvisionFinishError::Timeout,
+        ] {
+            assert_ne!(kind.code(), "UAC_CANCELLED", "{}", kind.code());
+        }
+    }
+
+    #[test]
+    fn strip_electron_ipc_prefix() {
+        assert_eq!(
+            strip_electron_ipc_error(
+                "Error invoking remote method 'host:startShare': Error: 已取消管理员授权。扩展屏需要安装虚拟显示驱动，请在弹窗中点「是」。"
+            ),
+            "已取消管理员授权。扩展屏需要安装虚拟显示驱动，请在弹窗中点「是」。"
+        );
+        assert_eq!(
+            strip_electron_ipc_error(
+                "Error invoking remote method 'host:startShare': Error: 安装被中断（可能是 360/杀毒软件）。"
+            ),
+            "安装被中断（可能是 360/杀毒软件）。"
+        );
+        assert_eq!(strip_electron_ipc_error("仅平板需要虚拟屏"), "仅平板需要虚拟屏");
     }
 }
