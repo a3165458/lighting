@@ -11,6 +11,7 @@ import type { NavId } from '@/lib/format'
 import {
   DISCONNECTED_STATE,
   hasHostBridge,
+  stripElectronIpcError,
   type HostSettingsPatch,
   type HostState,
 } from '@/lib/host'
@@ -44,7 +45,7 @@ export default function App() {
     } catch (err) {
       setHost({
         ...DISCONNECTED_STATE,
-        usbHint: String((err as Error).message || err),
+        usbHint: stripElectronIpcError(String((err as Error).message || err)),
       })
     }
   }, [applyState])
@@ -66,10 +67,11 @@ export default function App() {
         : await window.lightingHost.startShare()
       applyState(state)
     } catch (err) {
+      const message = stripElectronIpcError(String((err as Error).message || err))
       setHost((prev) => ({
         ...prev,
-        lastError: String((err as Error).message || err),
-        usbHint: String((err as Error).message || err),
+        lastError: message,
+        usbHint: message,
         usbTone: 'bad',
       }))
     } finally {
@@ -108,7 +110,7 @@ export default function App() {
       } catch (err) {
         setHost((prev) => ({
           ...prev,
-          lastError: String((err as Error).message || err),
+          lastError: stripElectronIpcError(String((err as Error).message || err)),
         }))
       }
     },
@@ -122,10 +124,11 @@ export default function App() {
       const state = await window.lightingHost.installClient()
       applyState(state)
     } catch (err) {
+      const message = stripElectronIpcError(String((err as Error).message || err))
       setHost((prev) => ({
         ...prev,
-        lastError: String((err as Error).message || err),
-        usbHint: String((err as Error).message || err),
+        lastError: message,
+        usbHint: message,
         usbTone: 'bad',
       }))
     } finally {
