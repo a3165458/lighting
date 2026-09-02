@@ -20,6 +20,9 @@ pub fn display_phase(phase: &str) -> String {
     match phase {
         "" => "空闲".into(),
         "启动" | "启动中" => "监听".into(),
+        "准备虚拟屏" | "启用驱动" => "正在启用虚拟屏".into(),
+        "仅平板" => "正在关闭电脑屏".into(),
+        "独立第二屏" => "正在适配平板".into(),
         "USB" | "USB 警告" | "等待" => "等待设备".into(),
         "回退" => "编码".into(),
         other => other.to_string(),
@@ -154,11 +157,13 @@ pub fn connection_title(running: bool, phase: &str, client_name: &str) -> String
     if is_streaming(phase) {
         return format!("已连接：{}", peer_name(client_name));
     }
-    if running {
-        "等待平板连接".into()
-    } else {
-        "未开始共享".into()
+    if !running {
+        return "未开始共享".into();
     }
+    if phase == "错误" {
+        return "未能开始共享".into();
+    }
+    crate::share_flow::activity_title(true, phase)
 }
 
 pub fn display_choice_label(index: usize, primary: bool, width: u32, height: u32) -> String {
@@ -240,6 +245,9 @@ pub fn human_detail_text(phase: &str, detail: &str) -> String {
     if detail.is_empty() {
         return String::new();
     }
+    if phase == "准备虚拟屏" || phase == "仅平板" || phase == "独立第二屏" || phase == "启用驱动" {
+        return detail.to_string();
+    }
     let lower = detail.to_lowercase();
     if phase == "错误" {
         return human_last_error(detail);
@@ -301,19 +309,17 @@ pub fn human_vdd_error(raw: &str) -> Option<String> {
     } else if code_upper.contains("VDD_PIPE_DOWN") {
         "虚拟显示驱动未响应。请完全退出 Lighting 后重试；若刚点过 UAC「是」，请等几秒再点「开始共享」。"
     } else if code_upper.contains("IDD_NO_MONITOR") || code_upper.contains("BUNDLE_DLL_MISSING") {
-        "Lighting 自有虚拟显示驱动未能创建扩展屏。开发机需开启测试签名并编译 LightingIdd；正式版需 Microsoft Attestation 签名。已可改用镜像投屏。"
+        "Lighting 自有虚拟显示驱动未能创建扩展屏。请在弹出的管理员窗口点「是」；开发机还需测试签名。"
     } else if code_upper.contains("DRIVER_SIGNATURE") {
-        "虚拟显示驱动签名不被系统接受。开发请开 testsigning；发布需 Attestation 签名。可先用镜像模式。"
+        "虚拟显示驱动签名不被系统接受。开发请开 testsigning；发布需 Attestation 签名。"
     } else if code_upper.contains("VDD_NO_MONITOR") || code_upper.contains("DEVICE_STILL_MISSING") {
-        "虚拟屏尚未出现。已自动改用镜像主屏；也可使用安装包重装以预装驱动后再试独立第二屏。"
+        "虚拟屏尚未出现。请以管理员身份运行后再试，并在 UAC 窗口点「是」。"
     } else if code_upper.contains("DEVICE_NOT_FOUND") || code_upper.contains("DEVICE_STILL_MISSING") {
         "未找到虚拟显示设备。请在 UAC 弹窗点「是」允许安装驱动后重试。"
     } else if code_upper.contains("UAC_CANCELLED") {
         "已取消管理员授权。扩展屏需要安装虚拟显示驱动，请在弹窗中点「是」。"
     } else if code_upper.contains("ACCESS_DENIED") {
         "权限不足，无法安装虚拟显示驱动。请右键 Lighting 选「以管理员身份运行」。"
-    } else if code_upper.contains("DRIVER_SIGNATURE") {
-        "驱动签名未被系统信任。请关闭「内存完整性」/核心隔离后再试，或用管理员身份运行。"
     } else if code_upper.contains("PNP_QUERY_FAILED") {
         "无法查询显示设备。请重启 Lighting 并以管理员身份运行后再试。"
     } else if code_upper.contains("BUNDLE_DIR_MISSING") {
@@ -384,6 +390,8 @@ mod tests {
         assert_eq!(display_phase("已连接"), "已连接");
         assert_eq!(display_phase("编码"), "编码");
         assert_eq!(display_phase("回退"), "编码");
+        assert_eq!(display_phase("准备虚拟屏"), "正在启用虚拟屏");
+        assert_eq!(display_phase("仅平板"), "正在关闭电脑屏");
         assert_eq!(display_phase("错误"), "错误");
         assert_eq!(display_phase("已停止"), "已停止");
     }
@@ -458,6 +466,9 @@ mod tests {
         );
         assert_eq!(connection_title(true, "编码", ""), "已连接：平板");
         assert_eq!(connection_title(true, "等待设备", ""), "等待平板连接");
+        assert_eq!(connection_title(true, "准备虚拟屏", ""), "正在启用虚拟屏");
+        assert_eq!(connection_title(true, "仅平板", ""), "正在关闭电脑屏");
+        assert_eq!(connection_title(true, "错误", ""), "未能开始共享");
         assert_eq!(connection_title(false, "已停止", ""), "未开始共享");
     }
 
@@ -529,8 +540,8 @@ mod tests {
             "画面已自动恢复"
         );
         assert_eq!(
-            human_detail_text("错误", "绑定端口: Address already in use"),
-            "无法开始共享，请稍后重试"
+            human_detail_text("准备虚拟屏", "正在启用虚拟显示驱动（可能弹出管理员确认）…"),
+            "正在启用虚拟显示驱动（可能弹出管理员确认）…"
         );
     }
 

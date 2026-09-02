@@ -88,6 +88,11 @@ impl HostService {
     pub fn tick(&self) {
         let mut g = self.inner.lock().expect("host lock");
         Self::apply_pending_devices_locked(&self.rt, &mut g);
+        let status = g.status.lock().ok().map(|s| s.clone()).unwrap_or_default();
+        g.running = status.running;
+        if status.phase == "错误" && !status.detail.is_empty() {
+            g.last_error = status.detail.clone();
+        }
         if !g.running && g.last_poll.elapsed() >= Duration::from_secs(2) {
             g.last_poll = Instant::now();
             Self::request_device_refresh_locked(&self.rt, &mut g);
@@ -109,47 +114,23 @@ impl HostService {
     }
 
     pub fn start_share(&self) -> Result<(), String> {
-        let mode = {
-            let g = self.inner.lock().expect("host lock");
-            if g.running {
-                return Ok(());
-            }
-            g.settings.share_mode
-        };
-
-        if mode.uses_virtual_display() {
-            {
-                let mut g = self.inner.lock().expect("host lock");
-                g.notice = Some((
-                    Tone::Info,
-                    if mode.blanks_pc_monitor() {
-                        "正在启用虚拟显示器。平板连上后会关掉电脑屏（仅平板）。首次可能需管理员确认…"
-                            .into()
-                    } else {
-                        "正在启用虚拟显示器（独立第二屏，首次可能需管理员确认）…".into()
-                    },
-                ));
-                g.last_error.clear();
-            }
-            if let Err(err) = displays::ensure_secondary_display(mode) {
-                // Never leave the user stuck: mirror still works without a driver.
-                let raw = format!("{err:#}");
-                let detail = ui_text::human_last_error(&raw);
-                tracing::warn!("virtual display failed ({raw}); falling back to mirror");
-                let _ = displays::apply_project_mode(ShareMode::Mirror);
-                let mut g = self.inner.lock().expect("host lock");
-                g.settings.share_mode = ShareMode::Mirror;
-                g.notice = Some((
-                    Tone::Warn,
-                    format!("独立第二屏不可用（{detail}）。已改为镜像主屏，可立即投屏。"),
-                ));
-                g.last_error.clear();
-            }
-        } else if let Err(err) = displays::apply_project_mode(mode) {
-            tracing::warn!("DisplaySwitch failed ({err:#}); continuing with current layout");
-        }
-
         let mut g = self.inner.lock().expect("host lock");
+        if g.running {
+            return Ok(());
+        }
+        let mode = g.settings.share_mode;
+        g.last_error.clear();
+        g.notice = Some((
+            Tone::Info,
+            if mode.blanks_pc_monitor() {
+                "正在启用虚拟屏。当前步骤会显示在上方；请留意管理员确认窗口。".into()
+            } else if mode.uses_virtual_display() {
+                "正在启用独立第二屏（虚拟显示器）…".into()
+            } else {
+                "正在开始镜像投屏…".into()
+            },
+        ));
+
         match displays::list_displays() {
             Ok(list) => g.displays = list,
             Err(err) => {
@@ -161,30 +142,11 @@ impl HostService {
             g.last_error = "没有可用显示器".into();
             return Err(g.last_error.clone());
         }
-        // Re-read: the extend attempt above may have fallen back to mirror.
-        let mut mode = g.settings.share_mode;
-        if mode.uses_virtual_display()
-            && !displays::has_secondary(&g.displays)
-            && !displays::has_virtual_display(&g.displays)
-        {
-            tracing::warn!("secondary still missing after ensure; continuing as mirror");
-            g.settings.share_mode = ShareMode::Mirror;
-            mode = ShareMode::Mirror;
-            let _ = displays::apply_project_mode(ShareMode::Mirror);
-            g.notice = Some((
-                Tone::Warn,
-                "虚拟屏未能创建（驱动未就绪）。已用镜像主屏开始投屏——无需再点一次。".into(),
-            ));
-            if let Ok(list) = displays::list_displays() {
-                g.displays = list;
-            }
-        }
         if let Some(idx) = displays::pick_display_index(&g.displays, mode) {
             g.settings.selected_display = idx;
         }
 
         let quality = (g.settings.quality_pct.clamp(40, 100) as f32) / 100.0;
-        // Extend always follows the tablet panel (virtual screen is set on Hello).
         let (match_device, scale, max_width, max_height) = if mode.uses_virtual_display() {
             (true, quality, 3840, 2560)
         } else {
@@ -235,10 +197,20 @@ impl HostService {
         g.controls
             .touch
             .store(g.settings.touch_relay, Ordering::Relaxed);
+        let prepare_detail = if mode.uses_virtual_display() {
+            "正在检查并启用虚拟显示器…"
+        } else {
+            "正在枚举显示器…"
+        };
         if let Ok(mut s) = g.status.lock() {
             *s = SessionStatus {
                 running: true,
-                phase: "启动中".into(),
+                phase: if mode.uses_virtual_display() {
+                    "准备虚拟屏".into()
+                } else {
+                    "启动中".into()
+                },
+                detail: prepare_detail.into(),
                 ..Default::default()
             };
         };
@@ -451,8 +423,36 @@ impl HostService {
                 bind_host: g.settings.bind_host.clone(),
                 bind_port: g.settings.bind_port,
             },
-            last_error: g.last_error.clone(),
+            last_error: if status.phase == "错误" && !status.detail.is_empty() {
+                lighting_host::ui_text::human_last_error(&status.detail)
+            } else {
+                g.last_error.clone()
+            },
             host_version: env!("CARGO_PKG_VERSION").into(),
+            activity_title: lighting_host::share_flow::activity_title(
+                status.running || g.running,
+                &status.phase,
+            ),
+            activity_detail: {
+                let d = lighting_host::ui_text::human_detail_text(&status.phase, &status.detail);
+                if d.is_empty() {
+                    status.detail.clone()
+                } else {
+                    d
+                }
+            },
+            activity_steps: lighting_host::share_flow::activity_steps(
+                g.settings.share_mode,
+                &status.phase,
+                status.running || g.running,
+            )
+            .into_iter()
+            .map(|s| lighting_host::host_ipc::ActivityStepDto {
+                id: s.id.into(),
+                label: s.label.into(),
+                state: s.state.into(),
+            })
+            .collect(),
         }
     }
 
@@ -506,7 +506,10 @@ impl HostService {
             .and_then(|d| d.client_installed)
             .is_some_and(|installed| !installed);
         if !missing && !g.install_inflight {
-            g.notice = None;
+            let session_running = g.status.lock().ok().is_some_and(|s| s.running);
+            if !session_running {
+                g.notice = None;
+            }
         }
         g.apk_available = adb::find_bundled_apk().is_some();
     }
@@ -566,6 +569,32 @@ fn tone_str(tone: Tone) -> &'static str {
 }
 
 fn usb_hint_locked(g: &HostInner, snap: &SessionStatus) -> (String, Tone) {
+    if snap.phase == "错误" && !snap.detail.is_empty() {
+        return (
+            ui_text::human_last_error(&snap.detail),
+            Tone::Bad,
+        );
+    }
+    if snap.running || g.running {
+        if !snap.detail.is_empty() {
+            let text = ui_text::human_detail_text(&snap.phase, &snap.detail);
+            let text = if text.is_empty() {
+                snap.detail.clone()
+            } else {
+                text
+            };
+            let tone = if snap.phase == "仅平板" || snap.phase == "编码" {
+                Tone::Ok
+            } else {
+                Tone::Info
+            };
+            return (text, tone);
+        }
+        return (
+            lighting_host::share_flow::activity_title(true, &snap.phase),
+            Tone::Info,
+        );
+    }
     if let Some(raw) = live_transport(snap.running, &snap.transport) {
         return ui_text::humanize_transport(raw);
     }

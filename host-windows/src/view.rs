@@ -79,6 +79,12 @@ impl ShareMode {
     pub fn blanks_pc_monitor(self) -> bool {
         matches!(self, ShareMode::External)
     }
+
+    /// Independent second screen may keep working as a mirror if the driver
+    /// fails. Tablet-only must not — mirroring a locked/lid-closed PC is useless.
+    pub fn allows_mirror_fallback(self) -> bool {
+        matches!(self, ShareMode::Extend)
+    }
 }
 
 /// Pick a DXGI-order index for `mode`. Each item is `(primary, is_virtual)`.
@@ -146,6 +152,8 @@ mod share_mode_tests {
         assert!(ShareMode::External.blanks_pc_monitor());
         assert!(!ShareMode::Extend.blanks_pc_monitor());
         assert_eq!(ShareMode::Extend.display_switch_arg(), "/extend");
+        assert!(ShareMode::Extend.allows_mirror_fallback());
+        assert!(!ShareMode::External.allows_mirror_fallback());
     }
 
     #[test]
@@ -676,6 +684,18 @@ fn connection_card(
             });
         });
 
+        if !streaming && snap.running {
+            let detail = ui_text::human_detail_text(&snap.phase, &snap.detail);
+            let live = if detail.is_empty() {
+                snap.detail.clone()
+            } else {
+                detail
+            };
+            if !live.is_empty() {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(live).size(11.5).color(theme::MUTED));
+            }
+        }
         if !streaming && !snap.usb_hint.is_empty() {
             ui.add_space(8.0);
             let color = tone_color(snap.usb_tone);

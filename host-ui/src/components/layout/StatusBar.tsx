@@ -5,6 +5,7 @@ export type ShellSession = {
   sharing: boolean
   bytesSent: number
   elapsedSecs: number
+  phase?: string
 }
 
 type Props = {
@@ -26,7 +27,13 @@ export function StatusBar({ session }: Props) {
             session.sharing ? 'bg-success' : 'bg-text-muted',
           )}
         />
-        <span>{session.sharing ? '正在共享' : '未开始共享'}</span>
+        <span>
+          {session.sharing
+            ? session.phase
+              ? session.phase
+              : '正在共享'
+            : '未开始共享'}
+        </span>
       </div>
 
       <div className="flex items-center gap-3 tabular-nums">

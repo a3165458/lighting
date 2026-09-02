@@ -10,11 +10,23 @@ type Props = {
   onInstallClient: () => void
 }
 
+function stepDot(state: string) {
+  if (state === 'done') return 'bg-success'
+  if (state === 'current') return 'bg-brand'
+  if (state === 'error') return 'bg-danger'
+  return 'bg-text-muted/40'
+}
+
 export function ConnectionCard({ host, busy, onToggleShare, onInstallClient }: Props) {
-  const title = host.sharing ? '正在共享' : '未开始共享'
-  const subtitle = host.sharing
-    ? host.detail || '画面正在传输到你的 Android 设备'
+  const sharing = host.sharing
+  const title = sharing
+    ? host.activityTitle || host.phase || '正在共享'
+    : '未开始共享'
+  const subtitle = sharing
+    ? host.activityDetail || host.detail || '正在准备，请稍候…'
     : '请连接你的设备，点击开始共享'
+  const steps = host.activitySteps ?? []
+  const showSteps = sharing && steps.length > 0
 
   const toneClass =
     host.usbTone === 'ok'
@@ -45,7 +57,30 @@ export function ConnectionCard({ host, busy, onToggleShare, onInstallClient }: P
       <div className="min-w-0 flex-1">
         <h2 className="text-lg font-bold text-text">{title}</h2>
         <p className="mt-1 text-base text-text-secondary">{subtitle}</p>
-        {host.usbHint && (
+        {showSteps && (
+          <ol className="mt-3 flex flex-col gap-1.5" aria-label="当前动作">
+            {steps.map((step) => (
+              <li
+                key={step.id}
+                className={cn(
+                  'flex items-center gap-2 text-sm',
+                  step.state === 'current'
+                    ? 'font-semibold text-text'
+                    : step.state === 'done'
+                      ? 'text-text-secondary'
+                      : step.state === 'error'
+                        ? 'font-semibold text-danger'
+                        : 'text-text-muted',
+                )}
+              >
+                <span className={cn('size-2 shrink-0 rounded-full', stepDot(step.state))} />
+                <span>{step.label}</span>
+                {step.state === 'current' && <span className="text-xs text-brand">进行中</span>}
+              </li>
+            ))}
+          </ol>
+        )}
+        {host.usbHint && host.usbHint !== subtitle && (
           <p className={cn('mt-2 flex items-center gap-2 text-sm font-medium', toneClass)}>
             <AlertTriangle className="size-4 shrink-0" strokeWidth={2} />
             {host.usbHint}

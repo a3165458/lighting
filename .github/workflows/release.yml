@@ -65,6 +65,10 @@ jobs:
         with:
           workspaces: host-windows
 
+      - name: Simulate share policy
+        working-directory: host-windows
+        run: cargo test --lib
+
       - name: Build lighting-host.exe
         working-directory: host-windows
         run: cargo build --release
