@@ -20,6 +20,9 @@ pub fn display_phase(phase: &str) -> String {
     match phase {
         "" => "空闲".into(),
         "启动" | "启动中" => "监听".into(),
+        "准备虚拟屏" | "启用驱动" => "正在启用虚拟屏".into(),
+        "仅平板" => "正在关闭电脑屏".into(),
+        "独立第二屏" => "正在适配平板".into(),
         "USB" | "USB 警告" | "等待" => "等待设备".into(),
         "回退" => "编码".into(),
         other => other.to_string(),
@@ -154,13 +157,19 @@ pub fn connection_title(running: bool, phase: &str, client_name: &str) -> String
     if is_streaming(phase) {
         return format!("已连接：{}", peer_name(client_name));
     }
-    if running {
-        "等待平板连接".into()
-    } else {
-        "未开始共享".into()
+    if !running {
+        return "未开始共享".into();
     }
+    if phase == "错误" {
+        return "未能开始共享".into();
+    }
+    crate::share_flow::activity_title(true, phase)
 }
 
+pub fn display_choice_label(index: usize, primary: bool, width: u32, height: u32) -> String {
+    let kind = if primary { "主显示器" } else { "扩展显示器" };
+    format!("{kind} #{n}  ({width} × {height})", n = index + 1)
+}
 pub fn is_streaming(phase: &str) -> bool {
     matches!(phase, "已连接" | "编码" | "回退" | "共享中")
 }
@@ -171,6 +180,29 @@ pub fn share_button_label(running: bool) -> String {
     } else {
         "开始共享".into()
     }
+}
+
+/// Beginner copy when a USB device is ready but the Lighting client APK is missing.
+pub fn client_app_missing_hint(can_install: bool) -> (String, Tone) {
+    if can_install {
+        (
+            "已找到设备，但还没安装 Lighting 客户端。点下方「安装到平板」即可".into(),
+            Tone::Warn,
+        )
+    } else {
+        (
+            "已找到设备，但还没安装 Lighting 客户端。请先把 APK 拷到电脑程序目录，或用 Android Studio 安装".into(),
+            Tone::Warn,
+        )
+    }
+}
+
+pub fn client_app_installing_hint() -> String {
+    "正在把 Lighting 安装到平板，请在平板上点「允许安装」…".into()
+}
+
+pub fn client_app_installed_ok() -> String {
+    "客户端已安装。打开平板上的 Lighting，再点「开始共享」".into()
 }
 
 /// Footer health line: one glance answer to "is this working right now?".
@@ -213,6 +245,9 @@ pub fn human_detail_text(phase: &str, detail: &str) -> String {
     if detail.is_empty() {
         return String::new();
     }
+    if phase == "准备虚拟屏" || phase == "仅平板" || phase == "独立第二屏" || phase == "启用驱动" {
+        return detail.to_string();
+    }
     let lower = detail.to_lowercase();
     if phase == "错误" {
         return human_last_error(detail);
@@ -254,13 +289,74 @@ pub fn human_detail_text(phase: &str, detail: &str) -> String {
     detail.to_string()
 }
 
+/// Map bundled virtual-display (MttVDD) error codes to beginner copy.
+pub fn human_vdd_error(raw: &str) -> Option<String> {
+    let upper = raw.to_uppercase();
+    let code = raw
+        .split_whitespace()
+        .find(|t| t.chars().all(|c| c.is_ascii_uppercase() || c == '_'))
+        .unwrap_or(raw);
+    let code_upper = code.to_uppercase();
+
+    let msg = if code_upper.contains("UAC_DENIED") {
+        "需要管理员权限才能安装虚拟显示驱动。未提权时请在蓝底 UAC 窗口点「是」；已用管理员运行则不会再弹窗。"
+    } else if code_upper.contains("VDD_BUNDLE_MISSING") || code_upper.contains("BUNDLE_INF_MISSING") {
+        "安装包缺少虚拟显示驱动文件。请从 GitHub 下载最新版 Lighting 便携版/安装包。"
+    } else if code_upper.contains("VDD_SCRIPT_MISSING") {
+        "虚拟显示驱动安装脚本缺失。请重新下载完整安装包。"
+    } else if code_upper.contains("DRIVER_INSTALL_FAILED") {
+        "虚拟显示驱动安装失败。请完全退出后右键 Lighting 选「以管理员身份运行」再试；仍失败可到 GitHub 手动安装 Virtual Display Driver。"
+    } else if code_upper.contains("VDD_PIPE_DOWN") {
+        "虚拟显示驱动未响应。请完全退出 Lighting 后以管理员身份运行再试（已是管理员时不会再弹窗）。"
+    } else if code_upper.contains("IDD_NO_MONITOR") || code_upper.contains("BUNDLE_DLL_MISSING") {
+        "Lighting 自有虚拟显示驱动未能创建扩展屏。请完全退出后以管理员运行再试；开发机还需测试签名。"
+    } else if code_upper.contains("DRIVER_SIGNATURE") {
+        "虚拟显示驱动签名不被系统接受。开发请开 testsigning；发布需 Attestation 签名。"
+    } else if code_upper.contains("VDD_NO_MONITOR") {
+        "虚拟屏尚未出现。请完全退出 Lighting 后以管理员身份运行再试（已是管理员时不会再弹窗）。"
+    } else if code_upper.contains("DEVICE_NOT_FOUND") || code_upper.contains("DEVICE_STILL_MISSING") {
+        "未找到虚拟显示设备。请完全退出后以管理员身份运行再试。"
+    } else if code_upper.contains("UAC_TIMEOUT") {
+        "等了很久也没有管理员确认窗口。请完全退出 Lighting，右键选「以管理员身份运行」后再点开始共享（已是管理员时不会再弹窗）。"
+    } else if code_upper.contains("INSTALL_TIMEOUT") {
+        "驱动安装超时。请完全退出 Lighting 后以管理员身份运行再试。"
+    } else if code_upper.contains("UAC_CANCELLED") {
+        "已取消管理员授权。扩展屏需要安装虚拟显示驱动，请在弹窗中点「是」。"
+    } else if code_upper.contains("ACCESS_DENIED") {
+        "权限不足，无法安装虚拟显示驱动。请右键 Lighting 选「以管理员身份运行」。"
+    } else if code_upper.contains("PNP_QUERY_FAILED") {
+        "无法查询显示设备。请重启 Lighting 并以管理员身份运行后再试。"
+    } else if code_upper.contains("BUNDLE_DIR_MISSING") {
+        "找不到虚拟显示驱动目录。请重新下载完整安装包。"
+    } else if code_upper.contains("UNEXPECTED") || code_upper.starts_with("ERR_") {
+        "虚拟显示驱动安装遇到未知错误。请完全退出后以管理员身份运行 Lighting；仍失败可到 GitHub 手动安装 Virtual Display Driver。"
+    } else if code_upper.contains("LAUNCHER_FAILED") || code_upper.contains("UNKNOWN_RESULT") {
+        "无法启动虚拟显示驱动安装程序。请完全退出后以管理员身份运行 Lighting。"
+    } else if upper.contains("静默安装")
+        || upper.contains("NEFCON")
+        || upper.contains("EXITCODE")
+        || raw.contains('�')
+    {
+        "虚拟显示驱动安装失败（v0.1.7 及更早版本已知问题）。请升级到 v0.1.8 或更新版，并以管理员身份运行。"
+    } else {
+        return None;
+    };
+    Some(msg.into())
+}
+
 pub fn human_last_error(raw: &str) -> String {
+    if let Some(vdd) = human_vdd_error(raw) {
+        return vdd;
+    }
     let lower = raw.to_lowercase();
     if raw.contains("找不到 adb") || lower.contains("adb.exe") {
         return "未检测到 USB 驱动。请安装平台工具，或换一根能传数据的线。".into();
     }
     if raw.contains("没有可用显示器") {
         return "没有可用显示器".into();
+    }
+    if raw.contains("扩展屏尚未就绪") {
+        return raw.lines().next().unwrap_or(raw).to_string();
     }
     if looks_like_bind_or_port(raw) {
         return "无法开始共享，请稍后重试".into();
@@ -298,6 +394,8 @@ mod tests {
         assert_eq!(display_phase("已连接"), "已连接");
         assert_eq!(display_phase("编码"), "编码");
         assert_eq!(display_phase("回退"), "编码");
+        assert_eq!(display_phase("准备虚拟屏"), "正在启用虚拟屏");
+        assert_eq!(display_phase("仅平板"), "正在关闭电脑屏");
         assert_eq!(display_phase("错误"), "错误");
         assert_eq!(display_phase("已停止"), "已停止");
     }
@@ -372,6 +470,9 @@ mod tests {
         );
         assert_eq!(connection_title(true, "编码", ""), "已连接：平板");
         assert_eq!(connection_title(true, "等待设备", ""), "等待平板连接");
+        assert_eq!(connection_title(true, "准备虚拟屏", ""), "正在启用虚拟屏");
+        assert_eq!(connection_title(true, "仅平板", ""), "正在关闭电脑屏");
+        assert_eq!(connection_title(true, "错误", ""), "未能开始共享");
         assert_eq!(connection_title(false, "已停止", ""), "未开始共享");
     }
 
@@ -389,6 +490,18 @@ mod tests {
     fn share_button_toggles_copy() {
         assert_eq!(share_button_label(false), "开始共享");
         assert_eq!(share_button_label(true), "停止共享");
+    }
+
+    #[test]
+    fn client_app_missing_copy_is_beginner_friendly() {
+        let (with_apk, tone) = client_app_missing_hint(true);
+        assert!(with_apk.contains("安装到平板"));
+        assert_eq!(tone, Tone::Warn);
+        let (no_apk, _) = client_app_missing_hint(false);
+        assert!(no_apk.contains("Lighting 客户端"));
+        assert!(!no_apk.contains("adb"));
+        assert!(!client_app_installing_hint().contains("adb"));
+        assert!(client_app_installed_ok().contains("开始共享"));
     }
 
     #[test]
@@ -431,8 +544,11 @@ mod tests {
             "画面已自动恢复"
         );
         assert_eq!(
-            human_detail_text("错误", "绑定端口: Address already in use"),
-            "无法开始共享，请稍后重试"
+            human_detail_text(
+                "准备虚拟屏",
+                "已是管理员，正在直接安装虚拟显示驱动（不会再弹出确认窗口）…"
+            ),
+            "已是管理员，正在直接安装虚拟显示驱动（不会再弹出确认窗口）…"
         );
     }
 
@@ -447,8 +563,28 @@ mod tests {
             human_last_error("绑定端口: os error 10048"),
             "无法开始共享，请稍后重试"
         );
+        assert!(human_vdd_error("VDD_PIPE_DOWN").unwrap().contains("未响应"));
+        assert!(human_vdd_error("UNEXPECTED").unwrap().contains("未知错误"));
+        assert!(human_vdd_error("UAC_CANCELLED").unwrap().contains("取消"));
+        assert!(human_vdd_error("FAIL|UAC_DENIED").unwrap().contains("管理员"));
+        assert!(human_vdd_error("UAC_TIMEOUT").unwrap().contains("以管理员身份运行"));
+        assert!(human_vdd_error("INSTALL_TIMEOUT").unwrap().contains("超时"));
+        assert!(human_vdd_error("DRIVER_LAUNCHER_FAILED").unwrap().contains("无法启动"));
+        assert!(human_last_error("VDD_BUNDLE_MISSING").contains("缺少"));
         assert!(looks_like_bind_or_port("connection refused"));
         assert!(looks_technical("adb reverse tcp:17400"));
         assert!(!looks_technical("没有可用显示器"));
+    }
+
+    #[test]
+    fn display_choice_label_matches_mock() {
+        assert_eq!(
+            display_choice_label(1, false, 2560, 1600),
+            "扩展显示器 #2  (2560 × 1600)"
+        );
+        assert_eq!(
+            display_choice_label(0, true, 1920, 1080),
+            "主显示器 #1  (1920 × 1080)"
+        );
     }
 }

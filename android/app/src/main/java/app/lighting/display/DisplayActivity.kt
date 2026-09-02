@@ -11,6 +11,7 @@ import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
@@ -21,6 +22,8 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
@@ -36,6 +39,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     }
 
     private lateinit var surface: SurfaceView
+    private var videoSurface: Surface? = null
     private lateinit var status: TextView
     private lateinit var statusReason: TextView
     private lateinit var statusBar: PassThroughBar
@@ -58,6 +62,9 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
             statusBar.visibility = View.GONE
         }
     }
+    private val outbound = ArrayBlockingQueue<ByteArray>(128)
+    @Volatile private var senderRunning = false
+    private var sender: Thread? = null
     private val touch = TouchMapper { action, x, y ->
         if (awaitingManual) {
             if (action == TouchMapper.LEFT_UP) {
@@ -65,13 +72,13 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
             }
             return@TouchMapper
         }
-        val sock = lit ?: return@TouchMapper
-        try {
-            sock.write(LitProtocol.MSG_TOUCH, 0, LitProtocol.touchPayload(action, x, y))
-        } catch (_: Exception) {
+        val payload = LitProtocol.touchPayload(action, x, y)
+        android.util.Log.i("LightingTouch", "queue action=" + action + " x=" + x + " y=" + y + " lit=" + (lit != null))
+        if (!outbound.offer(payload)) {
+            outbound.poll()
+            outbound.offer(payload)
         }
     }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -93,8 +100,19 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         reconnectLayer.isClickable = false
         reconnectLayer.isFocusable = false
         reconnectLayer.setOnClickListener(null)
+        surface.isClickable = false
+        surface.isFocusable = false
+        // SurfaceView sits under the overlay; z-order media overlay keeps HUD/touch above.
+        surface.setZOrderMediaOverlay(false)
         surface.holder.addCallback(this)
+        touchLayer.bringToFront()
+        reconnectLayer.bringToFront()
+        statusBar.bringToFront()
         touch.attach(touchLayer, surface)
+        if (surface.holder.surface.isValid) {
+            bindVideoSurface(surface.holder.surface)
+            startSession()
+        }
     }
 
     private fun hideSystemUi() {
@@ -112,7 +130,26 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         }
     }
 
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (awaitingManual) return super.dispatchTouchEvent(ev)
+        try {
+            touch.onWindowTouch(ev)
+        } catch (err: Throwable) {
+            android.util.Log.w("LightingTouch", "dispatch failed", err)
+        }
+        return super.dispatchTouchEvent(ev)
+    }
+
+    override fun dispatchGenericMotionEvent(ev: MotionEvent): Boolean {
+        if (!awaitingManual && (ev.source and android.view.InputDevice.SOURCE_MOUSE) != 0) {
+            touch.onWindowTouch(ev)
+            return true
+        }
+        return super.dispatchGenericMotionEvent(ev)
+    }
+
     override fun surfaceCreated(holder: SurfaceHolder) {
+        bindVideoSurface(holder.surface)
         startSession()
     }
 
@@ -124,10 +161,21 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         stopSession()
+        // SurfaceHolder owns the surface — do not release it.
+        videoSurface = null
+    }
+
+    private fun bindVideoSurface(surfaceObj: Surface?) {
+        if (surfaceObj == null || !surfaceObj.isValid) return
+        videoSurface = surfaceObj
     }
 
     override fun onDestroy() {
         statusBar.removeCallbacks(hideHud)
+        senderRunning = false
+        sender?.interrupt()
+        sender = null
+        outbound.clear()
         stopSession()
         super.onDestroy()
     }
@@ -160,8 +208,35 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         return mapped.primary
     }
 
+    private fun startSender() {
+        if (senderRunning) return
+        senderRunning = true
+        sender = thread(name = "lighting-touch") {
+            while (senderRunning && !Thread.currentThread().isInterrupted) {
+                val payload = try {
+                    outbound.poll(200, TimeUnit.MILLISECONDS) ?: continue
+                } catch (_: InterruptedException) {
+                    break
+                }
+                val sock = lit
+                if (sock == null) {
+                    Thread.sleep(20)
+                    outbound.offer(payload)
+                    continue
+                }
+                try {
+                    sock.write(LitProtocol.MSG_TOUCH, 0, payload)
+                    android.util.Log.i("LightingTouch", "wrote bytes=" + payload.size)
+                } catch (t: Exception) {
+                    android.util.Log.w("LightingTouch", "send failed", t)
+                }
+            }
+        }
+    }
+
     private fun startSession() {
         stopSession()
+        startSender()
         val gen = ++sessionGen
         running = true
         showManualReconnect(false)
@@ -266,7 +341,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                                 cfg.width,
                                 cfg.height,
                                 data,
-                                surface.holder.surface,
+                                (videoSurface ?: surface.holder.surface),
                             )
                             configured = true
                             reachedVideo = true
@@ -401,10 +476,9 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 gravity = Gravity.CENTER
             }
             surface.layoutParams = lp
-            try {
-                surface.holder.setFixedSize(width, height)
-            } catch (_: Exception) {
-            }
+            touchLayer.bringToFront()
+            reconnectLayer.bringToFront()
+            statusBar.bringToFront()
         }
     }
 

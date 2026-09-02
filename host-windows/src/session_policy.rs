@@ -31,6 +31,12 @@ pub fn smooth_latency_ms(prev: u32, sample: u32) -> u32 {
     }
 }
 
+/// ~4-frame VBV: low latency without the quality swings of a 1–2 frame budget.
+pub fn vbv_bufsize_kb(bitrate_kbps: u32, fps: u32) -> u32 {
+    let fps = fps.max(24);
+    ((bitrate_kbps * 4) / fps).clamp(1_200, bitrate_kbps.max(1_200))
+}
+
 /// I/O / pipe failures from a dropped tablet must not tear down the share.
 pub fn is_client_disconnect(err: &str) -> bool {
     let e = err.to_ascii_lowercase();
@@ -43,6 +49,238 @@ pub fn is_client_disconnect(err: &str) -> bool {
         || e.contains("os error 32")
         || e.contains("send video failed")
         || e.contains("send audio failed")
+}
+
+/// Orient `(dw, dh)` so it matches the landscape/portrait of `(sw, sh)`.
+pub fn orient_box(sw: u32, sh: u32, dw: u32, dh: u32) -> (u32, u32) {
+    if sw >= sh {
+        if dw >= dh {
+            (dw, dh)
+        } else {
+            (dh, dw)
+        }
+    } else if dh >= dw {
+        (dw, dh)
+    } else {
+        (dh, dw)
+    }
+}
+
+/// 16:9 vs 16:10 differs by ~11%. Keep a 4% band so 1920×1080 and 2560×1440
+/// stay in one family, while 1920×1200 is rejected on a 16:9 laptop panel.
+pub fn aspects_compatible(w1: u32, h1: u32, w2: u32, h2: u32) -> bool {
+    if w1 == 0 || h1 == 0 || w2 == 0 || h2 == 0 {
+        return false;
+    }
+    let a = w1 as f64 / h1 as f64;
+    let b = w2 as f64 / h2 as f64;
+    let denom = a.max(b);
+    if denom <= f64::EPSILON {
+        return false;
+    }
+    (a - b).abs() / denom <= 0.04
+}
+
+/// Largest listed mode is almost always the panel's native timing.
+pub fn native_panel_mode(modes: &[(u32, u32, u32)]) -> Option<(u32, u32, u32)> {
+    modes
+        .iter()
+        .copied()
+        .filter(|&(w, h, _)| w >= 16 && h >= 16)
+        .max_by_key(|&(w, h, fps)| (w as u64 * h as u64, fps))
+}
+
+/// Pick a PC mode near the tablet without leaving the panel's native aspect.
+///
+/// A 1920×1200 (16:10) tablet on a 16:9 laptop must NOT pick 1920×1200: that
+/// CVT scaled timing is what made “跟随平板” stutter after 1080p felt fine.
+pub fn pick_closest_display_mode(
+    modes: &[(u32, u32, u32)],
+    target_w: u32,
+    target_h: u32,
+    min_fps: u32,
+    native_w: u32,
+    native_h: u32,
+) -> Option<(u32, u32, u32)> {
+    if modes.is_empty() || target_w == 0 || target_h == 0 {
+        return None;
+    }
+    let min_fps = min_fps.max(30);
+    let (nw, nh) = if native_w >= 16 && native_h >= 16 {
+        (native_w, native_h)
+    } else {
+        native_panel_mode(modes).map(|(w, h, _)| (w, h)).unwrap_or((target_w, target_h))
+    };
+
+    let same_aspect: Vec<(u32, u32, u32)> = modes
+        .iter()
+        .copied()
+        .filter(|&(w, h, fps)| {
+            w >= 16 && h >= 16 && fps >= min_fps && aspects_compatible(w, h, nw, nh)
+        })
+        .collect();
+    let pool: &[(u32, u32, u32)] = if !same_aspect.is_empty() {
+        &same_aspect
+    } else {
+        // No native-aspect mode at min_fps — still refuse foreign aspect.
+        let any_aspect: Vec<(u32, u32, u32)> = modes
+            .iter()
+            .copied()
+            .filter(|&(w, h, _)| w >= 16 && h >= 16 && aspects_compatible(w, h, nw, nh))
+            .collect();
+        if any_aspect.is_empty() {
+            return None;
+        }
+        return pick_in_pool(&any_aspect, target_w, target_h);
+    };
+    pick_in_pool(pool, target_w, target_h)
+}
+
+fn pick_in_pool(
+    pool: &[(u32, u32, u32)],
+    target_w: u32,
+    target_h: u32,
+) -> Option<(u32, u32, u32)> {
+    let mut best: Option<((u128, u32), (u32, u32, u32))> = None;
+    for &(w, h, fps) in pool {
+        let dw = w.abs_diff(target_w) as u128;
+        let dh = h.abs_diff(target_h) as u128;
+        let size_score = if dw == 0 && dh == 0 {
+            0u128
+        } else {
+            dw * dw + dh * dh + 1
+        };
+        let key = (size_score, u32::MAX - fps);
+        match best {
+            None => best = Some((key, (w, h, fps))),
+            Some((prev_key, _)) if key < prev_key => best = Some((key, (w, h, fps))),
+            _ => {}
+        }
+    }
+    best.map(|(_, mode)| mode)
+}
+
+/// Whether switching the desktop to `candidate` is actually worth it.
+///
+/// Never move a 16:9 laptop onto 1920×1200 (16:10) just because the tablet is
+/// 1920×1200 — GPU scaling that timing is the stutter the user reported.
+/// Leaving an already-scaled 16:10 mode back to native 16:9 is allowed.
+pub fn should_switch_desktop_mode(
+    current: (u32, u32, u32),
+    candidate: (u32, u32, u32),
+    target_w: u32,
+    target_h: u32,
+    native_w: u32,
+    native_h: u32,
+) -> bool {
+    let (cw, ch, cfps) = current;
+    let (nw, nh, nfps) = candidate;
+    if nw == cw && nh == ch {
+        return false;
+    }
+    if cfps > 0 && nfps * 10 < cfps * 9 {
+        return false;
+    }
+    let native_ok = native_w >= 16 && native_h >= 16;
+    if native_ok && !aspects_compatible(nw, nh, native_w, native_h) {
+        return false;
+    }
+    if native_ok
+        && !aspects_compatible(cw, ch, native_w, native_h)
+        && aspects_compatible(nw, nh, native_w, native_h)
+    {
+        return true;
+    }
+    let dist = |w: u32, h: u32| -> u64 {
+        let dw = w.abs_diff(target_w) as u64;
+        let dh = h.abs_diff(target_h) as u64;
+        dw * dw + dh * dh
+    };
+    dist(nw, nh) < dist(cw, ch)
+}
+
+/// Aspect-preserving downscale into a box. Never upscales.
+pub fn fit_resolution(src_w: u32, src_h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
+    let mut w = src_w.max(2);
+    let mut h = src_h.max(2);
+    if w > max_w || h > max_h {
+        let scale = (max_w as f64 / w as f64).min(max_h as f64 / h as f64);
+        w = ((w as f64 * scale) as u32) & !1;
+        h = ((h as f64 * scale) as u32) & !1;
+    }
+    (w.max(2), h.max(2))
+}
+
+/// Final encode size: always clamp to the tablet panel when known, then ResCap
+/// ceiling, then decoder limit, then quality scale. Primary can be 2K/4K —
+/// the stream must still fit the tablet.
+pub fn compute_encode_size(
+    src_w: u32,
+    src_h: u32,
+    screen_w: u32,
+    screen_h: u32,
+    max_w: u32,
+    max_h: u32,
+    scale: f32,
+    dec_w: u32,
+    dec_h: u32,
+) -> (u32, u32) {
+    let (cap_w, cap_h) = orient_box(src_w, src_h, max_w.max(16), max_h.max(16));
+    let (mut box_w, mut box_h) = if screen_w > 0 && screen_h > 0 {
+        let (sw, sh) = orient_box(src_w, src_h, screen_w, screen_h);
+        (sw.min(cap_w).max(16), sh.min(cap_h).max(16))
+    } else {
+        (cap_w, cap_h)
+    };
+    if dec_w > 0 && dec_h > 0 {
+        let (dw, dh) = orient_box(src_w, src_h, dec_w, dec_h);
+        box_w = box_w.min(dw.max(16));
+        box_h = box_h.min(dh.max(16));
+    }
+    let scale = (scale as f64).clamp(0.35, 1.0);
+    let out_w = ((box_w as f64 * scale) as u32).max(16);
+    let out_h = ((box_h as f64 * scale) as u32).max(16);
+    fit_resolution(src_w, src_h, out_w, out_h)
+}
+
+/// Parse AC/DC lid-close action indices from `powercfg /q SCHEME_CURRENT SUB_BUTTONS`.
+/// Looks up the LIDACTION block (language-independent GUID / alias), then the
+/// current AC and DC index lines (`Index:` or `索引:`).
+pub fn parse_lid_current_indices(text: &str) -> Option<(u32, u32)> {
+    let lower = text.to_ascii_lowercase();
+    let start = lower
+        .find("lidaction")
+        .or_else(|| lower.find("5ca83367-6e45-459f-a27b-476b1ee90026"))?;
+    let rest = &text[start..];
+    let rest_lower = rest.to_ascii_lowercase();
+    let end = rest_lower
+        .get(8..)
+        .and_then(|s| s.find("power setting guid"))
+        .map(|i| i + 8)
+        .unwrap_or(rest.len());
+    let block = &rest[..end];
+    let mut vals = Vec::new();
+    for line in block.lines() {
+        let l = line.to_ascii_lowercase();
+        if !(l.contains("index") || line.contains("索引")) {
+            continue;
+        }
+        let Some(hex_at) = l.rfind("0x") else {
+            continue;
+        };
+        let hex: String = l[hex_at + 2..]
+            .chars()
+            .take_while(|c| c.is_ascii_hexdigit())
+            .collect();
+        if let Ok(v) = u32::from_str_radix(&hex, 16) {
+            vals.push(v);
+        }
+    }
+    if vals.len() >= 2 {
+        Some((vals[0], vals[1]))
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -72,6 +310,26 @@ mod tests {
     }
 
     #[test]
+    fn vbv_targets_about_four_frames() {
+        // 25 Mbps @ 60fps → ~1666 kb for 4 frames
+        assert_eq!(vbv_bufsize_kb(25_000, 60), 1_666);
+        assert!(vbv_bufsize_kb(8_000, 120) >= 1_200);
+        assert!(vbv_bufsize_kb(40_000, 30) <= 40_000);
+        // Old formula used bitrate/2; keep the new budget far below that.
+        assert!(vbv_bufsize_kb(25_000, 60) < 25_000 / 2);
+    }
+
+    #[test]
+    fn quality_baseline_defaults_are_not_reduced() {
+        // Guardrail for the latency goal: do not "win" latency by cutting
+        // the UI defaults users start from (100% / 60fps / 25Mbps).
+        let defaults = crate::view::Settings::default();
+        assert_eq!(defaults.quality_pct, 100);
+        assert_eq!(defaults.fps, 60);
+        assert_eq!(defaults.bitrate_kbps, 25_000);
+    }
+
+    #[test]
     fn classifies_common_disconnects() {
         assert!(is_client_disconnect("send video failed: broken pipe"));
         assert!(is_client_disconnect("connection reset by peer"));
@@ -79,5 +337,182 @@ mod tests {
         assert!(is_client_disconnect("os error 10054"));
         assert!(!is_client_disconnect("所选显示器不存在"));
         assert!(!is_client_disconnect("找不到 ffmpeg"));
+    }
+
+    #[test]
+    fn picks_exact_tablet_mode_at_highest_refresh() {
+        let modes = [
+            (1920, 1080, 60),
+            (2560, 1440, 60),
+            (2000, 1200, 60),
+            (2000, 1200, 120),
+        ];
+        // Native 16:10 panel: exact tablet size at the higher refresh.
+        assert_eq!(
+            pick_closest_display_mode(&modes, 2000, 1200, 60, 2000, 1200),
+            Some((2000, 1200, 120))
+        );
+    }
+
+    #[test]
+    fn picks_nearest_when_exact_missing() {
+        let modes = [(3840, 2160, 60), (2560, 1440, 60), (1920, 1080, 60)];
+        assert_eq!(
+            pick_closest_display_mode(&modes, 2000, 1200, 60, 3840, 2160),
+            Some((1920, 1080, 60))
+        );
+    }
+
+    #[test]
+    fn keeps_high_refresh_over_closer_size() {
+        let modes = [(2000, 1200, 60), (1920, 1200, 165)];
+        assert_eq!(
+            pick_closest_display_mode(&modes, 2000, 1200, 120, 1920, 1200),
+            Some((1920, 1200, 165))
+        );
+    }
+
+    #[test]
+    fn sixteen_ten_tablet_stays_on_sixteen_nine_1080() {
+        // User: tablet 1920×1200, 1080p felt fine, follow-tablet 1200p stuttered.
+        let modes = [
+            (2560, 1440, 60),
+            (1920, 1080, 60),
+            (1920, 1200, 60),
+            (1280, 800, 60),
+        ];
+        assert_eq!(
+            pick_closest_display_mode(&modes, 1920, 1200, 60, 2560, 1440),
+            Some((1920, 1080, 60))
+        );
+        assert!(!aspects_compatible(1920, 1080, 1920, 1200));
+        assert!(aspects_compatible(1920, 1080, 2560, 1440));
+    }
+
+    #[test]
+    fn refuses_1080_to_1200_on_sixteen_nine_panel() {
+        assert!(!should_switch_desktop_mode(
+            (1920, 1080, 60),
+            (1920, 1200, 60),
+            1920,
+            1200,
+            2560,
+            1440
+        ));
+    }
+
+    #[test]
+    fn restores_scaled_1200_back_to_native_aspect_1080() {
+        assert!(should_switch_desktop_mode(
+            (1920, 1200, 60),
+            (1920, 1080, 60),
+            1920,
+            1200,
+            2560,
+            1440
+        ));
+    }
+
+    #[test]
+    fn refuses_switch_that_costs_refresh() {
+        assert!(!should_switch_desktop_mode(
+            (2560, 1440, 165),
+            (1920, 1080, 60),
+            1920,
+            1200,
+            2560,
+            1440
+        ));
+        // Same 16:9 family, same refresh, closer to tablet → 1080p is OK.
+        assert!(should_switch_desktop_mode(
+            (2560, 1440, 60),
+            (1920, 1080, 60),
+            1920,
+            1200,
+            2560,
+            1440
+        ));
+        // 16:10 1200p is never OK on a 16:9 panel.
+        assert!(!should_switch_desktop_mode(
+            (2560, 1440, 60),
+            (1920, 1200, 60),
+            1920,
+            1200,
+            2560,
+            1440
+        ));
+    }
+
+    #[test]
+    fn refuses_switch_that_is_not_closer() {
+        assert!(!should_switch_desktop_mode(
+            (1920, 1080, 60),
+            (1920, 1080, 60),
+            1920,
+            1200,
+            2560,
+            1440
+        ));
+        assert!(!should_switch_desktop_mode(
+            (1920, 1080, 60),
+            (1280, 720, 60),
+            1920,
+            1200,
+            2560,
+            1440
+        ));
+    }
+
+    #[test]
+    fn mirror_2k_desktop_fits_non_2k_tablet() {
+        // User bug: 2K primary mirrored to a 1920×1200 tablet must not stay 2560×1440,
+        // even when ResCap is「最高 2K」and the decoder claims 4K.
+        let (w, h) = compute_encode_size(2560, 1440, 1920, 1200, 2560, 1440, 1.0, 3840, 2160);
+        assert!(w <= 1920 && h <= 1200, "{w}×{h}");
+        assert_eq!((w, h), (1920, 1080));
+    }
+
+    #[test]
+    fn res_cap_fhd_still_clamps_below_tablet() {
+        let (w, h) = compute_encode_size(3840, 2160, 2560, 1600, 1920, 1080, 1.0, 3840, 2160);
+        assert!(w <= 1920 && h <= 1080, "{w}×{h}");
+    }
+
+    #[test]
+    fn missing_screen_falls_back_to_res_cap() {
+        let (w, h) = compute_encode_size(2560, 1440, 0, 0, 1920, 1080, 1.0, 3840, 2160);
+        assert!(w <= 1920 && h <= 1080, "{w}×{h}");
+    }
+
+    #[test]
+    fn parse_lid_indices_english_powercfg() {
+        let text = r#"
+Power Setting GUID: 5ca83367-6e45-459f-a27b-476b1ee90026  (Lid close action)
+  GUID Alias: LIDACTION
+  Minimum Possible Setting: 0x00000000
+  Maximum Possible Setting: 0x00000003
+Possible settings:
+  0x00000000    Do nothing
+  0x00000001    Sleep
+Current AC Power Setting Index: 0x00000001
+Current DC Power Setting Index: 0x00000002
+
+Power Setting GUID: 7648efa3-dd9c-4e3e-b566-50f929386280  (Power button action)
+  GUID Alias: PBUTTONACTION
+Current AC Power Setting Index: 0x00000003
+"#;
+        assert_eq!(parse_lid_current_indices(text), Some((1, 2)));
+    }
+
+    #[test]
+    fn parse_lid_indices_chinese_powercfg() {
+        let text = r#"
+电源设置 GUID: 5ca83367-6e45-459f-a27b-476b1ee90026  (合上盖子时的操作)
+  GUID Alias: LIDACTION
+当前交流电源设置索引: 0x00000000
+当前直流电源设置索引: 0x00000001
+电源设置 GUID: 7648efa3-dd9c-4e3e-b566-50f929386280
+"#;
+        assert_eq!(parse_lid_current_indices(text), Some((0, 1)));
     }
 }

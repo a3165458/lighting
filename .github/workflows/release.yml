@@ -1,0 +1,130 @@
+name: Release Lighting 副屏 (Windows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version tag (e.g. v0.1.0)"
+        required: true
+        default: "v0.1.0"
+      prerelease:
+        description: "Mark as pre-release"
+        type: boolean
+        default: true
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version tag
+        id: ver
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ github.event.inputs.version }}"
+          } else {
+            $tag = "${{ github.ref_name }}"
+          }
+          if ($tag -notmatch '^v') { $tag = "v$tag" }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "name=$($tag.TrimStart('v'))" >> $env:GITHUB_OUTPUT
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Build Android APK
+        shell: pwsh
+        run: |
+          $sdkPath = $env:ANDROID_HOME -replace '\\', '/'
+          [System.IO.File]::WriteAllText("$PWD/android/local.properties", "sdk.dir=$sdkPath`n")
+          cd android
+          .\gradlew.bat assembleDebug --no-daemon
+          New-Item -ItemType Directory -Force -Path ../host-ui/resources | Out-Null
+          Copy-Item app/build/outputs/apk/debug/app-debug.apk ../host-ui/resources/Lighting.apk -Force
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: host-windows
+
+      - name: Simulate share policy
+        working-directory: host-windows
+        run: cargo test --lib
+
+      - name: Build lighting-host.exe
+        working-directory: host-windows
+        run: cargo build --release
+
+      - name: Stage host binary
+        shell: pwsh
+        run: |
+          Copy-Item host-windows/target/release/lighting-host.exe host-ui/resources/lighting-host.exe -Force
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/vdd/stage-vdd-bundle.ps1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/idd/stage-idd-bundle.ps1
+          Get-Item host-ui/resources/* | Format-Table Name, Length
+          Get-ChildItem host-ui/resources/vdd -ErrorAction SilentlyContinue | Format-Table Name, Length
+          Get-ChildItem host-ui/resources/idd -ErrorAction SilentlyContinue | Format-Table Name, Length
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: host-ui/package-lock.json
+
+      - name: Build Electron packages
+        working-directory: host-ui
+        run: |
+          npm ci
+          npm run electron:build:win
+        env:
+          # Optional Authenticode signing (see docs/WINDOWS-SMARTSCREEN.md).
+          # Secrets: WINDOWS_CSC_LINK = base64(.pfx), WINDOWS_CSC_KEY_PASSWORD = pfx password.
+          # When unset, build stays unsigned (SmartScreen "unknown publisher").
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          WIN_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Stage release assets (ASCII names for GitHub upload)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
+          Copy-Item host-ui/release/*便携版.exe release-assets/Lighting-${{ steps.ver.outputs.name }}-portable.exe
+          Copy-Item host-ui/release/*安装包.exe release-assets/Lighting-${{ steps.ver.outputs.name }}-setup.exe
+          Copy-Item host-ui/resources/Lighting.apk release-assets/Lighting.apk
+          Get-ChildItem release-assets | Format-Table Name, Length
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: Lighting副屏 ${{ steps.ver.outputs.name }}
+          draft: false
+          prerelease: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.prerelease == 'true' || false }}
+          generate_release_notes: true
+          files: |
+            release-assets/Lighting-${{ steps.ver.outputs.name }}-portable.exe
+            release-assets/Lighting-${{ steps.ver.outputs.name }}-setup.exe
+            release-assets/Lighting.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

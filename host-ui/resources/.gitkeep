@@ -1,0 +1,2 @@
+# Place lighting-host.exe here before `npm run electron:build:win`.
+# scripts/build-electron-win.ps1 copies it automatically after cargo build.

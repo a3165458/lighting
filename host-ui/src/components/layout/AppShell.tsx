@@ -1,0 +1,83 @@
+import type { ReactNode } from 'react'
+import { useEffect, useState } from 'react'
+import { Sidebar } from '@/components/layout/Sidebar'
+import { BottomActionBar } from '@/components/layout/BottomActionBar'
+import { StatusBar } from '@/components/layout/StatusBar'
+import { TitleBar } from '@/components/layout/TitleBar'
+import { isElectronShell } from '@/lib/desktop'
+import type { NavId } from '@/lib/format'
+import type { ShellSession } from '@/components/layout/StatusBar'
+import { cn } from '@/lib/cn'
+
+type Props = {
+  activeNav: NavId
+  onNavigate: (id: NavId) => void
+  session: ShellSession
+  onToggleShare: () => void
+  onAdvanced: () => void
+  onAbout: () => void
+  children: ReactNode
+}
+
+export function AppShell({
+  activeNav,
+  onNavigate,
+  session,
+  onToggleShare,
+  onAdvanced,
+  onAbout,
+  children,
+}: Props) {
+  const [electron, setElectron] = useState(false)
+
+  useEffect(() => {
+    setElectron(isElectronShell())
+  }, [])
+
+  return (
+    <div
+      className={cn(
+        'flex h-full w-full',
+        electron
+          ? 'overflow-hidden bg-app-gradient'
+          : 'items-center justify-center overflow-auto bg-[#e8eaf3] p-4',
+      )}
+    >
+      <div
+        className={cn(
+          'flex overflow-hidden bg-app-gradient',
+          electron
+            ? 'h-full w-full'
+            : cn(
+                'shadow-[var(--shadow-card-hover)]',
+                'h-[var(--size-window-h)] w-[var(--size-window-w)]',
+                'max-h-full max-w-full',
+                'min-h-[var(--size-window-min-h)] min-w-[min(100%,var(--size-window-min-w))]',
+                'rounded-[var(--radius-window)]',
+              ),
+        )}
+      >
+        <div className="flex min-w-0 flex-1 flex-col">
+          <TitleBar />
+          <div className="flex min-h-0 flex-1">
+            <Sidebar active={activeNav} onNavigate={onNavigate} />
+
+            <div className="flex min-w-0 flex-1 flex-col">
+              <main className="min-h-0 flex-1 overflow-y-auto px-[var(--space-main-x)] pt-6 pb-5">
+                {children}
+              </main>
+
+              <BottomActionBar
+                sharing={session.sharing}
+                onToggleShare={onToggleShare}
+                onAdvanced={onAdvanced}
+                onAbout={onAbout}
+              />
+              <StatusBar session={session} />
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}

@@ -58,7 +58,24 @@ impl Drop for EncoderSession {
 }
 
 pub fn find_ffmpeg() -> Result<PathBuf> {
-    which::which("ffmpeg").context("找不到 ffmpeg，请安装并加入 PATH")
+    if let Ok(p) = which::which("ffmpeg") {
+        return Ok(p);
+    }
+    let mut candidates = Vec::new();
+    if let Ok(runtime) = std::env::var("LIGHTING_RUNTIME_DIR") {
+        candidates.push(PathBuf::from(&runtime).join("ffmpeg").join("bin").join("ffmpeg.exe"));
+        candidates.push(PathBuf::from(&runtime).join("ffmpeg.exe"));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("ffmpeg.exe"));
+            candidates.push(dir.join("ffmpeg").join("bin").join("ffmpeg.exe"));
+        }
+    }
+    if let Some(found) = candidates.into_iter().find(|p| p.is_file()) {
+        return Ok(found);
+    }
+    anyhow::bail!("找不到 ffmpeg。便携版首次启动会自动下载；也可手动安装并加入 PATH")
 }
 
 pub fn pick_encoder(codec: &str) -> &'static str {
@@ -83,8 +100,9 @@ pub fn start_encoder(
     display: &DisplayInfo,
     settings: &EncodeSettings,
     encoder: &str,
+    capture_filter: &str,
 ) -> Result<EncoderSession> {
-    let args = build_args(display, settings, encoder);
+    let args = build_args(settings, encoder, capture_filter);
     tracing::info!("ffmpeg {}", args.join(" "));
 
     let mut cmd = Command::new(ffmpeg);
@@ -109,7 +127,9 @@ pub fn start_encoder(
         }
     });
 
-    let (tx, rx) = mpsc::sync_channel(24);
+    // Keep at most ~2 encoded AUs queued; annexb drops P-frames when full
+    // so USB backpressure cannot turn into hundreds of ms of glass latency.
+    let (tx, rx) = mpsc::sync_channel(2);
     let hevc = is_hevc(&settings.codec);
     thread::spawn(move || {
         if let Err(err) = annexb::pump_annexb(stdout, tx, hevc) {
@@ -139,29 +159,26 @@ fn tail(s: &str, n: usize) -> String {
         .join("\n")
 }
 
-fn build_args(display: &DisplayInfo, settings: &EncodeSettings, encoder: &str) -> Vec<String> {
+fn build_args(settings: &EncodeSettings, encoder: &str, capture_filter: &str) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-hide_banner".into(),
         "-loglevel".into(),
         "warning".into(),
         "-fflags".into(),
-        "nobuffer".into(),
+        "nobuffer+flush_packets".into(),
         "-flags".into(),
         "low_delay".into(),
         "-probesize".into(),
         "32".into(),
         "-analyzeduration".into(),
         "0".into(),
+        "-thread_queue_size".into(),
+        "2".into(),
     ];
 
-    // Desktop Duplication (low latency). output_idx matches DXGI order.
-    let filter = format!(
-        "ddagrab=output_idx={}:framerate={}:draw_mouse=1,hwdownload,format=bgra,format=yuv420p,scale={}:{}:flags=fast_bilinear",
-        display.dxgi_index, settings.fps, settings.width, settings.height
-    );
     args.extend([
         "-filter_complex".into(),
-        filter,
+        capture_filter.to_string(),
         "-an".into(),
         "-c:v".into(),
         encoder.to_string(),
@@ -200,9 +217,15 @@ pub fn start_encoder_gdigrab(
         "-loglevel".into(),
         "warning".into(),
         "-fflags".into(),
-        "nobuffer".into(),
+        "nobuffer+flush_packets".into(),
         "-flags".into(),
         "low_delay".into(),
+        "-probesize".into(),
+        "32".into(),
+        "-analyzeduration".into(),
+        "0".into(),
+        "-thread_queue_size".into(),
+        "2".into(),
         "-f".into(),
         "gdigrab".into(),
         "-framerate".into(),
@@ -219,9 +242,11 @@ pub fn start_encoder_gdigrab(
         "desktop".into(),
         "-an".into(),
         "-vf".into(),
-        format!(
-            "format=yuv420p,scale={}:{}:flags=fast_bilinear",
-            settings.width, settings.height
+        lighting_host::capture_graph::gdigrab_vf(
+            display.width,
+            display.height,
+            settings.width,
+            settings.height,
         ),
         "-c:v".into(),
         encoder.to_string(),
@@ -246,7 +271,7 @@ pub fn start_encoder_gdigrab(
             tracing::info!("ffmpeg stderr:\n{}", tail(&buf, 16));
         }
     });
-    let (tx, rx) = mpsc::sync_channel(24);
+    let (tx, rx) = mpsc::sync_channel(2);
     let hevc = is_hevc(&settings.codec);
     thread::spawn(move || {
         if let Err(err) = annexb::pump_annexb(stdout, tx, hevc) {
@@ -259,10 +284,17 @@ pub fn start_encoder_gdigrab(
     })
 }
 
+/// ~2-frame VBV so rate control does not hold frames for half a second.
+fn vbv_bufsize_kb(bitrate_kbps: u32, fps: u32) -> u32 {
+    lighting_host::session_policy::vbv_bufsize_kb(bitrate_kbps, fps)
+}
+
 fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
     let br = format!("{}k", settings.bitrate_kbps);
-    let buf = format!("{}k", (settings.bitrate_kbps / 2).max(4000));
-    let gop = (settings.fps / 2).max(15).to_string();
+    let buf = format!("{}k", vbv_bufsize_kb(settings.bitrate_kbps, settings.fps));
+    // Keyframe every ~1s: short enough to recover after drops, long enough
+    // that IDR spikes do not dominate USB3 bandwidth.
+    let gop = settings.fps.max(30).to_string();
     let level = avc_level(settings.width, settings.height, settings.fps).to_string();
     if encoder.contains("nvenc") {
         vec![
@@ -296,6 +328,11 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "0".into(),
             "-zerolatency".into(),
             "1".into(),
+            // Spatial AQ improves detail at the same bitrate with negligible latency cost.
+            "-spatial-aq".into(),
+            "1".into(),
+            "-temporal-aq".into(),
+            "0".into(),
         ]
     } else if encoder.contains("qsv") {
         vec![
@@ -315,6 +352,8 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             settings.profile.clone(),
             "-look_ahead".into(),
             "0".into(),
+            "-async_depth".into(),
+            "1".into(),
         ]
     } else if encoder.contains("amf") {
         vec![
@@ -324,6 +363,10 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "cbr".into(),
             "-b:v".into(),
             br,
+            "-maxrate".into(),
+            format!("{}k", settings.bitrate_kbps),
+            "-bufsize".into(),
+            buf,
             "-bf".into(),
             "0".into(),
             "-g".into(),
@@ -376,7 +419,7 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             level,
             "-x264-params".into(),
             format!(
-                "repeat-headers=1:scenecut=0:sliced-threads=0:level={}",
+                "repeat-headers=1:scenecut=0:sliced-threads=0:sync-lookahead=0:rc-lookahead=0:level={}",
                 avc_level(settings.width, settings.height, settings.fps)
             )
             .into(),

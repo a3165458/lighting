@@ -27,6 +27,7 @@ pub struct SessionRequest {
     pub match_device: bool,
     pub scale: f32,
     pub send_audio: bool,
+    pub share_mode: lighting_host::view::ShareMode,
 }
 
 #[derive(Clone, Default)]
@@ -155,8 +156,80 @@ async fn run_session_inner(
     stop: Arc<AtomicBool>,
     controls: Arc<Controls>,
 ) -> Result<()> {
+    let mut req = req;
+    if req.share_mode.uses_virtual_display() {
+        set_status(&status, "准备虚拟屏", "正在检查并启用虚拟显示器…");
+        let mode = req.share_mode;
+        let status_prog = status.clone();
+        let ensure = tokio::task::spawn_blocking(move || {
+            displays::ensure_secondary_display_with_progress(mode, |step| {
+                if let Ok(mut s) = status_prog.lock() {
+                    s.running = true;
+                    s.phase = "准备虚拟屏".into();
+                    s.detail = step.to_string();
+                }
+            })
+        })
+        .await;
+        let ensure_result = match ensure {
+            Ok(inner) => inner,
+            Err(err) => Err(anyhow::anyhow!("启用虚拟屏任务中断: {err:#}")),
+        };
+        let (ensure_ok, ensure_err) = match &ensure_result {
+            Ok(()) => (true, String::new()),
+            Err(err) => (false, format!("{err:#}")),
+        };
+        let list = displays::list_displays().unwrap_or_default();
+        match lighting_host::share_flow::decide_after_virtual_prepare(
+            req.share_mode,
+            ensure_ok,
+            &ensure_err,
+            displays::has_secondary(&list),
+            displays::has_virtual_display(&list),
+        ) {
+            lighting_host::share_flow::VirtualPrepareOutcome::Ready => {
+                if let Some(idx) = displays::pick_display_index(&list, req.share_mode) {
+                    req.display_index = idx;
+                }
+                set_status(&status, "准备虚拟屏", "虚拟屏已就绪，开始等待平板…");
+            }
+            lighting_host::share_flow::VirtualPrepareOutcome::FallbackMirror { reason } => {
+                tracing::warn!("extend falling back to mirror: {reason}");
+                req.share_mode = lighting_host::view::ShareMode::Mirror;
+                let _ = displays::apply_project_mode(lighting_host::view::ShareMode::Mirror);
+                let list = displays::list_displays().unwrap_or_default();
+                if let Some(idx) =
+                    displays::pick_display_index(&list, lighting_host::view::ShareMode::Mirror)
+                {
+                    req.display_index = idx;
+                }
+                set_status(
+                    &status,
+                    "启动中",
+                    format!(
+                        "独立第二屏不可用，已改用镜像主屏。{}",
+                        lighting_host::ui_text::human_last_error(&reason)
+                    ),
+                );
+            }
+            lighting_host::share_flow::VirtualPrepareOutcome::Abort { reason } => {
+                anyhow::bail!(
+                    "{}",
+                    lighting_host::share_flow::tablet_only_abort_message(
+                        &lighting_host::ui_text::human_last_error(&reason)
+                    )
+                );
+            }
+        }
+    } else if let Err(err) = displays::apply_project_mode(req.share_mode) {
+        tracing::warn!("DisplaySwitch failed ({err:#}); continuing with current layout");
+    }
+
     set_status(&status, "启动", "正在枚举显示器");
     let displays = displays::list_displays()?;
+    if let Some(idx) = displays::pick_display_index(&displays, req.share_mode) {
+        req.display_index = idx;
+    }
     let display = displays
         .get(req.display_index)
         .cloned()
@@ -171,6 +244,17 @@ async fn run_session_inner(
 
     set_status(&status, "监听", format!("绑定 {bind}"));
     let listener = TcpListener::bind(&bind).await.context("绑定端口")?;
+
+    // DXGI cannot capture the lock screen. Hold the display/system idle
+    // timeout for the whole share (including wait-for-tablet).
+    let _keep_awake = displays::KeepAwakeGuard::acquire();
+    let _lid = if req.share_mode.blanks_pc_monitor() {
+        Some(displays::LidCloseGuard::apply())
+    } else {
+        None
+    };
+    let tablet_only = Arc::new(AtomicBool::new(false));
+    let _restore_pc = TabletOnlyRestoreGuard(tablet_only.clone());
 
     let adb_path = adb::find_adb().ok();
     let mut reverse_serial: Option<String> = None;
@@ -283,6 +367,7 @@ async fn run_session_inner(
             status.clone(),
             stop.clone(),
             controls.clone(),
+            tablet_only.clone(),
         )
         .await
         {
@@ -321,14 +406,29 @@ async fn cleanup_reverse(adb: Option<&std::path::PathBuf>, serial: Option<&str>)
     }
 }
 
+struct TabletOnlyRestoreGuard(Arc<AtomicBool>);
+
+impl Drop for TabletOnlyRestoreGuard {
+    fn drop(&mut self) {
+        if self.0.swap(false, Ordering::SeqCst) {
+            if let Err(err) = displays::restore_pc_monitor() {
+                tracing::warn!("restore PC monitor after tablet-only failed: {err:#}");
+            } else {
+                tracing::info!("restored PC monitor after tablet-only session");
+            }
+        }
+    }
+}
+
 async fn handle_client(
     stream: TcpStream,
-    display: DisplayInfo,
+    mut display: DisplayInfo,
     ffmpeg: std::path::PathBuf,
     req: SessionRequest,
     status: Arc<Mutex<SessionStatus>>,
     stop: Arc<AtomicBool>,
     controls: Arc<Controls>,
+    tablet_only: Arc<AtomicBool>,
 ) -> Result<()> {
     stream.set_nodelay(true)?;
     let (mut reader, mut writer) = stream.into_split();
@@ -345,38 +445,212 @@ async fn handle_client(
         s.client_name = hello.device.trim().to_string();
     }
 
+    let mut mode_guard = displays::ModeRestoreGuard(None);
+    if req.share_mode.uses_virtual_display() && hello.screen_width > 0 && hello.screen_height > 0 {
+        // Independent second screen: put the *virtual* monitor on tablet pixels so
+        // capture is 1:1 (no scaling anywhere) and the PC monitor is untouched.
+        set_status(
+            &status,
+            "独立第二屏",
+            format!(
+                "正在把虚拟屏设为平板分辨率 {}×{}",
+                hello.screen_width, hello.screen_height
+            ),
+        );
+        let (tw, th) = (hello.screen_width, hello.screen_height);
+        let want_fps = hello.max_fps.max(req.fps).min(120);
+        match tokio::task::spawn_blocking(move || {
+            displays::configure_virtual_for_tablet(tw, th, want_fps)
+        })
+        .await
+        {
+            Ok(Ok(updated)) => {
+                tracing::info!(
+                    "virtual display now {}×{} (dxgi {})",
+                    updated.width,
+                    updated.height,
+                    updated.dxgi_index
+                );
+                display = updated;
+                set_status(
+                    &status,
+                    "独立第二屏",
+                    format!("虚拟屏 {}×{} · 1:1 抓取", display.width, display.height),
+                );
+            }
+            Ok(Err(err)) => {
+                tracing::warn!("configure virtual for tablet failed: {err:#}");
+                set_status(
+                    &status,
+                    "独立第二屏",
+                    format!("虚拟屏未能设为平板分辨率，将缩放推流。{err}"),
+                );
+            }
+            Err(err) => {
+                tracing::warn!("configure virtual join failed: {err:#}");
+            }
+        }
+    } else if req.match_device && hello.screen_width > 0 && hello.screen_height > 0 {
+        // Mirror + 跟随平板: temporarily switch the captured PC monitor toward the
+        // tablet panel so Windows「显示设置」matches. Refresh rate is protected —
+        // dropping a high-Hz panel to 60 Hz reads as stutter.
+        let (tw, th) = lighting_host::session_policy::orient_box(
+            display.width,
+            display.height,
+            hello.screen_width,
+            hello.screen_height,
+        );
+        let prefer_fps = req
+            .fps
+            .max(30)
+            .min(hello.max_fps.max(60))
+            .min(120);
+        let device = display.name.clone();
+        let current = displays::DisplayMode {
+            width: display.width,
+            height: display.height,
+            fps: prefer_fps,
+        };
+        set_status(
+            &status,
+            "适配平板",
+            format!("正在把电脑分辨率切到平板面板 {tw}×{th}…"),
+        );
+        let switched = tokio::task::spawn_blocking(move || {
+            displays::apply_follow_tablet_mode(&device, current, tw, th, prefer_fps)
+        })
+        .await;
+        match switched {
+            Ok(Ok((applied, restore))) => {
+                let changed =
+                    restore.mode.width != applied.width || restore.mode.height != applied.height;
+                if changed {
+                    mode_guard.0 = Some(restore);
+                }
+                let device_name = display.name.clone();
+                let dxgi = display.dxgi_index;
+                if let Ok(list) = displays::list_displays() {
+                    if let Some(updated) = list
+                        .iter()
+                        .find(|d| d.name == device_name)
+                        .or_else(|| list.iter().find(|d| d.dxgi_index == dxgi))
+                        .cloned()
+                    {
+                        display = updated;
+                    } else {
+                        display.width = applied.width;
+                        display.height = applied.height;
+                    }
+                } else {
+                    display.width = applied.width;
+                    display.height = applied.height;
+                }
+                set_status(
+                    &status,
+                    "适配平板",
+                    format!(
+                        "电脑分辨率已切换为 {}×{}（跟随平板 {}×{}）",
+                        display.width, display.height, hello.screen_width, hello.screen_height
+                    ),
+                );
+            }
+            Ok(Err(err)) => {
+                tracing::warn!("follow-tablet mode switch failed: {err:#}");
+                set_status(
+                    &status,
+                    "适配平板",
+                    format!(
+                        "电脑屏无法切到平板分辨率，已改为缩放推流（显示设置仍可能是电脑分辨率）。{err}"
+                    ),
+                );
+            }
+            Err(err) => {
+                tracing::warn!("follow-tablet mode switch join failed: {err:#}");
+            }
+        }
+    } else if hello.screen_width > 0 && hello.screen_height > 0 {
+        set_status(
+            &status,
+            "适配平板",
+            format!(
+                "按平板分辨率编码 {}×{}",
+                hello.screen_width, hello.screen_height
+            ),
+        );
+    }
+
+    if req.share_mode.blanks_pc_monitor() {
+        set_status(&status, "仅平板", "正在关闭电脑屏（Win+P 仅第二屏幕）…");
+        match tokio::task::spawn_blocking(displays::apply_tablet_only_output).await {
+            Ok(Ok(())) => {
+                tablet_only.store(true, Ordering::SeqCst);
+                if let Ok(list) = displays::list_displays() {
+                    if let Some(idx) = displays::pick_display_index(&list, req.share_mode) {
+                        if let Some(updated) = list.get(idx).cloned() {
+                            display = updated;
+                        }
+                    } else if let Some(updated) = displays::pick_virtual(&list)
+                        .cloned()
+                        .or_else(|| list.first().cloned())
+                    {
+                        display = updated;
+                    }
+                }
+                set_status(
+                    &status,
+                    "仅平板",
+                    format!(
+                        "电脑屏已关 · 捕获 {}×{}。合盖可用；请勿锁屏。",
+                        display.width, display.height
+                    ),
+                );
+            }
+            Ok(Err(err)) => {
+                tracing::warn!("tablet-only DisplaySwitch /external failed: {err:#}");
+                set_status(
+                    &status,
+                    "仅平板",
+                    format!("未能关闭电脑屏，将继续双屏推流。{err}"),
+                );
+            }
+            Err(err) => {
+                tracing::warn!("tablet-only join failed: {err:#}");
+            }
+        }
+    }
+
     let codec = pick_codec(&hello, req.prefer_hevc);
     let (dec_w, dec_h, dec_fps, hw) = codec_limit(&hello, &codec);
-    let (mut width, mut height) =
-        if req.match_device && hello.screen_width > 0 && hello.screen_height > 0 {
-            fit_to_device(
-                display.width,
-                display.height,
-                hello.screen_width,
-                hello.screen_height,
-                req.scale,
-                dec_w,
-                dec_h,
-            )
-        } else {
-            let (w, h) =
-                fit_resolution(display.width, display.height, req.max_width, req.max_height);
-            if dec_w > 0 && dec_h > 0 {
-                fit_resolution(w, h, dec_w, dec_h)
-            } else {
-                (w, h)
-            }
-        };
+    // Always clamp to the tablet panel when Hello reports it — a 2K desktop
+    // must not stream 2K to a 1080p/1200p pad just because ResCap is「最高 2K」.
+    let scale = if req.match_device || req.share_mode.uses_virtual_display() {
+        req.scale
+    } else {
+        1.0
+    };
+    let (mut width, mut height) = lighting_host::session_policy::compute_encode_size(
+        display.width,
+        display.height,
+        hello.screen_width,
+        hello.screen_height,
+        req.max_width,
+        req.max_height,
+        scale,
+        dec_w,
+        dec_h,
+    );
     let align = hello.alignment.max(2);
     width = (width / align * align).max(align);
     height = (height / align * align).max(align);
 
     let fps = adapted_fps(req.fps, hello.max_fps, dec_fps, hw);
     let auto_br = auto_bitrate(width, height, fps);
+    // Honor the user's bitrate for hardware decode — auto_br used to silently
+    // cap 1080p@60 to ~15 Mbps even when the slider said 25 Mbps.
     let bitrate_kbps = if hw {
-        auto_br.min(req.bitrate_kbps).max(4_000)
+        req.bitrate_kbps.clamp(4_000, 80_000).max(auto_br.min(req.bitrate_kbps))
     } else {
-        auto_br.min(req.bitrate_kbps).min(12_000).max(4_000)
+        req.bitrate_kbps.min(12_000).clamp(4_000, 12_000)
     };
     let audio_enabled = req.send_audio;
     let cfg = StreamConfig {
@@ -442,7 +716,7 @@ async fn handle_client(
         start_live_encoder(&ffmpeg, &display, &settings, hevc)?;
     let t0 = std::time::Instant::now();
     let audio_stop = Arc::new(AtomicBool::new(false));
-    let (audio_tx, audio_rx) = std::sync::mpsc::sync_channel::<crate::audio::AudioPacket>(48);
+    let (audio_tx, audio_rx) = std::sync::mpsc::sync_channel::<crate::audio::AudioPacket>(4);
     if audio_enabled {
         match crate::audio::start_loopback(audio_tx, audio_stop.clone(), t0) {
             Ok(()) => tracing::info!("audio loopback started"),
@@ -453,6 +727,16 @@ async fn handle_client(
     }
 
     let display_for_input = display.clone();
+    let (touch_tx, touch_rx) = std::sync::mpsc::channel::<protocol::TouchEvent>();
+    let input_display = display_for_input.clone();
+    std::thread::Builder::new()
+        .name("lighting-input".into())
+        .spawn(move || {
+            while let Ok(ev) = touch_rx.recv() {
+                input::inject_touch(&input_display, ev);
+            }
+        })
+        .ok();
     let stop_read = stop.clone();
     let ping_sent: Arc<Mutex<Option<std::time::Instant>>> = Arc::new(Mutex::new(None));
     let ping_reply = ping_sent.clone();
@@ -466,10 +750,17 @@ async fn handle_client(
             match protocol::read_message(&mut reader).await {
                 Ok(msg) if msg.ty == protocol::MSG_TOUCH => {
                     if !controls_read.touch.load(Ordering::Relaxed) {
+                        tracing::warn!("touch ignored: relay disabled");
                         continue;
                     }
-                    if let Ok(ev) = protocol::TouchEvent::parse(&msg.payload) {
-                        input::inject_touch(&display_for_input, ev);
+                    match protocol::TouchEvent::parse(&msg.payload) {
+                        Ok(ev) => {
+                            tracing::info!("host got touch action={} x={} y={}", ev.action, ev.x, ev.y);
+                            if touch_tx.send(ev).is_err() {
+                                tracing::warn!("touch queue closed");
+                            }
+                        }
+                        Err(err) => tracing::warn!("bad touch payload: {err:#}"),
                     }
                 }
                 Ok(msg) if msg.ty == protocol::MSG_HEARTBEAT => {
@@ -520,7 +811,7 @@ async fn handle_client(
                 }
             }
         }
-        match session.rx.recv_timeout(Duration::from_millis(2)) {
+        match session.rx.recv_timeout(Duration::from_millis(1)) {
             Ok(pkt) => {
                 let mut sent = match write_video_packet(&mut writer, t0, &pkt).await {
                     Ok(bytes) => bytes,
@@ -578,6 +869,8 @@ async fn handle_client(
     reader_task.abort();
     let _ = writer.shutdown().await;
     session.stop_in_background();
+    // Restore PC resolution after capture stops so DXGI isn't mid-grab.
+    drop(mode_guard);
     Ok(())
 }
 
@@ -623,22 +916,33 @@ fn start_live_encoder(
 ) -> Result<(encoder::EncoderSession, Vec<EncodedPacket>)> {
     let mut last_err: Option<anyhow::Error> = None;
     for enc in encoder::encoder_fallback_chain(&settings.codec) {
-        let session = match encoder::start_encoder(ffmpeg, display, settings, enc) {
-            Ok(s) => s,
-            Err(err) => {
-                tracing::warn!("encoder {enc} failed: {err:#}");
-                last_err = Some(err);
-                continue;
-            }
-        };
-        match annexb::recv_bootstrap(&session.rx, Duration::from_secs(3), hevc) {
-            Ok(bootstrap) => {
-                tracing::info!("using encoder {enc}");
-                return Ok((session, bootstrap));
-            }
-            Err(err) => {
-                tracing::warn!("{enc} died before codec-config + IDR: {err:#}");
-                last_err = Some(err);
+        let graphs = lighting_host::capture_graph::dda_capture_graphs(
+            display.dxgi_index,
+            settings.fps,
+            display.width,
+            display.height,
+            settings.width,
+            settings.height,
+            enc,
+        );
+        for graph in graphs {
+            let session = match encoder::start_encoder(ffmpeg, display, settings, enc, &graph) {
+                Ok(s) => s,
+                Err(err) => {
+                    tracing::warn!("encoder {enc} spawn failed: {err:#}");
+                    last_err = Some(err);
+                    continue;
+                }
+            };
+            match annexb::recv_bootstrap(&session.rx, Duration::from_secs(3), hevc) {
+                Ok(bootstrap) => {
+                    tracing::info!("using encoder {enc} graph={graph}");
+                    return Ok((session, bootstrap));
+                }
+                Err(err) => {
+                    tracing::warn!("{enc} graph died before codec-config + IDR ({graph}): {err:#}");
+                    last_err = Some(err);
+                }
             }
         }
     }
@@ -713,23 +1017,41 @@ fn pick_codec(hello: &Hello, prefer_hevc: bool) -> String {
         0
     };
     let hevc_score = if hevc_ok {
-        hello
-            .hevc_limit
-            .as_ref()
-            .map(|l| {
-                (l.width as u64)
-                    .saturating_mul(l.height as u64)
-                    .saturating_mul(l.fps.max(24) as u64)
-            })
-            .unwrap_or(0)
+        codec_score(
+            hello.hevc_limit.as_ref(),
+            hello.decoder_max_width,
+            hello.decoder_max_height,
+            hello.decoder_max_fps,
+        )
     } else {
         0
     };
+    let screen_area = (hello.screen_width.max(1) as u64).saturating_mul(hello.screen_height.max(1) as u64);
+    let avc_area = hello
+        .avc_limit
+        .as_ref()
+        .map(|l| (l.width.max(1) as u64).saturating_mul(l.height.max(1) as u64))
+        .unwrap_or_else(|| {
+            (hello.decoder_max_width.max(1) as u64).saturating_mul(hello.decoder_max_height.max(1) as u64)
+        });
+    let hevc_area = hello
+        .hevc_limit
+        .as_ref()
+        .map(|l| (l.width.max(1) as u64).saturating_mul(l.height.max(1) as u64))
+        .unwrap_or(0);
+
     // Treble/GSI HEVC is often broken or much slower; stay on AVC unless HEVC is clearly larger.
     if hello.gsi && avc_ok && hevc_score < avc_score.saturating_mul(2) {
         return "avc".into();
     }
+    // Tablet panel larger than AVC hard-decode ceiling → pick HEVC when it unlocks more pixels.
+    if hevc_ok && avc_ok && screen_area > avc_area && hevc_area > avc_area {
+        return "hevc".into();
+    }
     if prefer_hevc && hevc_ok && hevc_score >= avc_score {
+        return "hevc".into();
+    }
+    if hevc_ok && !avc_ok {
         return "hevc".into();
     }
     if avc_ok {
@@ -774,36 +1096,17 @@ fn fit_to_device(
     dec_w: u32,
     dec_h: u32,
 ) -> (u32, u32) {
-    let (mut box_w, mut box_h) = if src_w >= src_h {
-        if dev_w >= dev_h {
-            (dev_w, dev_h)
-        } else {
-            (dev_h, dev_w)
-        }
-    } else if dev_h >= dev_w {
-        (dev_w, dev_h)
-    } else {
-        (dev_h, dev_w)
-    };
-    if dec_w > 0 && dec_h > 0 {
-        let (lim_w, lim_h) = if box_w >= box_h {
-            if dec_w >= dec_h {
-                (dec_w, dec_h)
-            } else {
-                (dec_h, dec_w)
-            }
-        } else if dec_h >= dec_w {
-            (dec_w, dec_h)
-        } else {
-            (dec_h, dec_w)
-        };
-        box_w = box_w.min(lim_w);
-        box_h = box_h.min(lim_h);
-    }
-    let scale = (scale as f64).clamp(0.35, 1.0);
-    let cap_w = ((box_w as f64 * scale) as u32).max(16);
-    let cap_h = ((box_h as f64 * scale) as u32).max(16);
-    fit_resolution(src_w, src_h, cap_w, cap_h)
+    lighting_host::session_policy::compute_encode_size(
+        src_w,
+        src_h,
+        dev_w,
+        dev_h,
+        u32::MAX / 4,
+        u32::MAX / 4,
+        scale,
+        dec_w,
+        dec_h,
+    )
 }
 
 fn auto_bitrate(width: u32, height: u32, fps: u32) -> u32 {
@@ -813,14 +1116,7 @@ fn auto_bitrate(width: u32, height: u32, fps: u32) -> u32 {
 }
 
 fn fit_resolution(src_w: u32, src_h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
-    let mut w = src_w.max(2);
-    let mut h = src_h.max(2);
-    if w > max_w || h > max_h {
-        let scale = (max_w as f64 / w as f64).min(max_h as f64 / h as f64);
-        w = ((w as f64 * scale) as u32) & !1;
-        h = ((h as f64 * scale) as u32) & !1;
-    }
-    (w.max(2), h.max(2))
+    lighting_host::session_policy::fit_resolution(src_w, src_h, max_w, max_h)
 }
 
 #[cfg(test)]
@@ -905,7 +1201,35 @@ mod tests {
             name: "c2.mtk.hevc.decoder".into(),
         });
         assert_eq!(pick_codec(&h, true), "hevc");
+        // Screen 2000×1200 exceeds AVC 1920×1088 → auto HEVC even without prefer flag.
+        assert_eq!(pick_codec(&h, false), "hevc");
+    }
+
+    #[test]
+    fn hevc_not_forced_when_screen_fits_avc() {
+        let mut h = qcom_gsi();
+        h.gsi = false;
+        h.screen_width = 1920;
+        h.screen_height = 1080;
+        h.hevc_limit = Some(CodecLimit {
+            width: 3840,
+            height: 2160,
+            fps: 60,
+            hw: true,
+            name: "c2.qti.hevc.decoder".into(),
+        });
         assert_eq!(pick_codec(&h, false), "avc");
+        assert_eq!(pick_codec(&h, true), "hevc");
+    }
+
+    #[test]
+    fn user_bitrate_not_silently_capped_on_hw() {
+        // Historical bug: auto_bitrate(1920×1080@60) ≈ 15 Mbps crushed a 25 Mbps slider.
+        let auto = auto_bitrate(1920, 1080, 60);
+        assert!(auto < 25_000);
+        let user = 25_000u32;
+        let hw_br = user.clamp(4_000, 80_000).max(auto.min(user));
+        assert_eq!(hw_br, 25_000);
     }
 
     #[test]

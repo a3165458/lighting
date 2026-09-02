@@ -41,15 +41,38 @@ cd host-windows
 cargo run --release
 ```
 
-扩展屏（推荐）：
+### 投屏模式说明
 
-```powershell
-winget install --id=VirtualDrivers.Virtual-Display-Driver -e
-```
+| 模式 | 作用 |
+|------|------|
+| 镜像主屏 | 与主屏同画面，自动缩放到平板分辨率 |
+| 双屏扩展 | 虚拟扩展桌面；平板连接后按平板分辨率 1:1 输出，电脑屏继续亮 |
+| 仅平板（躺着用） | 虚拟屏 1:1；**平板连上后**再 Win+P「仅第二屏幕」，关掉电脑屏 |
 
-安装后在 **设置 → 系统 → 显示器** 中设为「扩展这些显示器」，分辨率可设 2560×1440。在 Lighting 里选择这块虚拟屏再点「开始共享」。
+扩展 / 仅平板 会：
 
-没有虚拟屏时也可以先选主屏做镜像，用来验证编码和 USB 通道。
+1. 自动激活虚拟显示器（IddCx 或 MttVDD `SETDISPLAYCOUNT`）
+2. 平板连上后，把虚拟屏改成平板物理分辨率再抓取
+3. 「仅平板」此时才关掉电脑屏，避免 Lighting 窗口跟着消失
+4. 投屏期间 `SetThreadExecutionState` 防休眠；仅平板会尽力把合盖设为不采取任何操作
+
+**锁屏无法投屏**是 Windows 限制：DXGI Desktop Duplication 抓不到安全桌面（Win+L / 登录界面）。请关掉自动锁屏；不要在投屏时按 Win+L。合盖请在 Windows「电源按钮」里设为不采取任何操作。
+
+「仅平板」如果虚拟屏没起来，**不会再偷偷改成镜像**，界面会停在失败原因（常见是 UAC 点了「否」）。开始共享后，连接卡片会按步骤显示：启用虚拟屏 → 等待平板 → 设分辨率 → 关闭电脑屏 → 推流。
+
+停止共享后会把投影模式恢复为扩展，电脑屏重新亮起。
+
+### 扩展屏驱动（方案 B：自有 IddCx）
+
+仓库 `driver-idd/` 是基于微软 Indirect Display 样例的 **LightingIdd**（`Root\LightingIdd`）。
+需在 Windows + WDK 编译出 `LightingIdd.dll`，开发机开 testsigning；正式发布需 Attestation 签名。
+说明见 [`driver-idd/README.md`](driver-idd/README.md)。未就绪时主机仍回退开源 MttVDD，默认投屏模式为镜像。
+
+### SmartScreen / 360 提示「有病毒」？
+
+未签名的 Windows 程序常被提示「发布者未知」或被 360 误报，**不等于真有木马**。  
+临时处理：SmartScreen 点「仍要运行」；360 选允许/加入信任。  
+长期方案见 [`docs/WINDOWS-SMARTSCREEN.md`](docs/WINDOWS-SMARTSCREEN.md)（代码签名证书）。
 
 启动主机：
 

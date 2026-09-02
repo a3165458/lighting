@@ -1,0 +1,110 @@
+name: Build Electron Windows UI
+
+on:
+  push:
+    branches: [main, "cursor/**"]
+    paths:
+      - "host-ui/**"
+      - "host-windows/**"
+      - "android/**"
+      - "scripts/**"
+      - ".github/workflows/build-electron-win.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "host-ui/**"
+      - "host-windows/**"
+      - "android/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  simulate-share:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: host-windows
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Simulate share policy (no DXGI)
+        run: cargo test --lib
+
+  electron-win:
+    needs: simulate-share
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Build Android APK
+        shell: pwsh
+        run: |
+          $sdkPath = $env:ANDROID_HOME -replace '\\', '/'
+          [System.IO.File]::WriteAllText("$PWD/android/local.properties", "sdk.dir=$sdkPath`n")
+          cd android
+          .\gradlew.bat assembleDebug --no-daemon
+          New-Item -ItemType Directory -Force -Path ../host-ui/resources | Out-Null
+          Copy-Item app/build/outputs/apk/debug/app-debug.apk ../host-ui/resources/Lighting.apk -Force
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: host-windows
+
+      - name: Build lighting-host.exe
+        working-directory: host-windows
+        run: cargo build --release
+
+      - name: Stage resources (host + APK)
+        shell: pwsh
+        run: |
+          Copy-Item host-windows/target/release/lighting-host.exe host-ui/resources/lighting-host.exe -Force
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/vdd/stage-vdd-bundle.ps1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/idd/stage-idd-bundle.ps1
+          Get-ChildItem host-ui/resources | Format-Table Name, Length
+          Get-ChildItem host-ui/resources/vdd -ErrorAction SilentlyContinue | Format-Table Name, Length
+          Get-ChildItem host-ui/resources/idd -ErrorAction SilentlyContinue | Format-Table Name, Length
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: host-ui/package-lock.json
+
+      - name: Install UI deps
+        working-directory: host-ui
+        run: npm ci
+
+      - name: Build Windows packages
+        working-directory: host-ui
+        run: npm run electron:build:win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - name: Upload exe artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lighting副屏-一键版
+          path: |
+            host-ui/release/*便携版.exe
+            host-ui/release/*安装包.exe
+            host-ui/resources/Lighting.apk
+          if-no-files-found: error
