@@ -129,6 +129,7 @@ pub fn looks_virtual_display(name: &str, friendly: &str) -> bool {
         || blob.contains("usbmmidd")
         || blob.contains("vdd")
         || blob.contains("indirect display")
+        || blob.contains("glidex")
 }
 
 #[cfg(test)]
@@ -178,6 +179,10 @@ mod share_mode_tests {
     fn virtual_display_heuristics() {
         assert!(looks_virtual_display(r"\\.\DISPLAY2", "Virtual Display Driver"));
         assert!(!looks_virtual_display(r"\\.\DISPLAY1", "Generic PnP Monitor"));
+        assert!(looks_virtual_display(r"\\.\DISPLAY2", "GlideX"));
+        assert!(looks_virtual_display(r"\\.\DISPLAY3", "ASUS GlideX Display"));
+        assert!(looks_virtual_display("DISPLAY2", "glidex indirect display"));
+        assert!(!looks_virtual_display(r"\\.\DISPLAY1", "Generic PnP Monitor ASUS"));
     }
 }
 
@@ -287,8 +292,9 @@ impl Default for Settings {
         Self {
             selected_display: 0,
             selected_device: 0,
-            // Mirror needs no virtual display driver. GlideX ships a private signed
-            // IddCx driver; until we have equivalent, first-run must succeed without it.
+            // Mirror needs no virtual display driver. If DXGI already lists a
+            // GlideX / LightingIdd / MttVDD head, tablet-only can use it; a
+            // GlideX adapter with no extra DXGI output is not a monitor.
             share_mode: ShareMode::Mirror,
             quality_pct: 100,
             fps: 60,
@@ -737,11 +743,15 @@ fn connection_card(
 
         let detail = ui_text::human_detail_text(&snap.phase, &snap.detail);
         if !streaming && !detail.is_empty() && !second.contains(&detail) {
-            ui.label(egui::RichText::new(detail).size(11.5).color(theme::MUTED));
+            ui.label(egui::RichText::new(&detail).size(11.5).color(theme::MUTED));
         }
-        if !snap.last_error.is_empty() {
+        let shown_last = ui_text::human_last_error(&snap.last_error);
+        if crate::share_flow::should_show_separate_last_error(
+            &shown_last,
+            &[&detail, &second, &snap.usb_hint, &snap.detail],
+        ) {
             ui.label(
-                egui::RichText::new(ui_text::human_last_error(&snap.last_error))
+                egui::RichText::new(shown_last)
                     .size(11.5)
                     .color(theme::BAD),
             );

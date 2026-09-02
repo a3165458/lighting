@@ -320,6 +320,12 @@ pub fn human_vdd_error(raw: &str) -> Option<String> {
         "等了很久也没有管理员确认窗口。请完全退出 Lighting，右键选「以管理员身份运行」后再点开始共享（已是管理员时不会再弹窗）。"
     } else if code_upper.contains("INSTALL_TIMEOUT") {
         "驱动安装超时。请完全退出 Lighting 后以管理员身份运行再试。"
+    } else if code_upper.contains("UAC_NO_RESULT") || code_upper.contains("DRIVER_NO_RESULT") {
+        "没有收到驱动安装结果。刚才可能没有弹出管理员确认。请再点开始共享并留意蓝底窗口，或完全退出后右键以管理员身份运行（已是管理员时不会再弹窗）。"
+    } else if code_upper.contains("UAC_HIDDEN_HOST") {
+        "主机进程没有可见窗口，无法弹出管理员确认。请再点开始共享并留意蓝底「用户账户控制」，或右键以管理员身份运行（已是管理员时不会再弹窗）。"
+    } else if code_upper.contains("SHELLEXECUTE_FAILED") || code_upper.contains("UAC_WAIT_FAILED") {
+        "无法唤起或等待管理员确认窗口。请完全退出 Lighting，右键选「以管理员身份运行」后再试（已是管理员时不会再弹窗）。"
     } else if code_upper.contains("UAC_CANCELLED") {
         "已取消管理员授权。扩展屏需要安装虚拟显示驱动，请在弹窗中点「是」。"
     } else if code_upper.contains("ACCESS_DENIED") {
@@ -566,7 +572,14 @@ mod tests {
         assert!(human_vdd_error("VDD_PIPE_DOWN").unwrap().contains("未响应"));
         assert!(human_vdd_error("UNEXPECTED").unwrap().contains("未知错误"));
         assert!(human_vdd_error("UAC_CANCELLED").unwrap().contains("取消"));
+        assert!(!human_vdd_error("UAC_NO_RESULT").unwrap().contains("取消"));
+        assert!(human_vdd_error("UAC_NO_RESULT").unwrap().contains("没有收到驱动安装结果"));
+        assert!(human_vdd_error("UAC_HIDDEN_HOST").unwrap().contains("可见窗口"));
+        assert!(human_vdd_error("SHELLEXECUTE_FAILED").unwrap().contains("无法唤起"));
+        assert!(human_vdd_error("UAC_WAIT_FAILED").unwrap().contains("管理员确认"));
         assert!(human_vdd_error("FAIL|UAC_DENIED").unwrap().contains("管理员"));
+        assert!(human_vdd_error("ACCESS_DENIED").unwrap().contains("权限不足"));
+        assert!(human_vdd_error("DRIVER_SIGNATURE").unwrap().contains("签名"));
         assert!(human_vdd_error("UAC_TIMEOUT").unwrap().contains("以管理员身份运行"));
         assert!(human_vdd_error("INSTALL_TIMEOUT").unwrap().contains("超时"));
         assert!(human_vdd_error("DRIVER_LAUNCHER_FAILED").unwrap().contains("无法启动"));
