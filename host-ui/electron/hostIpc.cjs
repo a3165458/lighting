@@ -5,6 +5,7 @@ const path = require('node:path')
 const { promisify } = require('node:util')
 const { app } = require('electron')
 const bootstrap = require('./bootstrap.cjs')
+const elevate = require('./elevate.cjs')
 
 const execFileAsync = promisify(execFile)
 
@@ -43,6 +44,7 @@ class HostIpcClient {
     }
     if (!this._aligningVersion) {
       await this.alignHostVersion()
+      await this.alignHostElevation()
     }
   }
 
@@ -137,7 +139,9 @@ class HostIpcClient {
   }
 
   async startHostIfNeeded() {
-    if (this.child && !this.child.killed) return
+    if (this.child && !this.child.killed) {
+      return
+    }
     // Admin UI must not keep talking to a leftover non-elevated host on 17401
     // (that process cannot show UAC, so driver install looks frozen).
     if (isElevated()) {
@@ -147,6 +151,84 @@ class HostIpcClient {
     }
     if (await this.canConnectOnce(150)) return
     await this.spawnBundledHost()
+  }
+
+  async alignHostElevation() {
+    if (!isElevated()) return
+    try {
+      const state = await this.rawInvoke('getState')
+      if (!state?.hostElevated) {
+        await this.replaceStaleHost()
+      }
+    } catch {
+      /* first connect races are fine */
+    }
+  }
+
+  /**
+   * Before tablet-only / extend: the ipc-only host must be elevated so
+   * provision.ps1 runs in-process. If the UI is not elevated, request a
+   * visible UAC from Electron (not from the windowsHide host).
+   */
+  async ensureElevatedForVirtualShare() {
+    await this.ensureConnected()
+    let state = {}
+    try {
+      state = await this.rawInvoke('getState')
+    } catch {
+      state = {}
+    }
+    const mode = String(state?.settings?.shareMode || '')
+    if (mode !== 'extend' && mode !== 'external') {
+      if (isElevated() && !state?.hostElevated) {
+        await this.replaceStaleHost()
+      }
+      return
+    }
+
+    const displays = Array.isArray(state?.displays) ? state.displays : []
+    const hasTarget = displays.some((d) => d?.virtualDisplay || d?.primary === false)
+    if (isElevated()) {
+      if (!state?.hostElevated) {
+        await this.replaceStaleHost()
+      }
+      return
+    }
+    if (state?.hostElevated) {
+      return
+    }
+    if (hasTarget) {
+      return
+    }
+    await this.elevateHostViaUiUac()
+  }
+
+  async elevateHostViaUiUac() {
+    const exe = this.resolveHostExe()
+    if (!exe) {
+      throw new Error('未找到主机组件 lighting-host.exe。请使用官方便携包，或先运行打包脚本。')
+    }
+    this.disconnectSocket()
+    if (this.child && !this.child.killed) {
+      try {
+        this.child.kill()
+      } catch {
+        /* ignore */
+      }
+      this.child = null
+    }
+    await this.killStrayHosts()
+    const resourcesDir = process.resourcesPath || path.dirname(exe)
+    await elevate.spawnElevatedHost({
+      hostExe: exe,
+      resourcesDir,
+      port: this.port,
+    })
+    await this.connectWithRetry(40, 250)
+    const state = await this.rawInvoke('getState')
+    if (!state?.hostElevated) {
+      throw new Error(elevate.humanizeElevateCode('UAC_HIDDEN_HOST'))
+    }
   }
 
   async spawnBundledHost() {
