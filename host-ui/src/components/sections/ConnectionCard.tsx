@@ -80,6 +80,20 @@ export function ConnectionCard({ host, busy, onToggleShare, onInstallClient }: P
             ))}
           </ol>
         )}
+        {showSteps &&
+          (host.phase === '准备虚拟屏' || host.activityTitle === '正在启用虚拟屏') &&
+          host.hostElevated && (
+            <p className="mt-2 text-sm text-text-secondary">
+              已是管理员，安装驱动时不会再弹确认窗口，请稍候。
+            </p>
+          )}
+        {showSteps &&
+          (host.phase === '准备虚拟屏' || host.activityTitle === '正在启用虚拟屏') &&
+          host.hostElevated === false && (
+            <p className="mt-2 text-sm text-warning">
+              请看屏幕中央或任务栏是否有蓝底「用户账户控制」。没有弹窗时请完全退出 Lighting，再右键以管理员运行。
+            </p>
+          )}
         {host.usbHint && host.usbHint !== subtitle && (
           <p className={cn('mt-2 flex items-center gap-2 text-sm font-medium', toneClass)}>
             <AlertTriangle className="size-4 shrink-0" strokeWidth={2} />

@@ -40,8 +40,17 @@ pub fn decide_after_virtual_prepare(
 
 pub fn tablet_only_abort_message(reason: &str) -> String {
     format!(
-        "仅平板需要虚拟屏，没有改用镜像。{reason} 请在弹出的管理员窗口点「是」，或右键 Lighting 选「以管理员身份运行」后重试。"
+        "仅平板需要虚拟屏，没有改用镜像。{reason} 若已用管理员运行仍失败，请完全退出 Lighting 后重试；未提权时请看是否有蓝底「用户账户控制」。"
     )
+}
+
+/// Copy shown while installing the virtual display driver.
+pub fn virtual_driver_install_copy(already_admin: bool) -> &'static str {
+    if already_admin {
+        "已是管理员，正在直接安装虚拟显示驱动（不会再弹出确认窗口）…"
+    } else {
+        "需要安装驱动。请在蓝底「用户账户控制」窗口点「是」；没有弹窗时请看任务栏是否在闪。"
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,7 +253,8 @@ mod tests {
     fn abort_copy_says_we_did_not_switch_to_mirror() {
         let msg = tablet_only_abort_message("已取消管理员授权。");
         assert!(msg.contains("没有改用镜像"));
-        assert!(msg.contains("管理员"));
+        assert!(virtual_driver_install_copy(true).contains("不会再弹出"));
+        assert!(virtual_driver_install_copy(false).contains("用户账户控制"));
     }
 
     #[test]

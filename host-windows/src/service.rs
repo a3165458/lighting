@@ -453,6 +453,7 @@ impl HostService {
                 state: s.state.into(),
             })
             .collect(),
+            host_elevated: displays::process_is_elevated(),
         }
     }
 

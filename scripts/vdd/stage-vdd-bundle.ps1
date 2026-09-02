@@ -18,9 +18,16 @@ try {
     $nefZip = Join-Path $temp 'nefcon.zip'
     Invoke-WebRequest -Uri $NefConURL -OutFile $nefZip -UseBasicParsing
     Expand-Archive -Path $nefZip -DestinationPath $temp -Force
-    $nef = Get-ChildItem -Path $temp -Recurse -Filter 'nefconw.exe' | Select-Object -First 1
-    if (-not $nef) { throw 'nefconw.exe not found in nefcon zip' }
-    Copy-Item $nef.FullName (Join-Path $outDir 'nefconw.exe') -Force
+    $nef = Get-ChildItem -Path $temp -Recurse -Filter 'nefconc.exe' | Select-Object -First 1
+    if (-not $nef) {
+        $nef = Get-ChildItem -Path $temp -Recurse -Filter 'nefconw.exe' | Select-Object -First 1
+    }
+    if (-not $nef) { throw 'nefcon console/window helper not found in nefcon zip' }
+    Copy-Item $nef.FullName (Join-Path $outDir $nef.Name) -Force
+    $win = Get-ChildItem -Path $temp -Recurse -Filter 'nefconw.exe' | Select-Object -First 1
+    if ($win -and $win.Name -ne $nef.Name) {
+        Copy-Item $win.FullName (Join-Path $outDir $win.Name) -Force
+    }
 
     $drvZip = Join-Path $temp 'driver.zip'
     Invoke-WebRequest -Uri $DriverURL -OutFile $drvZip -UseBasicParsing
