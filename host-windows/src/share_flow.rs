@@ -585,4 +585,14 @@ mod tests {
         );
         assert_eq!(strip_electron_ipc_error("仅平板需要虚拟屏"), "仅平板需要虚拟屏");
     }
+
+    #[test]
+    fn tablet_only_user_copy_never_promises_auto_mirror() {
+        let abort = tablet_only_abort_message("未找到虚拟显示设备。");
+        assert!(!abort.contains("自动镜像"));
+        assert!(abort.contains("没有改用镜像"));
+        assert!(!virtual_driver_install_copy(true).contains("自动镜像"));
+        assert!(!share_start_notice(ShareMode::External, true).contains("自动镜像"));
+        assert!(!share_start_notice(ShareMode::External, false).contains("自动镜像"));
+    }
 }

@@ -89,7 +89,7 @@ export function DisplaySettings({
         {isExtend && !hasSecondary && !hasVirtual && (
           <p className="rounded-[var(--radius-control)] bg-warning/10 px-3 py-2 text-sm text-warning">
             {isTabletOnly
-              ? '尚未看到虚拟屏。点「开始共享」会启用驱动；平板连上后再关掉电脑屏（避免本窗口跟着消失）。失败则自动镜像。'
+              ? '尚未看到虚拟屏。点「开始共享」会启用驱动；平板连上后再关掉电脑屏（避免本窗口跟着消失）。仅平板失败不会改用镜像。'
               : '尚未看到虚拟屏。点「开始共享」会自动启用驱动（首次可能需管理员确认），平板连接后会设为平板分辨率。失败则自动镜像，保证能投屏。'}
           </p>
         )}
