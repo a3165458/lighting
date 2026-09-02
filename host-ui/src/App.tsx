@@ -148,6 +148,7 @@ export default function App() {
     sharing: host.sharing,
     bytesSent: host.bytesSent,
     elapsedSecs: host.connectedSecs,
+    phase: host.activityTitle || host.phase,
   }
 
   return (

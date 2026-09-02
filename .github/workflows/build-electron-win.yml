@@ -21,7 +21,21 @@ permissions:
   contents: read
 
 jobs:
+  simulate-share:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: host-windows
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Simulate share policy (no DXGI)
+        run: cargo test --lib
+
   electron-win:
+    needs: simulate-share
     runs-on: windows-latest
     steps:
       - name: Checkout

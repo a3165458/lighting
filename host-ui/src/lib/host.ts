@@ -2,6 +2,12 @@ import type { LightingDesktopApi } from '@/lib/desktop'
 
 export type ShareMode = 'mirror' | 'extend' | 'external'
 
+export type ActivityStep = {
+  id: string
+  label: string
+  state: string
+}
+
 export type HostSettings = {
   selectedDisplay: number
   selectedDevice: number
@@ -76,6 +82,9 @@ export type HostState = {
   hostVersion: string
   appVersion?: string
   bootstrap?: BootstrapStatus
+  activityTitle?: string
+  activityDetail?: string
+  activitySteps?: ActivityStep[]
 }
 
 export type HostSettingsPatch = Partial<{
@@ -165,4 +174,7 @@ export const DISCONNECTED_STATE: HostState = {
   lastError: '',
   hostVersion: '',
   appVersion: '',
+  activityTitle: '',
+  activityDetail: '',
+  activitySteps: [],
 }

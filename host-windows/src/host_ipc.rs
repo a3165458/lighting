@@ -72,6 +72,20 @@ pub struct HostStateDto {
     pub settings: HostSettingsDto,
     pub last_error: String,
     pub host_version: String,
+    #[serde(default)]
+    pub activity_title: String,
+    #[serde(default)]
+    pub activity_detail: String,
+    #[serde(default)]
+    pub activity_steps: Vec<ActivityStepDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityStepDto {
+    pub id: String,
+    pub label: String,
+    pub state: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

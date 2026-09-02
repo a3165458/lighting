@@ -156,8 +156,80 @@ async fn run_session_inner(
     stop: Arc<AtomicBool>,
     controls: Arc<Controls>,
 ) -> Result<()> {
+    let mut req = req;
+    if req.share_mode.uses_virtual_display() {
+        set_status(&status, "准备虚拟屏", "正在检查并启用虚拟显示器…");
+        let mode = req.share_mode;
+        let status_prog = status.clone();
+        let ensure = tokio::task::spawn_blocking(move || {
+            displays::ensure_secondary_display_with_progress(mode, |step| {
+                if let Ok(mut s) = status_prog.lock() {
+                    s.running = true;
+                    s.phase = "准备虚拟屏".into();
+                    s.detail = step.to_string();
+                }
+            })
+        })
+        .await;
+        let ensure_result = match ensure {
+            Ok(inner) => inner,
+            Err(err) => Err(anyhow::anyhow!("启用虚拟屏任务中断: {err:#}")),
+        };
+        let (ensure_ok, ensure_err) = match &ensure_result {
+            Ok(()) => (true, String::new()),
+            Err(err) => (false, format!("{err:#}")),
+        };
+        let list = displays::list_displays().unwrap_or_default();
+        match lighting_host::share_flow::decide_after_virtual_prepare(
+            req.share_mode,
+            ensure_ok,
+            &ensure_err,
+            displays::has_secondary(&list),
+            displays::has_virtual_display(&list),
+        ) {
+            lighting_host::share_flow::VirtualPrepareOutcome::Ready => {
+                if let Some(idx) = displays::pick_display_index(&list, req.share_mode) {
+                    req.display_index = idx;
+                }
+                set_status(&status, "准备虚拟屏", "虚拟屏已就绪，开始等待平板…");
+            }
+            lighting_host::share_flow::VirtualPrepareOutcome::FallbackMirror { reason } => {
+                tracing::warn!("extend falling back to mirror: {reason}");
+                req.share_mode = lighting_host::view::ShareMode::Mirror;
+                let _ = displays::apply_project_mode(lighting_host::view::ShareMode::Mirror);
+                let list = displays::list_displays().unwrap_or_default();
+                if let Some(idx) =
+                    displays::pick_display_index(&list, lighting_host::view::ShareMode::Mirror)
+                {
+                    req.display_index = idx;
+                }
+                set_status(
+                    &status,
+                    "启动中",
+                    format!(
+                        "独立第二屏不可用，已改用镜像主屏。{}",
+                        lighting_host::ui_text::human_last_error(&reason)
+                    ),
+                );
+            }
+            lighting_host::share_flow::VirtualPrepareOutcome::Abort { reason } => {
+                anyhow::bail!(
+                    "{}",
+                    lighting_host::share_flow::tablet_only_abort_message(
+                        &lighting_host::ui_text::human_last_error(&reason)
+                    )
+                );
+            }
+        }
+    } else if let Err(err) = displays::apply_project_mode(req.share_mode) {
+        tracing::warn!("DisplaySwitch failed ({err:#}); continuing with current layout");
+    }
+
     set_status(&status, "启动", "正在枚举显示器");
     let displays = displays::list_displays()?;
+    if let Some(idx) = displays::pick_display_index(&displays, req.share_mode) {
+        req.display_index = idx;
+    }
     let display = displays
         .get(req.display_index)
         .cloned()

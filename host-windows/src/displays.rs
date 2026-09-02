@@ -141,35 +141,57 @@ pub fn pick_virtual(displays: &[DisplayInfo]) -> Option<&DisplayInfo> {
 /// Option B (preferred): LightingIdd — our IddCx UMDF (`Root\LightingIdd`).
 /// Enabling the device makes one monitor arrive (GlideX-class lifecycle).
 /// Legacy fallback: bundled MttVDD + named-pipe SETDISPLAYCOUNT.
-pub fn ensure_secondary_display(_mode: ShareMode) -> Result<()> {
+pub fn ensure_secondary_display(mode: ShareMode) -> Result<()> {
+    ensure_secondary_display_with_progress(mode, |_| {})
+}
+
+pub fn ensure_secondary_display_with_progress(
+    _mode: ShareMode,
+    mut progress: impl FnMut(&str),
+) -> Result<()> {
+    progress("正在检查是否已有扩展屏…");
     let list = list_displays().unwrap_or_default();
-    if has_secondary(&list) {
+    if has_secondary(&list) || has_virtual_display(&list) {
+        progress("已有扩展/虚拟屏，切换到扩展模式…");
         let _ = apply_project_mode(ShareMode::Extend);
         return Ok(());
     }
 
     if find_idd_bundle().is_some() {
+        progress("正在启用 Lighting 虚拟显示驱动（可能弹出管理员确认）…");
         tracing::info!("no secondary; provisioning LightingIdd (IddCx Option B)");
-        match ensure_via_lighting_idd() {
-            Ok(()) => return Ok(()),
-            Err(err) => tracing::warn!("LightingIdd failed ({err:#}); falling back to MttVDD"),
+        match ensure_via_lighting_idd(&mut progress) {
+            Ok(()) => {
+                progress("Lighting 虚拟屏已就绪");
+                return Ok(());
+            }
+            Err(err) => {
+                progress(&format!(
+                    "自有驱动未就绪（{err:#}），改试备用虚拟显示驱动…"
+                ));
+                tracing::warn!("LightingIdd failed ({err:#}); falling back to MttVDD");
+            }
         }
     } else {
         tracing::info!("LightingIdd bundle absent; using legacy MttVDD path");
+        progress("正在启用备用虚拟显示驱动（可能弹出管理员确认）…");
     }
 
     tracing::info!("provisioning bundled MttVDD (legacy fallback)");
     let _ = prepare_vdd_settings(1920, 1080, 60);
 
     if !vdd_pipe_alive() {
+        progress("正在启动虚拟显示驱动服务…");
         let _ = run_vdd_provision(VddProvisionMode::EnableOnly);
         wait_for_vdd_pipe(10);
     }
     if !vdd_pipe_alive() {
+        progress("首次使用需要安装驱动，请在管理员窗口点「是」…");
         run_vdd_provision(VddProvisionMode::Full)?;
         wait_for_vdd_pipe(24);
     }
     if !vdd_pipe_alive() {
+        progress("驱动未响应，正在尝试系统安装通道…");
         let _ = install_virtual_display_driver_winget();
         let _ = run_vdd_provision(VddProvisionMode::Full);
         wait_for_vdd_pipe(16);
@@ -181,11 +203,13 @@ pub fn ensure_secondary_display(_mode: ShareMode) -> Result<()> {
     let _ = run_vdd_provision(VddProvisionMode::EnableOnly);
     wait_for_vdd_pipe(16);
     if vdd_pipe_alive() {
+        progress("正在创建虚拟显示器…");
         let _ = vdd_set_display_count(1);
         wait_for_pipe_reload(20);
     }
 
-    if poll_secondary(40) {
+    if poll_secondary(40, &mut progress) {
+        progress("虚拟屏已出现");
         return Ok(());
     }
 
@@ -194,23 +218,26 @@ pub fn ensure_secondary_display(_mode: ShareMode) -> Result<()> {
     wait_for_vdd_pipe(16);
     let _ = vdd_set_display_count(1);
     wait_for_pipe_reload(24);
-    if poll_secondary(30) {
+    if poll_secondary(30, &mut progress) {
+        progress("虚拟屏已出现");
         return Ok(());
     }
     anyhow::bail!("VDD_NO_MONITOR");
 }
 
-fn ensure_via_lighting_idd() -> Result<()> {
+fn ensure_via_lighting_idd(progress: &mut impl FnMut(&str)) -> Result<()> {
+    progress("正在尝试启用已安装的 Lighting 虚拟屏…");
     let _ = run_idd_provision(IddProvisionMode::EnableOnly);
-    if poll_secondary(12) {
+    if poll_secondary(12, progress) {
         return Ok(());
     }
+    progress("需要安装 Lighting 虚拟显示驱动，请在管理员窗口点「是」…");
     run_idd_provision(IddProvisionMode::Full)?;
-    if poll_secondary(40) {
+    if poll_secondary(40, progress) {
         return Ok(());
     }
     let _ = run_idd_provision(IddProvisionMode::EnableOnly);
-    if poll_secondary(20) {
+    if poll_secondary(20, progress) {
         return Ok(());
     }
     anyhow::bail!("IDD_NO_MONITOR")
@@ -325,12 +352,19 @@ exit 0"#
 }
 
 
-fn poll_secondary(attempts: u32) -> bool {
+fn poll_secondary(attempts: u32, progress: &mut impl FnMut(&str)) -> bool {
     for attempt in 0..attempts {
+        progress(&format!(
+            "正在等待虚拟屏出现（{}/{}）…",
+            attempt + 1,
+            attempts
+        ));
         std::thread::sleep(Duration::from_millis(if attempt < 8 { 800 } else { 500 }));
-        let _ = apply_project_mode(ShareMode::Extend);
+        if attempt % 4 == 0 {
+            let _ = apply_project_mode(ShareMode::Extend);
+        }
         let list = list_displays().unwrap_or_default();
-        if has_secondary(&list) {
+        if has_secondary(&list) || has_virtual_display(&list) {
             return true;
         }
     }
