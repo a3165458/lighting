@@ -365,6 +365,11 @@ fn run_provision_script(
     tracing::info!(elevated, mode, "launching virtual display provision");
     if elevated {
         run_provision_already_admin(script, bundle, mode, &result_file)?;
+    } else if running_ipc_only() {
+        anyhow::bail!(
+            "{}",
+            lighting_host::share_flow::ProvisionUacError::HiddenHost.code()
+        );
     } else {
         run_provision_with_uac(script, bundle, mode, &result_file)?;
     }
@@ -424,6 +429,19 @@ fn wait_child_with_timeout(child: &mut std::process::Child, timeout: Duration) -
     }
 }
 
+fn running_ipc_only() -> bool {
+    std::env::args().any(|a| a == "--ipc-only" || a == "--headless")
+}
+
+fn hresult_to_win32(err: &windows::core::Error) -> u32 {
+    let hr = err.code().0 as u32;
+    if (hr & 0xFFFF_0000) == 0x8007_0000 {
+        hr & 0xFFFF
+    } else {
+        hr
+    }
+}
+
 fn run_provision_with_uac(
     script: &std::path::Path,
     bundle: &std::path::Path,
@@ -441,7 +459,7 @@ fn run_provision_with_uac(
     let args = windows::core::HSTRING::from(params.as_str());
     let dir = windows::core::HSTRING::from(bundle.to_string_lossy().as_ref());
     let verb = windows::core::w!("runas");
-    unsafe {
+    let (shellexecute_ok, win32_error, process_valid, timed_out, wait_signaled) = unsafe {
         let mut info = SHELLEXECUTEINFOW {
             cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
             fMask: SEE_MASK_NOCLOSEPROCESS,
@@ -452,25 +470,38 @@ fn run_provision_with_uac(
             nShow: SW_SHOWNORMAL.0,
             ..Default::default()
         };
-        ShellExecuteExW(&mut info).context("UAC_DENIED")?;
-        if info.hProcess.is_invalid() {
-            anyhow::bail!("UAC_CANCELLED");
+        match ShellExecuteExW(&mut info) {
+            Ok(()) => {
+                let process_valid = !info.hProcess.is_invalid();
+                if !process_valid {
+                    (true, 0, false, false, false)
+                } else {
+                    let wait = WaitForSingleObject(info.hProcess, PROVISION_TIMEOUT.as_millis() as u32);
+                    if wait.0 == WAIT_TIMEOUT.0 {
+                        let _ = TerminateProcess(info.hProcess, 1);
+                        let _ = CloseHandle(info.hProcess);
+                        (true, 0, true, true, false)
+                    } else if wait != WAIT_OBJECT_0 {
+                        let _ = CloseHandle(info.hProcess);
+                        (true, 0, true, false, false)
+                    } else {
+                        let _ = CloseHandle(info.hProcess);
+                        (true, 0, true, false, true)
+                    }
+                }
+            }
+            Err(err) => (false, hresult_to_win32(&err), false, false, false),
         }
-        let wait = WaitForSingleObject(info.hProcess, PROVISION_TIMEOUT.as_millis() as u32);
-        // WAIT_TIMEOUT is WIN32_ERROR; WaitForSingleObject returns WAIT_EVENT.
-        if wait.0 == WAIT_TIMEOUT.0 {
-            let _ = TerminateProcess(info.hProcess, 1);
-            let _ = CloseHandle(info.hProcess);
-            anyhow::bail!("UAC_TIMEOUT");
-        }
-        if wait != WAIT_OBJECT_0 {
-            let _ = CloseHandle(info.hProcess);
-            anyhow::bail!("UAC_CANCELLED");
-        }
-        let _ = CloseHandle(info.hProcess);
-    }
-    if !result_file.is_file() {
-        anyhow::bail!("UAC_CANCELLED");
+    };
+    if let Err(kind) = lighting_host::share_flow::classify_provision_uac(
+        shellexecute_ok,
+        win32_error,
+        process_valid,
+        timed_out,
+        wait_signaled,
+        result_file.is_file(),
+    ) {
+        anyhow::bail!("{}", kind.code());
     }
     Ok(())
 }

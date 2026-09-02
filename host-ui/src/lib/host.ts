@@ -128,6 +128,19 @@ export function hasHostBridge(): boolean {
   return typeof window !== 'undefined' && Boolean(window.lightingHost)
 }
 
+/** Hide lastError when usbHint / activity already contain the abort paragraph. */
+export function shouldShowSeparateLastError(
+  lastError: string | undefined,
+  alreadyShown: Array<string | undefined>,
+): boolean {
+  const last = (lastError || '').trim()
+  if (!last) return false
+  return !alreadyShown.some((shown) => {
+    const text = (shown || '').trim()
+    return text.length > 0 && (text === last || text.includes(last) || last.includes(text))
+  })
+}
+
 export const SHARE_MODE_OPTIONS = [
   {
     id: 'mirror',

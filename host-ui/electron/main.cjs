@@ -149,7 +149,10 @@ ipcMain.handle('host:getState', async () => {
 })
 
 ipcMain.handle('host:refresh', async () => host.invoke('refresh'))
-ipcMain.handle('host:startShare', async () => host.invoke('startShare'))
+ipcMain.handle('host:startShare', async () => {
+  await host.ensureElevatedForVirtualShare()
+  return host.invoke('startShare')
+})
 ipcMain.handle('host:stopShare', async () => host.invoke('stopShare'))
 ipcMain.handle('host:setSettings', async (_e, patch) => host.invoke('setSettings', patch))
 ipcMain.handle('host:installClient', async () => host.invoke('installClient'))
