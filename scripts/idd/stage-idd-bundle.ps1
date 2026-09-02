@@ -40,11 +40,18 @@ try {
     $nefZip = Join-Path $temp 'nefcon.zip'
     Invoke-WebRequest -Uri $NefConURL -OutFile $nefZip -UseBasicParsing
     Expand-Archive -Path $nefZip -DestinationPath $temp -Force
-    $nef = Get-ChildItem -Path $temp -Recurse -Filter 'nefconw.exe' | Select-Object -First 1
+    $nef = Get-ChildItem -Path $temp -Recurse -Filter 'nefconc.exe' | Select-Object -First 1
+    if (-not $nef) {
+        $nef = Get-ChildItem -Path $temp -Recurse -Filter 'nefconw.exe' | Select-Object -First 1
+    }
     if ($nef) {
-        Copy-Item $nef.FullName (Join-Path $outDir 'nefconw.exe') -Force
+        Copy-Item $nef.FullName (Join-Path $outDir $nef.Name) -Force
     } else {
-        Write-Warning 'nefconw.exe not found in nefcon zip — IDD install helper omitted'
+        Write-Warning 'nefconc/nefconw not found in nefcon zip — IDD install helper omitted'
+    }
+    $win = Get-ChildItem -Path $temp -Recurse -Filter 'nefconw.exe' | Select-Object -First 1
+    if ($win -and (-not $nef -or $win.Name -ne $nef.Name)) {
+        Copy-Item $win.FullName (Join-Path $outDir $win.Name) -Force
     }
 } catch {
     Write-Warning "nefcon download skipped: $($_.Exception.Message)"

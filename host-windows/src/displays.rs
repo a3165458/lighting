@@ -11,17 +11,23 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use windows::Win32::Foundation::{BOOL, LPARAM, RECT};
+use windows::Win32::Foundation::{BOOL, CloseHandle, HANDLE, LPARAM, RECT, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1};
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, DISPLAY_DEVICEW, HDC, HMONITOR,
     MONITORINFO,
 };
+use windows::Win32::Security::{
+    GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+};
 use windows::Win32::System::Power::{
     SetThreadExecutionState, ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED,
 };
-use windows::Win32::UI::WindowsAndMessaging::MONITORINFOF_PRIMARY;
-use windows::core::PCWSTR;
+use windows::Win32::System::Threading::{
+    GetCurrentProcess, OpenProcessToken, TerminateProcess, WaitForSingleObject,
+};
+use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
+use windows::Win32::UI::WindowsAndMessaging::{MONITORINFOF_PRIMARY, SW_SHOWNORMAL};
 
 use lighting_host::view::{looks_virtual_display, ShareMode};
 
@@ -30,6 +36,28 @@ const VDD_PIPE: &str = r"\\.\pipe\MTTVirtualDisplayPipe";
 /// Official MttVDD default when registry `VDDPATH` is absent.
 const VDD_SETTINGS_DEFAULT: &str = r"C:\VirtualDisplayDriver\vdd_settings.xml";
 const VDD_REG_KEY: &str = r"HKLM:\SOFTWARE\MikeTheTech\VirtualDisplayDriver";
+const PROVISION_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// True when this process already has an elevated token (run as admin).
+pub fn process_is_elevated() -> bool {
+    unsafe {
+        let mut token = HANDLE::default();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+            return false;
+        }
+        let mut elev = TOKEN_ELEVATION::default();
+        let mut returned = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(std::ptr::addr_of_mut!(elev).cast()),
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        );
+        let _ = CloseHandle(token);
+        ok.is_ok() && elev.TokenIsElevated != 0
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct DisplayInfo {
@@ -158,7 +186,9 @@ pub fn ensure_secondary_display_with_progress(
     }
 
     if find_idd_bundle().is_some() {
-        progress("正在启用 Lighting 虚拟显示驱动（可能弹出管理员确认）…");
+        progress(lighting_host::share_flow::virtual_driver_install_copy(
+            process_is_elevated(),
+        ));
         tracing::info!("no secondary; provisioning LightingIdd (IddCx Option B)");
         match ensure_via_lighting_idd(&mut progress) {
             Ok(()) => {
@@ -174,7 +204,9 @@ pub fn ensure_secondary_display_with_progress(
         }
     } else {
         tracing::info!("LightingIdd bundle absent; using legacy MttVDD path");
-        progress("正在启用备用虚拟显示驱动（可能弹出管理员确认）…");
+        progress(lighting_host::share_flow::virtual_driver_install_copy(
+            process_is_elevated(),
+        ));
     }
 
     tracing::info!("provisioning bundled MttVDD (legacy fallback)");
@@ -186,7 +218,9 @@ pub fn ensure_secondary_display_with_progress(
         wait_for_vdd_pipe(10);
     }
     if !vdd_pipe_alive() {
-        progress("首次使用需要安装驱动，请在管理员窗口点「是」…");
+        progress(lighting_host::share_flow::virtual_driver_install_copy(
+            process_is_elevated(),
+        ));
         run_vdd_provision(VddProvisionMode::Full)?;
         wait_for_vdd_pipe(24);
     }
@@ -231,7 +265,9 @@ fn ensure_via_lighting_idd(progress: &mut impl FnMut(&str)) -> Result<()> {
     if poll_secondary(12, progress) {
         return Ok(());
     }
-    progress("需要安装 Lighting 虚拟显示驱动，请在管理员窗口点「是」…");
+    progress(lighting_host::share_flow::virtual_driver_install_copy(
+        process_is_elevated(),
+    ));
     run_idd_provision(IddProvisionMode::Full)?;
     if poll_secondary(40, progress) {
         return Ok(());
@@ -301,54 +337,141 @@ fn run_idd_provision(mode: IddProvisionMode) -> Result<()> {
         IddProvisionMode::Full => "Full",
         IddProvisionMode::EnableOnly => "EnableOnly",
     };
-    run_elevated_provision_script(&script, &bundle, mode_s)
+    run_provision_script(&script, &bundle, mode_s)
 }
 
-fn run_elevated_provision_script(
+/// Installer launcher.
+///
+/// `lighting-host --ipc-only` has no window. `Start-Process -Verb RunAs
+/// -WindowStyle Hidden` from that process either never shows UAC, or (when
+/// already admin) hides the installer until it appears hung. Run in-process
+/// when elevated; otherwise ShellExecute "runas" with a visible PowerShell.
+fn run_provision_script(
     script: &std::path::Path,
     bundle: &std::path::Path,
     mode: &str,
 ) -> Result<()> {
     let result_file = std::env::temp_dir().join(format!(
-        "lighting-idd-{}.txt",
+        "lighting-drv-{}.txt",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis())
             .unwrap_or(0)
     ));
-    let bundle_s = bundle.to_string_lossy().replace('\'', "''");
-    let script_s = script.to_string_lossy().replace('\'', "''");
-    let result_s = result_file.to_string_lossy().replace('\'', "''");
-    let ps = format!(
-        r#"$ErrorActionPreference='Stop'
-$rf='{result_s}'
-$bd='{bundle_s}'
-$scr='{script_s}'
-$m='{mode}'
-$p=Start-Process powershell.exe -Verb RunAs -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$scr,'-BundleDir',$bd,'-ResultFile',$rf,'-Mode',$m) -PassThru -Wait -WindowStyle Hidden
-if($null -eq $p){{Set-Content -Path $rf -Value 'FAIL|UAC_DENIED' -Encoding ASCII -NoNewline; exit 1}}
-if(-not (Test-Path $rf)){{Set-Content -Path $rf -Value 'FAIL|UAC_CANCELLED' -Encoding ASCII -NoNewline; exit 1}}
-exit 0"#
-    );
-    let status = Command::new("powershell.exe")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &ps])
-        .creation_flags(CREATE_NO_WINDOW)
-        .status()
-        .context("IddCx provision launcher failed")?;
-    if !status.success() {
-        anyhow::bail!("IDD_LAUNCHER_FAILED");
+    let _ = std::fs::remove_file(&result_file);
+
+    let elevated = process_is_elevated();
+    tracing::info!(elevated, mode, "launching virtual display provision");
+    if elevated {
+        run_provision_already_admin(script, bundle, mode, &result_file)?;
+    } else {
+        run_provision_with_uac(script, bundle, mode, &result_file)?;
     }
+
     let raw = std::fs::read_to_string(&result_file).unwrap_or_default();
     let _ = std::fs::remove_file(&result_file);
     let line = raw.trim();
     if line.starts_with("OK|") {
-        tracing::info!("idd provision ok: {line}");
+        tracing::info!("driver provision ok: {line}");
         return Ok(());
     }
     if line.starts_with("FAIL|") {
         anyhow::bail!("{}", line.trim_start_matches("FAIL|"));
     }
-    anyhow::bail!("IDD_UNKNOWN_RESULT")
+    anyhow::bail!("DRIVER_UNKNOWN_RESULT")
+}
+
+fn run_provision_already_admin(
+    script: &std::path::Path,
+    bundle: &std::path::Path,
+    mode: &str,
+    result_file: &std::path::Path,
+) -> Result<()> {
+    let mut child = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            &script.to_string_lossy(),
+            "-BundleDir",
+            &bundle.to_string_lossy(),
+            "-ResultFile",
+            &result_file.to_string_lossy(),
+            "-Mode",
+            mode,
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .context("DRIVER_LAUNCHER_FAILED")?;
+    wait_child_with_timeout(&mut child, PROVISION_TIMEOUT)
+}
+
+fn wait_child_with_timeout(child: &mut std::process::Child, timeout: Duration) -> Result<()> {
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_status)) => return Ok(()),
+            Ok(None) if start.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                anyhow::bail!("INSTALL_TIMEOUT");
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(150)),
+            Err(err) => anyhow::bail!("DRIVER_LAUNCHER_FAILED:{err}"),
+        }
+    }
+}
+
+fn run_provision_with_uac(
+    script: &std::path::Path,
+    bundle: &std::path::Path,
+    mode: &str,
+    result_file: &std::path::Path,
+) -> Result<()> {
+    let params = format!(
+        "-NoProfile -ExecutionPolicy Bypass -File \"{}\" -BundleDir \"{}\" -ResultFile \"{}\" -Mode {}",
+        script.display(),
+        bundle.display(),
+        result_file.display(),
+        mode
+    );
+    let file = windows::core::HSTRING::from("powershell.exe");
+    let args = windows::core::HSTRING::from(params.as_str());
+    let dir = windows::core::HSTRING::from(bundle.to_string_lossy().as_ref());
+    let verb = windows::core::w!("runas");
+    unsafe {
+        let mut info = SHELLEXECUTEINFOW {
+            cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: SEE_MASK_NOCLOSEPROCESS,
+            lpVerb: verb,
+            lpFile: windows::core::PCWSTR(file.as_ptr()),
+            lpParameters: windows::core::PCWSTR(args.as_ptr()),
+            lpDirectory: windows::core::PCWSTR(dir.as_ptr()),
+            nShow: SW_SHOWNORMAL.0,
+            ..Default::default()
+        };
+        ShellExecuteExW(&mut info).context("UAC_DENIED")?;
+        if info.hProcess.is_invalid() {
+            anyhow::bail!("UAC_CANCELLED");
+        }
+        let wait = WaitForSingleObject(info.hProcess, PROVISION_TIMEOUT.as_millis() as u32);
+        // WAIT_TIMEOUT is WIN32_ERROR; WaitForSingleObject returns WAIT_EVENT.
+        if wait.0 == WAIT_TIMEOUT.0 {
+            let _ = TerminateProcess(info.hProcess, 1);
+            let _ = CloseHandle(info.hProcess);
+            anyhow::bail!("UAC_TIMEOUT");
+        }
+        if wait != WAIT_OBJECT_0 {
+            let _ = CloseHandle(info.hProcess);
+            anyhow::bail!("UAC_CANCELLED");
+        }
+        let _ = CloseHandle(info.hProcess);
+    }
+    if !result_file.is_file() {
+        anyhow::bail!("UAC_CANCELLED");
+    }
+    Ok(())
 }
 
 
@@ -426,51 +549,11 @@ fn run_vdd_provision(mode: VddProvisionMode) -> Result<()> {
     if !script.is_file() {
         anyhow::bail!("VDD_SCRIPT_MISSING");
     }
-    let result_file = std::env::temp_dir().join(format!(
-        "lighting-vdd-{}.txt",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0)
-    ));
     let mode_s = match mode {
         VddProvisionMode::Full => "Full",
         VddProvisionMode::EnableOnly => "EnableOnly",
     };
-    let bundle_s = bundle.to_string_lossy().replace('\'', "''");
-    let script_s = script.to_string_lossy().replace('\'', "''");
-    let result_s = result_file.to_string_lossy().replace('\'', "''");
-    let ps = format!(
-        r#"$ErrorActionPreference='Stop'
-$rf='{result_s}'
-$bd='{bundle_s}'
-$scr='{script_s}'
-$m='{mode_s}'
-$p=Start-Process powershell.exe -Verb RunAs -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$scr,'-BundleDir',$bd,'-ResultFile',$rf,'-Mode',$m) -PassThru -Wait -WindowStyle Hidden
-if($null -eq $p){{Set-Content -Path $rf -Value 'FAIL|UAC_DENIED' -Encoding ASCII -NoNewline; exit 1}}
-if(-not (Test-Path $rf)){{Set-Content -Path $rf -Value 'FAIL|UAC_CANCELLED' -Encoding ASCII -NoNewline; exit 1}}
-exit 0"#
-    );
-    let status = Command::new("powershell.exe")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &ps])
-        .creation_flags(CREATE_NO_WINDOW)
-        .status()
-        .context("VDD provision launcher failed")?;
-    if !status.success() {
-        anyhow::bail!("VDD_LAUNCHER_FAILED");
-    }
-    let raw = std::fs::read_to_string(&result_file).unwrap_or_default();
-    let _ = std::fs::remove_file(&result_file);
-    let line = raw.trim();
-    if line.starts_with("OK|") {
-        tracing::info!("vdd provision ok: {line}");
-        return Ok(());
-    }
-    if line.starts_with("FAIL|") {
-        let code = line.trim_start_matches("FAIL|");
-        anyhow::bail!("{}", code);
-    }
-    anyhow::bail!("VDD_UNKNOWN_RESULT")
+    run_provision_script(&script, &bundle, mode_s)
 }
 
 fn wait_for_vdd_pipe(attempts: u32) {

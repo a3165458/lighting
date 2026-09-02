@@ -1,5 +1,5 @@
 const net = require('node:net')
-const { spawn, execFile } = require('node:child_process')
+const { spawn, execFile, execFileSync } = require('node:child_process')
 const fs = require('node:fs')
 const path = require('node:path')
 const { promisify } = require('node:util')
@@ -7,6 +7,16 @@ const { app } = require('electron')
 const bootstrap = require('./bootstrap.cjs')
 
 const execFileAsync = promisify(execFile)
+
+function isElevated() {
+  if (process.platform !== 'win32') return false
+  try {
+    execFileSync('net', ['session'], { windowsHide: true, stdio: 'ignore', timeout: 4000 })
+    return true
+  } catch {
+    return false
+  }
+}
 
 const DEFAULT_PORT = 17401
 const PORT_ENV = 'LIGHTING_IPC_PORT'
@@ -127,6 +137,14 @@ class HostIpcClient {
   }
 
   async startHostIfNeeded() {
+    if (this.child && !this.child.killed) return
+    // Admin UI must not keep talking to a leftover non-elevated host on 17401
+    // (that process cannot show UAC, so driver install looks frozen).
+    if (isElevated()) {
+      await this.killStrayHosts()
+      await this.spawnBundledHost()
+      return
+    }
     if (await this.canConnectOnce(150)) return
     await this.spawnBundledHost()
   }
@@ -315,6 +333,7 @@ class HostIpcClient {
         lastError: String(err.message || err),
         hostVersion: '',
         appVersion: app.getVersion(),
+        hostElevated: false,
       }
     }
   }

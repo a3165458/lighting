@@ -299,23 +299,27 @@ pub fn human_vdd_error(raw: &str) -> Option<String> {
     let code_upper = code.to_uppercase();
 
     let msg = if code_upper.contains("UAC_DENIED") {
-        "需要管理员权限才能安装虚拟显示驱动。请在弹出的 UAC 窗口点「是」。"
+        "需要管理员权限才能安装虚拟显示驱动。未提权时请在蓝底 UAC 窗口点「是」；已用管理员运行则不会再弹窗。"
     } else if code_upper.contains("VDD_BUNDLE_MISSING") || code_upper.contains("BUNDLE_INF_MISSING") {
         "安装包缺少虚拟显示驱动文件。请从 GitHub 下载最新版 Lighting 便携版/安装包。"
     } else if code_upper.contains("VDD_SCRIPT_MISSING") {
         "虚拟显示驱动安装脚本缺失。请重新下载完整安装包。"
     } else if code_upper.contains("DRIVER_INSTALL_FAILED") {
-        "虚拟显示驱动安装失败。请右键 Lighting 选「以管理员身份运行」后再试；仍失败可到 GitHub 手动安装 Virtual Display Driver。"
+        "虚拟显示驱动安装失败。请完全退出后右键 Lighting 选「以管理员身份运行」再试；仍失败可到 GitHub 手动安装 Virtual Display Driver。"
     } else if code_upper.contains("VDD_PIPE_DOWN") {
-        "虚拟显示驱动未响应。请完全退出 Lighting 后重试；若刚点过 UAC「是」，请等几秒再点「开始共享」。"
+        "虚拟显示驱动未响应。请完全退出 Lighting 后以管理员身份运行再试（已是管理员时不会再弹窗）。"
     } else if code_upper.contains("IDD_NO_MONITOR") || code_upper.contains("BUNDLE_DLL_MISSING") {
-        "Lighting 自有虚拟显示驱动未能创建扩展屏。请在弹出的管理员窗口点「是」；开发机还需测试签名。"
+        "Lighting 自有虚拟显示驱动未能创建扩展屏。请完全退出后以管理员运行再试；开发机还需测试签名。"
     } else if code_upper.contains("DRIVER_SIGNATURE") {
         "虚拟显示驱动签名不被系统接受。开发请开 testsigning；发布需 Attestation 签名。"
-    } else if code_upper.contains("VDD_NO_MONITOR") || code_upper.contains("DEVICE_STILL_MISSING") {
-        "虚拟屏尚未出现。请以管理员身份运行后再试，并在 UAC 窗口点「是」。"
+    } else if code_upper.contains("VDD_NO_MONITOR") {
+        "虚拟屏尚未出现。请完全退出 Lighting 后以管理员身份运行再试（已是管理员时不会再弹窗）。"
     } else if code_upper.contains("DEVICE_NOT_FOUND") || code_upper.contains("DEVICE_STILL_MISSING") {
-        "未找到虚拟显示设备。请在 UAC 弹窗点「是」允许安装驱动后重试。"
+        "未找到虚拟显示设备。请完全退出后以管理员身份运行再试。"
+    } else if code_upper.contains("UAC_TIMEOUT") {
+        "等了很久也没有管理员确认窗口。请完全退出 Lighting，右键选「以管理员身份运行」后再点开始共享（已是管理员时不会再弹窗）。"
+    } else if code_upper.contains("INSTALL_TIMEOUT") {
+        "驱动安装超时。请完全退出 Lighting 后以管理员身份运行再试。"
     } else if code_upper.contains("UAC_CANCELLED") {
         "已取消管理员授权。扩展屏需要安装虚拟显示驱动，请在弹窗中点「是」。"
     } else if code_upper.contains("ACCESS_DENIED") {
@@ -325,9 +329,9 @@ pub fn human_vdd_error(raw: &str) -> Option<String> {
     } else if code_upper.contains("BUNDLE_DIR_MISSING") {
         "找不到虚拟显示驱动目录。请重新下载完整安装包。"
     } else if code_upper.contains("UNEXPECTED") || code_upper.starts_with("ERR_") {
-        "虚拟显示驱动安装遇到未知错误。请右键 Lighting「以管理员身份运行」；仍失败可到 GitHub 手动安装 Virtual Display Driver。"
-    } else if code_upper.contains("VDD_LAUNCHER_FAILED") || code_upper.contains("VDD_UNKNOWN_RESULT") {
-        "无法启动虚拟显示驱动安装程序。请用管理员身份运行 Lighting。"
+        "虚拟显示驱动安装遇到未知错误。请完全退出后以管理员身份运行 Lighting；仍失败可到 GitHub 手动安装 Virtual Display Driver。"
+    } else if code_upper.contains("LAUNCHER_FAILED") || code_upper.contains("UNKNOWN_RESULT") {
+        "无法启动虚拟显示驱动安装程序。请完全退出后以管理员身份运行 Lighting。"
     } else if upper.contains("静默安装")
         || upper.contains("NEFCON")
         || upper.contains("EXITCODE")
@@ -540,8 +544,11 @@ mod tests {
             "画面已自动恢复"
         );
         assert_eq!(
-            human_detail_text("准备虚拟屏", "正在启用虚拟显示驱动（可能弹出管理员确认）…"),
-            "正在启用虚拟显示驱动（可能弹出管理员确认）…"
+            human_detail_text(
+                "准备虚拟屏",
+                "已是管理员，正在直接安装虚拟显示驱动（不会再弹出确认窗口）…"
+            ),
+            "已是管理员，正在直接安装虚拟显示驱动（不会再弹出确认窗口）…"
         );
     }
 
@@ -560,6 +567,9 @@ mod tests {
         assert!(human_vdd_error("UNEXPECTED").unwrap().contains("未知错误"));
         assert!(human_vdd_error("UAC_CANCELLED").unwrap().contains("取消"));
         assert!(human_vdd_error("FAIL|UAC_DENIED").unwrap().contains("管理员"));
+        assert!(human_vdd_error("UAC_TIMEOUT").unwrap().contains("以管理员身份运行"));
+        assert!(human_vdd_error("INSTALL_TIMEOUT").unwrap().contains("超时"));
+        assert!(human_vdd_error("DRIVER_LAUNCHER_FAILED").unwrap().contains("无法启动"));
         assert!(human_last_error("VDD_BUNDLE_MISSING").contains("缺少"));
         assert!(looks_like_bind_or_port("connection refused"));
         assert!(looks_technical("adb reverse tcp:17400"));

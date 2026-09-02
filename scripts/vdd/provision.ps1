@@ -143,7 +143,10 @@ function Install-FromBundle([string]$Dir) {
     if (-not $inf) { throw 'BUNDLE_INF_MISSING' }
 
     $infDir = $inf.DirectoryName
-    $nef = Get-ChildItem -Path $Dir -Recurse -Filter 'nefconw.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+    $nef = Get-ChildItem -Path $Dir -Recurse -Filter 'nefconc.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $nef) {
+        $nef = Get-ChildItem -Path $Dir -Recurse -Filter 'nefconw.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+    }
 
     $cat = Get-ChildItem -Path $infDir -Filter '*.cat' -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($cat) {

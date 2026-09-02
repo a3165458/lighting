@@ -78,6 +78,8 @@ pub struct HostStateDto {
     pub activity_detail: String,
     #[serde(default)]
     pub activity_steps: Vec<ActivityStepDto>,
+    #[serde(default)]
+    pub host_elevated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -162,10 +164,12 @@ mod tests {
         let state = HostStateDto {
             sharing: true,
             usb_hint: "ok".into(),
+            host_elevated: true,
             ..Default::default()
         };
         let json = serde_json::to_string(&state).unwrap();
         assert!(json.contains("\"usbHint\""));
         assert!(json.contains("\"sharing\":true"));
+        assert!(json.contains("\"hostElevated\":true"));
     }
 }

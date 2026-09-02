@@ -85,6 +85,7 @@ export type HostState = {
   activityTitle?: string
   activityDetail?: string
   activitySteps?: ActivityStep[]
+  hostElevated?: boolean
 }
 
 export type HostSettingsPatch = Partial<{
@@ -177,4 +178,5 @@ export const DISCONNECTED_STATE: HostState = {
   activityTitle: '',
   activityDetail: '',
   activitySteps: [],
+  hostElevated: undefined,
 }
