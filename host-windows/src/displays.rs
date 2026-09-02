@@ -28,6 +28,7 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
 use windows::Win32::UI::WindowsAndMessaging::{MONITORINFOF_PRIMARY, SW_SHOWNORMAL};
+use windows::core::PCWSTR;
 
 use lighting_host::view::{looks_virtual_display, ShareMode};
 
