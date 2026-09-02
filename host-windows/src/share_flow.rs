@@ -53,6 +53,96 @@ pub fn virtual_driver_install_copy(already_admin: bool) -> &'static str {
     }
 }
 
+/// First-line notice when the user clicks 开始共享.
+pub fn share_start_notice(mode: ShareMode, already_admin: bool) -> String {
+    if mode.blanks_pc_monitor() {
+        if already_admin {
+            "正在启用虚拟屏。已是管理员，不会再弹出确认窗口。".into()
+        } else {
+            "正在启用虚拟屏。当前步骤会显示在上方；请留意管理员确认窗口。".into()
+        }
+    } else if mode.uses_virtual_display() {
+        if already_admin {
+            "正在启用独立第二屏。已是管理员，不会再弹出确认窗口。".into()
+        } else {
+            "正在启用独立第二屏（虚拟显示器）…".into()
+        }
+    } else {
+        "正在开始镜像投屏…".into()
+    }
+}
+
+/// Hide `last_error` when usbHint / activity already show the same abort copy.
+pub fn should_show_separate_last_error(last_error: &str, already_shown: &[&str]) -> bool {
+    let last = last_error.trim();
+    if last.is_empty() {
+        return false;
+    }
+    !already_shown.iter().any(|shown| {
+        let shown = shown.trim();
+        !shown.is_empty() && (shown == last || shown.contains(last) || last.contains(shown))
+    })
+}
+
+/// Outcome of an unelevated provision launch (UAC / ShellExecute).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProvisionUacError {
+    Cancelled,
+    Timeout,
+    NoResult,
+    AccessDenied,
+    ShellExecuteFailed,
+    WaitFailed,
+    HiddenHost,
+}
+
+impl ProvisionUacError {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Cancelled => "UAC_CANCELLED",
+            Self::Timeout => "UAC_TIMEOUT",
+            Self::NoResult => "UAC_NO_RESULT",
+            Self::AccessDenied => "ACCESS_DENIED",
+            Self::ShellExecuteFailed => "SHELLEXECUTE_FAILED",
+            Self::WaitFailed => "UAC_WAIT_FAILED",
+            Self::HiddenHost => "UAC_HIDDEN_HOST",
+        }
+    }
+}
+
+/// Classify a UAC / ShellExecute launch. A missing result file is never "cancelled".
+pub fn classify_provision_uac(
+    shellexecute_ok: bool,
+    win32_error: u32,
+    process_valid: bool,
+    timed_out: bool,
+    wait_signaled: bool,
+    result_file_present: bool,
+) -> Result<(), ProvisionUacError> {
+    const ERROR_ACCESS_DENIED: u32 = 5;
+    const ERROR_CANCELLED: u32 = 1223;
+    if !shellexecute_ok {
+        return Err(match win32_error {
+            ERROR_CANCELLED => ProvisionUacError::Cancelled,
+            ERROR_ACCESS_DENIED => ProvisionUacError::AccessDenied,
+            _ => ProvisionUacError::ShellExecuteFailed,
+        });
+    }
+    if !process_valid {
+        return Err(ProvisionUacError::ShellExecuteFailed);
+    }
+    if timed_out {
+        return Err(ProvisionUacError::Timeout);
+    }
+    if !wait_signaled {
+        return Err(ProvisionUacError::WaitFailed);
+    }
+    if !result_file_present {
+        return Err(ProvisionUacError::NoResult);
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivityStage {
     Idle,
@@ -73,7 +163,9 @@ pub fn activity_stage(phase: &str) -> ActivityStage {
         "已连接" | "编码" | "回退" | "共享中" => ActivityStage::Streaming,
         "仅平板" => ActivityStage::BlankPc,
         "独立第二屏" | "适配平板" => ActivityStage::SetTabletMode,
-        "准备虚拟屏" | "启用驱动" | "启动" | "启动中" => ActivityStage::PrepareVirtual,
+        "准备虚拟屏" | "启用驱动" | "启动" | "启动中" => {
+            ActivityStage::PrepareVirtual
+        }
         "等待设备" | "监听" | "USB" | "USB 警告" | "等待" => ActivityStage::WaitTablet,
         _ => {
             if phase.contains("虚拟") {
@@ -189,16 +281,10 @@ pub fn activity_steps(mode: ShareMode, phase: &str, running: bool) -> Vec<Activi
 pub fn simulated_tablet_only_timeline() -> Vec<(&'static str, &'static str)> {
     vec![
         ("准备虚拟屏", "正在检查是否已有扩展屏…"),
-        (
-            "准备虚拟屏",
-            "正在启用虚拟显示驱动（可能弹出管理员确认）…",
-        ),
+        ("准备虚拟屏", "正在启用虚拟显示驱动（可能弹出管理员确认）…"),
         ("准备虚拟屏", "正在等待虚拟屏出现…"),
         ("等待设备", "请在平板上打开 Lighting 并连接"),
-        (
-            "独立第二屏",
-            "正在把虚拟屏设为平板分辨率 1920×1200",
-        ),
+        ("独立第二屏", "正在把虚拟屏设为平板分辨率 1920×1200"),
         ("仅平板", "正在关闭电脑屏（Win+P 仅第二屏幕）…"),
         ("编码", "正在推流"),
     ]
@@ -210,30 +296,20 @@ mod tests {
 
     #[test]
     fn tablet_only_never_falls_back_to_mirror() {
-        let out = decide_after_virtual_prepare(
-            ShareMode::External,
-            false,
-            "UAC_CANCELLED",
-            false,
-            false,
-        );
+        let out =
+            decide_after_virtual_prepare(ShareMode::External, false, "UAC_CANCELLED", false, false);
         assert!(
             matches!(out, VirtualPrepareOutcome::Abort { .. }),
             "{out:?}"
         );
-        let out = decide_after_virtual_prepare(
-            ShareMode::External,
-            true,
-            "",
-            false,
-            false,
-        );
+        let out = decide_after_virtual_prepare(ShareMode::External, true, "", false, false);
         assert!(matches!(out, VirtualPrepareOutcome::Abort { .. }));
     }
 
     #[test]
     fn extend_may_fall_back_to_mirror() {
-        let out = decide_after_virtual_prepare(ShareMode::Extend, false, "VDD_PIPE_DOWN", false, false);
+        let out =
+            decide_after_virtual_prepare(ShareMode::Extend, false, "VDD_PIPE_DOWN", false, false);
         assert!(matches!(out, VirtualPrepareOutcome::FallbackMirror { .. }));
     }
 
@@ -266,10 +342,7 @@ mod tests {
                 steps.iter().any(|s| s.id == "blank"),
                 "missing blank step at {phase}"
             );
-            assert!(
-                !steps.iter().any(|s| s.label.contains("镜像")),
-                "{phase}"
-            );
+            assert!(!steps.iter().any(|s| s.label.contains("镜像")), "{phase}");
         }
     }
 
@@ -284,11 +357,17 @@ mod tests {
         assert_eq!(wait[1].state, "current");
 
         let blank = activity_steps(ShareMode::External, "仅平板", true);
-        assert_eq!(blank.iter().find(|s| s.id == "blank").unwrap().state, "current");
+        assert_eq!(
+            blank.iter().find(|s| s.id == "blank").unwrap().state,
+            "current"
+        );
 
         let stream = activity_steps(ShareMode::External, "编码", true);
         assert_eq!(stream.last().unwrap().state, "current");
-        assert!(stream.iter().take(stream.len() - 1).all(|s| s.state == "done"));
+        assert!(stream
+            .iter()
+            .take(stream.len() - 1)
+            .all(|s| s.state == "done"));
     }
 
     #[test]
@@ -297,5 +376,98 @@ mod tests {
         assert_eq!(activity_title(true, "仅平板"), "正在关闭电脑屏");
         assert_eq!(activity_title(true, "编码"), "正在投屏");
         assert_eq!(activity_title(false, ""), "未开始共享");
+    }
+
+    #[test]
+    fn glidex_dxgi_output_is_tablet_only_ready() {
+        // DXGI already enumerated a GlideX / secondary head.
+        assert_eq!(
+            decide_after_virtual_prepare(ShareMode::External, true, "", true, false),
+            VirtualPrepareOutcome::Ready
+        );
+        assert_eq!(
+            decide_after_virtual_prepare(ShareMode::External, true, "", false, true),
+            VirtualPrepareOutcome::Ready
+        );
+    }
+
+    #[test]
+    fn glidex_adapter_without_dxgi_output_still_needs_provision() {
+        // Device Manager only — not a monitor. Keep trying LightingIdd / MttVDD.
+        let out = decide_after_virtual_prepare(
+            ShareMode::External,
+            false,
+            "DEVICE_NOT_FOUND",
+            false,
+            false,
+        );
+        assert!(matches!(out, VirtualPrepareOutcome::Abort { .. }));
+        assert!(!matches!(out, VirtualPrepareOutcome::FallbackMirror { .. }));
+    }
+
+    #[test]
+    fn missing_result_file_is_not_uac_cancelled() {
+        assert_eq!(
+            classify_provision_uac(true, 0, true, false, true, false),
+            Err(ProvisionUacError::NoResult)
+        );
+        assert_eq!(
+            classify_provision_uac(true, 0, true, false, true, false)
+                .unwrap_err()
+                .code(),
+            "UAC_NO_RESULT"
+        );
+        assert_eq!(
+            classify_provision_uac(false, 1223, false, false, false, false),
+            Err(ProvisionUacError::Cancelled)
+        );
+        assert_eq!(
+            classify_provision_uac(false, 5, false, false, false, false),
+            Err(ProvisionUacError::AccessDenied)
+        );
+        assert_eq!(
+            classify_provision_uac(true, 0, true, true, false, false),
+            Err(ProvisionUacError::Timeout)
+        );
+        assert_eq!(
+            classify_provision_uac(false, 2, false, false, false, false),
+            Err(ProvisionUacError::ShellExecuteFailed)
+        );
+        assert_eq!(
+            classify_provision_uac(true, 0, false, false, false, false),
+            Err(ProvisionUacError::ShellExecuteFailed)
+        );
+        assert_eq!(
+            classify_provision_uac(true, 0, true, false, false, false),
+            Err(ProvisionUacError::WaitFailed)
+        );
+        assert_eq!(
+            classify_provision_uac(true, 0, true, false, true, true),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn last_error_is_hidden_when_activity_already_has_abort_copy() {
+        let abort = tablet_only_abort_message("未找到虚拟显示设备。");
+        assert!(!should_show_separate_last_error(
+            &abort,
+            &[&abort, "未开始共享"]
+        ));
+        assert!(should_show_separate_last_error(
+            &abort,
+            &["请连接你的设备，点击开始共享"]
+        ));
+        assert!(!should_show_separate_last_error("", &["x"]));
+    }
+
+    #[test]
+    fn elevated_start_notice_says_no_extra_uac() {
+        let tablet = share_start_notice(ShareMode::External, true);
+        assert!(tablet.contains("不会再弹出"));
+        assert!(!tablet.contains("请留意管理员确认"));
+        let unelevated = share_start_notice(ShareMode::External, false);
+        assert!(unelevated.contains("管理员确认"));
+        assert!(virtual_driver_install_copy(true).contains("不会再弹出"));
     }
 }

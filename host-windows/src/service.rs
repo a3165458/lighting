@@ -122,13 +122,10 @@ impl HostService {
         g.last_error.clear();
         g.notice = Some((
             Tone::Info,
-            if mode.blanks_pc_monitor() {
-                "正在启用虚拟屏。当前步骤会显示在上方；请留意管理员确认窗口。".into()
-            } else if mode.uses_virtual_display() {
-                "正在启用独立第二屏（虚拟显示器）…".into()
-            } else {
-                "正在开始镜像投屏…".into()
-            },
+            lighting_host::share_flow::share_start_notice(
+                mode,
+                displays::process_is_elevated(),
+            ),
         ));
 
         match displays::list_displays() {

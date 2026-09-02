@@ -1,6 +1,7 @@
 import { AlertTriangle, Download, Play, Square, Tablet } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import type { HostState } from '@/lib/host'
+import { shouldShowSeparateLastError } from '@/lib/host'
 import { cn } from '@/lib/cn'
 
 type Props = {
@@ -100,9 +101,12 @@ export function ConnectionCard({ host, busy, onToggleShare, onInstallClient }: P
             {host.usbHint}
           </p>
         )}
-        {host.lastError && (
-          <p className="mt-1 text-sm text-danger">{host.lastError}</p>
-        )}
+        {shouldShowSeparateLastError(host.lastError, [
+          host.usbHint,
+          host.activityDetail,
+          host.detail,
+          subtitle,
+        ]) && <p className="mt-1 text-sm text-danger">{host.lastError}</p>}
         {host.canInstallApk && (
           <div className="mt-3">
             <Button
