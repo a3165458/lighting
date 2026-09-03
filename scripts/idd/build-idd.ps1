@@ -88,7 +88,8 @@ $msbuildArgs = @(
     '/p:RunCodeAnalysis=false',
     '/p:Driver_SpectreMitigation=false',
     '/p:InfVerif=false',
-    '/p:TreatWarningAsError=false'
+    '/p:TreatWarningAsError=false',
+    '/p:EnablePREfast=false'
 )
 
 # Inbox WindowsUserModeDriver10.0 compiles, but its kit tree often lacks UMDF 2.25.
