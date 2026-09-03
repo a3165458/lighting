@@ -89,19 +89,18 @@ $msbuildArgs = @(
     '/p:Driver_SpectreMitigation=false'
 )
 
-# Point the UMDF toolset at NuGet WDK headers (wudfwdm.h lives under Include\wdf\umdf\2.25).
-$wdkC = $null
+# Inbox WindowsUserModeDriver10.0 compiles, but its kit tree often lacks UMDF 2.25.
+# Directory.Build.props appends include/lib dirs from this NuGet package — do not
+# set WDKContentRoot (that loads NuGet targets and hits MSB4086 on MSBuild 17.14).
+$wdkHeader = $null
 if (Test-Path $packagesDir) {
-    $wdkC = Get-ChildItem -Path $packagesDir -Directory -Filter 'Microsoft.Windows.WDK.x64.*' -ErrorAction SilentlyContinue |
-        ForEach-Object { Join-Path $_.FullName 'c' } |
-        Where-Object { Test-Path (Join-Path $_ 'Include\wdf\umdf\2.25\wudfwdm.h') } |
+    $wdkHeader = Get-ChildItem -Path $packagesDir -Directory -Filter 'Microsoft.Windows.WDK.x64.*' -ErrorAction SilentlyContinue |
+        ForEach-Object { Join-Path $_.FullName 'c\Include\wdf\umdf\2.25\wudfwdm.h' } |
+        Where-Object { Test-Path $_ } |
         Select-Object -First 1
 }
-if ($wdkC) {
-    Write-Host "WDKContentRoot: $wdkC"
-    $msbuildArgs += "/p:WDKContentRoot=$wdkC"
-    $msbuildArgs += '/p:WDKBuildFolder=10.0.26100.0'
-    $msbuildArgs += '/p:WindowsTargetPlatformVersion=10.0.26100.0'
+if ($wdkHeader) {
+    Write-Host "UMDF headers: $wdkHeader"
 } else {
     Write-Warning 'NuGet WDK headers (wudfwdm.h) not found under driver-idd/packages — MSBuild may fail on UMDF includes.'
 }
