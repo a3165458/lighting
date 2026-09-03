@@ -1,5 +1,24 @@
 <Project>
+  <!-- WDK NuGet (see packages.config). Importing these sets WDKContentRoot so
+       WindowsUserModeDriver10.0 can see UMDF headers such as wudfwdm.h.
+       windows-2022's standalone WDK toolset often points at a kit tree that
+       lacks UMDF 2.25 / IddCx includes. -->
   <PropertyGroup>
-    <WindowsTargetPlatformVersion Condition="'$(WindowsTargetPlatformVersion)' == ''">10.0</WindowsTargetPlatformVersion>
+    <LightingWdkVersion>10.0.26100.6584</LightingWdkVersion>
+    <LightingWdkKitFolder>10.0.26100.0</LightingWdkKitFolder>
+    <LightingWdkPkg>$(MSBuildThisFileDirectory)packages\Microsoft.Windows.WDK.x64.$(LightingWdkVersion)\</LightingWdkPkg>
+    <LightingSdkCppPkg>$(MSBuildThisFileDirectory)packages\Microsoft.Windows.SDK.CPP.$(LightingWdkVersion)\</LightingSdkCppPkg>
+    <LightingSdkCppX64Pkg>$(MSBuildThisFileDirectory)packages\Microsoft.Windows.SDK.CPP.x64.$(LightingWdkVersion)\</LightingSdkCppX64Pkg>
+  </PropertyGroup>
+  <Import Project="$(LightingWdkPkg)build\native\Microsoft.Windows.WDK.x64.props"
+          Condition="Exists('$(LightingWdkPkg)build\native\Microsoft.Windows.WDK.x64.props')" />
+  <Import Project="$(LightingSdkCppX64Pkg)build\native\Microsoft.Windows.SDK.cpp.x64.props"
+          Condition="Exists('$(LightingSdkCppX64Pkg)build\native\Microsoft.Windows.SDK.cpp.x64.props')" />
+  <Import Project="$(LightingSdkCppPkg)build\native\Microsoft.Windows.SDK.cpp.props"
+          Condition="Exists('$(LightingSdkCppPkg)build\native\Microsoft.Windows.SDK.cpp.props')" />
+  <PropertyGroup>
+    <WindowsTargetPlatformVersion Condition="'$(WindowsTargetPlatformVersion)' == '' or '$(WindowsTargetPlatformVersion)' == '10.0'">$(LightingWdkKitFolder)</WindowsTargetPlatformVersion>
+    <WDKBuildFolder Condition="'$(WDKBuildFolder)' == ''">$(LightingWdkKitFolder)</WDKBuildFolder>
+    <WDKContentRoot Condition="'$(WDKContentRoot)' == '' and Exists('$(LightingWdkPkg)c')">$(LightingWdkPkg)c</WDKContentRoot>
   </PropertyGroup>
 </Project>

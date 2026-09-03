@@ -75,19 +75,39 @@ if (Test-Path $packagesConfig) {
     }
     Write-Host "Restoring WDK NuGet packages"
     & $nuget restore $packagesConfig -PackagesDirectory $packagesDir
+    if ($LASTEXITCODE -ne 0) {
+        throw "nuget restore failed with exit $LASTEXITCODE"
+    }
 }
 
-$args = @(
+$msbuildArgs = @(
     $sln,
     '/m',
     "/p:Configuration=$Configuration",
     "/p:Platform=$Platform",
     '/p:RunCodeAnalysis=false',
-    '/p:Driver_SpectreMitigation=false',
-    '/restore'
+    '/p:Driver_SpectreMitigation=false'
 )
+
+# Point the UMDF toolset at NuGet WDK headers (wudfwdm.h lives under Include\wdf\umdf\2.25).
+$wdkC = $null
+if (Test-Path $packagesDir) {
+    $wdkC = Get-ChildItem -Path $packagesDir -Directory -Filter 'Microsoft.Windows.WDK.x64.*' -ErrorAction SilentlyContinue |
+        ForEach-Object { Join-Path $_.FullName 'c' } |
+        Where-Object { Test-Path (Join-Path $_ 'Include\wdf\umdf\2.25\wudfwdm.h') } |
+        Select-Object -First 1
+}
+if ($wdkC) {
+    Write-Host "WDKContentRoot: $wdkC"
+    $msbuildArgs += "/p:WDKContentRoot=$wdkC"
+    $msbuildArgs += '/p:WDKBuildFolder=10.0.26100.0'
+    $msbuildArgs += '/p:WindowsTargetPlatformVersion=10.0.26100.0'
+} else {
+    Write-Warning 'NuGet WDK headers (wudfwdm.h) not found under driver-idd/packages — MSBuild may fail on UMDF includes.'
+}
+
 Write-Host "Building LightingIdd ($Configuration|$Platform)"
-& $msbuild @args
+& $msbuild @msbuildArgs
 if ($LASTEXITCODE -ne 0) {
     throw "MSBuild failed with exit $LASTEXITCODE"
 }
