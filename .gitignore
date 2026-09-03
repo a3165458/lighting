@@ -16,3 +16,15 @@ android/.cxx/
 .DS_Store
 Thumbs.db
 *.apk
+
+# Staged Idd binaries (produced by WDK + stage-idd-bundle.ps1; never commit INF-only leftovers)
+host-ui/resources/idd/LightingIdd.inf
+host-ui/resources/idd/LightingIdd.dll
+host-ui/resources/idd/LightingIdd.cat
+host-ui/resources/idd/LightingIdd.sys
+host-ui/resources/idd/LightingIdd.pdb
+host-ui/resources/idd/nefconc.exe
+host-ui/resources/idd/nefconw.exe
+driver-idd/packages/
+driver-idd/x64/
+driver-idd/Release/

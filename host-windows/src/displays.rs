@@ -188,35 +188,53 @@ pub fn ensure_secondary_display_with_progress(
         return Ok(());
     }
 
-    if find_idd_bundle().is_some() {
-        progress(lighting_host::share_flow::virtual_driver_install_copy(
-            process_is_elevated(),
-        ));
-        tracing::info!("no secondary; provisioning LightingIdd (IddCx Option B)");
-        match ensure_via_lighting_idd(&mut progress) {
-            Ok(()) => {
-                progress("Lighting 虚拟屏已就绪");
-                return Ok(());
-            }
-            Err(err)
-                if lighting_host::share_flow::should_surface_provision_interrupt(&format!(
-                    "{err:#}"
-                )) =>
-            {
-                return Err(err);
-            }
-            Err(err) => {
-                progress(&format!(
-                    "自有驱动未就绪（{err:#}），改试备用虚拟显示驱动…"
-                ));
-                tracing::warn!("LightingIdd failed ({err:#}); falling back to MttVDD");
+    match inspect_idd_bundle() {
+        IddBundleStatus::Complete(_) => {
+            progress(lighting_host::share_flow::virtual_driver_install_copy(
+                process_is_elevated(),
+            ));
+            tracing::info!("no secondary; provisioning LightingIdd (IddCx Option B)");
+            match ensure_via_lighting_idd(&mut progress) {
+                Ok(()) => {
+                    progress("Lighting 虚拟屏已就绪");
+                    return Ok(());
+                }
+                Err(err)
+                    if lighting_host::share_flow::is_idd_bundle_incomplete(&format!(
+                        "{err:#}"
+                    )) =>
+                {
+                    progress(lighting_host::share_flow::idd_bundle_incomplete_copy());
+                    tracing::warn!(
+                        "LightingIdd bundle incomplete ({err:#}); skipping Idd, using MttVDD"
+                    );
+                }
+                Err(err)
+                    if lighting_host::share_flow::should_surface_provision_interrupt(&format!(
+                        "{err:#}"
+                    )) =>
+                {
+                    return Err(err);
+                }
+                Err(err) => {
+                    progress(&format!(
+                        "自有驱动未就绪（{err:#}），改试备用虚拟显示驱动…"
+                    ));
+                    tracing::warn!("LightingIdd failed ({err:#}); falling back to MttVDD");
+                }
             }
         }
-    } else {
-        tracing::info!("LightingIdd bundle absent; using legacy MttVDD path");
-        progress(lighting_host::share_flow::virtual_driver_install_copy(
-            process_is_elevated(),
-        ));
+        IddBundleStatus::Incomplete => {
+            // INF without DLL: do not launch provision.ps1 (1-second BUNDLE_DLL_MISSING flash).
+            progress(lighting_host::share_flow::idd_bundle_incomplete_copy());
+            tracing::warn!("LightingIdd INF present without LightingIdd.dll; skipping Idd, using MttVDD");
+        }
+        IddBundleStatus::Absent => {
+            tracing::info!("LightingIdd bundle absent; using legacy MttVDD path");
+            progress(lighting_host::share_flow::virtual_driver_install_copy(
+                process_is_elevated(),
+            ));
+        }
     }
 
     tracing::info!("provisioning bundled MttVDD (legacy fallback)");
@@ -313,7 +331,27 @@ enum IddProvisionMode {
     EnableOnly,
 }
 
-fn find_idd_bundle() -> Option<PathBuf> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum IddBundleStatus {
+    Complete(PathBuf),
+    Incomplete,
+    Absent,
+}
+
+fn idd_dir_status(dir: &std::path::Path) -> IddBundleStatus {
+    let inf = dir.join("LightingIdd.inf").is_file();
+    let dll = dir.join("LightingIdd.dll").is_file()
+        || find_bundle_file(dir, "LightingIdd.dll").is_some();
+    if lighting_host::share_flow::should_attempt_idd_install(inf, dll) {
+        IddBundleStatus::Complete(dir.to_path_buf())
+    } else if inf {
+        IddBundleStatus::Incomplete
+    } else {
+        IddBundleStatus::Absent
+    }
+}
+
+fn idd_bundle_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -341,8 +379,29 @@ fn find_idd_bundle() -> Option<PathBuf> {
             .join("idd"),
     );
     candidates
-        .into_iter()
-        .find(|p| p.join("LightingIdd.inf").is_file())
+}
+
+fn inspect_idd_bundle() -> IddBundleStatus {
+    let mut saw_incomplete = false;
+    for dir in idd_bundle_candidates() {
+        match idd_dir_status(&dir) {
+            IddBundleStatus::Complete(p) => return IddBundleStatus::Complete(p),
+            IddBundleStatus::Incomplete => saw_incomplete = true,
+            IddBundleStatus::Absent => {}
+        }
+    }
+    if saw_incomplete {
+        IddBundleStatus::Incomplete
+    } else {
+        IddBundleStatus::Absent
+    }
+}
+
+fn find_idd_bundle() -> Option<PathBuf> {
+    match inspect_idd_bundle() {
+        IddBundleStatus::Complete(p) => Some(p),
+        _ => None,
+    }
 }
 
 fn run_idd_provision(mode: IddProvisionMode) -> Result<()> {

@@ -26,6 +26,30 @@ Write-Host "==> Stage virtual display driver bundle (MttVDD + nefconw)"
 & (Join-Path $Root "scripts\vdd\stage-vdd-bundle.ps1")
 if ($LASTEXITCODE -ne 0) { throw "vdd bundle staging failed" }
 
+Write-Host "==> Build LightingIdd (WDK) when possible, then stage a complete Idd bundle"
+$iddBuild = Join-Path $Root "scripts\idd\build-idd.ps1"
+$iddStage = Join-Path $Root "scripts\idd\stage-idd-bundle.ps1"
+$iddAssert = Join-Path $Root "scripts\idd\assert-idd-bundle.ps1"
+$iddBuilt = $false
+try {
+    & $iddBuild
+    if ($LASTEXITCODE -eq 0) { $iddBuilt = $true }
+} catch {
+    Write-Warning "LightingIdd WDK build skipped: $($_.Exception.Message)"
+}
+if ($iddBuilt) {
+    & $iddStage
+    if ($LASTEXITCODE -ne 0) { throw "idd bundle staging failed" }
+    & $iddAssert -RequireComplete
+    if ($LASTEXITCODE -ne 0) { throw "idd bundle assertion failed" }
+} else {
+    Write-Warning "No LightingIdd.dll — omitting Idd from this pack (runtime uses MttVDD). INF-only Idd is forbidden."
+    & $iddStage -AllowMissingDll
+    if ($LASTEXITCODE -ne 0) { throw "idd omit staging failed" }
+    & $iddAssert -ForbidIncomplete
+    if ($LASTEXITCODE -ne 0) { throw "idd bundle assertion failed" }
+}
+
 Set-Location (Join-Path $Root "host-ui")
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
     throw "npm not found. Install Node.js LTS first."
