@@ -4,10 +4,8 @@
 # GlideX-class setup: install IddCx driver + official settings/registry once,
 # then soft-restart the device. Avoid relying solely on in-pipe RELOAD_DRIVER.
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$BundleDir,
-    [Parameter(Mandatory = $true)]
-    [string]$ResultFile,
+    [string]$BundleDir = '',
+    [string]$ResultFile = '',
     [ValidateSet('Full', 'EnableOnly')]
     [string]$Mode = 'Full'
 )
@@ -87,29 +85,74 @@ function Ensure-VddSettings {
     } catch {}
 }
 
+function Test-IntendedVirtualHwid {
+    param(
+        [string]$InstanceId = '',
+        [object]$HardwareIds = $null,
+        [string]$FriendlyName = '',
+        [Parameter(Mandatory = $true)]
+        [string]$Token
+    )
+    $parts = @($InstanceId)
+    if ($null -ne $HardwareIds) {
+        $parts += @($HardwareIds | ForEach-Object { "$_" })
+    }
+    $idText = ($parts -join '|')
+    $all = $idText + '|' + $FriendlyName
+    if ($all -match '(?i)glidex') { return $false }
+    $tok = [regex]::Escape($Token)
+    return [bool]($idText -match "(?i)(^|[^A-Za-z0-9])$tok([^A-Za-z0-9]|$)")
+}
+
+function Test-ReadyVirtualDevice {
+    param(
+        $Device,
+        [Parameter(Mandatory = $true)]
+        [string]$Token
+    )
+    if (-not $Device) { return $false }
+    if (-not (Test-IntendedVirtualHwid -InstanceId $Device.InstanceId -HardwareIds $Device.HardwareID -FriendlyName $Device.FriendlyName -Token $Token)) {
+        return $false
+    }
+    $class = [string]$Device.Class
+    $status = [string]$Device.Status
+    if ($class -eq 'Unknown') { return $false }
+    if ($status -match '(?i)Problem|Error|Disabled') { return $false }
+    if ($null -ne $Device.ConfigManagerErrorCode -and [int]$Device.ConfigManagerErrorCode -ne 0) {
+        return $false
+    }
+    return $true
+}
+
+function Should-RunNefconInstall([bool]$DevicePresent) {
+    # pnputil 0/259 only stages the INF; a missing root node still needs install.
+    return -not $DevicePresent
+}
+
+function Test-MttFamilyHwid {
+    param(
+        [string]$InstanceId = '',
+        [object]$HardwareIds = $null,
+        [string]$FriendlyName = ''
+    )
+    (Test-IntendedVirtualHwid -InstanceId $InstanceId -HardwareIds $HardwareIds -FriendlyName $FriendlyName -Token 'MttVDD') -or
+    (Test-IntendedVirtualHwid -InstanceId $InstanceId -HardwareIds $HardwareIds -FriendlyName $FriendlyName -Token 'IddSampleDriver')
+}
+
 function Find-MttDevice {
     try {
-        $names = @(
-            'Virtual Display Driver',
-            'IddSampleDriver Device HDR',
-            'MttVDD Display Adapter',
-            'MttVDD'
-        )
-        $device = Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | Where-Object {
-            ($names -contains $_.FriendlyName) -or
-            ($_.InstanceId -like '*MttVDD*') -or
-            ($_.HardwareID -like '*MttVDD*')
-        } | Select-Object -First 1
-        if (-not $device) {
-            $device = Get-PnpDevice -HardwareID 'Root\MttVDD' -ErrorAction SilentlyContinue | Select-Object -First 1
+        $found = @()
+        foreach ($hw in @('Root\MttVDD', 'Root\IddSampleDriver')) {
+            try {
+                $found += @(Get-PnpDevice -HardwareID $hw -ErrorAction SilentlyContinue)
+            } catch {}
         }
-        if (-not $device) {
-            $device = Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object {
-                ($_.InstanceId -like '*MttVDD*') -or
-                (($_.FriendlyName) -and ($_.FriendlyName -match 'Virtual Display|MttVDD|IddSample'))
-            } | Select-Object -First 1
-        }
-        return $device
+        try {
+            $found += @(Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object {
+                Test-MttFamilyHwid -InstanceId $_.InstanceId -HardwareIds $_.HardwareID -FriendlyName $_.FriendlyName
+            })
+        } catch {}
+        return ($found | Where-Object { $_ } | Select-Object -First 1)
     } catch {
         return $null
     }
@@ -118,16 +161,16 @@ function Find-MttDevice {
 function Enable-MttDevice {
     Ensure-VddSettings
     $device = Find-MttDevice
-    if (-not $device) {
-        try { pnputil /enable-device /deviceid 'Root\MttVDD' 2>&1 | Out-Null } catch {}
-        $device = Find-MttDevice
-    }
     if (-not $device) { return $null }
     try { Enable-PnpDevice -InstanceId $device.InstanceId -Confirm:$false -ErrorAction SilentlyContinue } catch {}
     try { pnputil /enable-device $device.InstanceId 2>&1 | Out-Null } catch {}
     try { pnputil /restart-device $device.InstanceId 2>&1 | Out-Null } catch {}
     Start-Sleep -Seconds 3
-    return (Find-MttDevice)
+    $device = Find-MttDevice
+    if ((Test-ReadyVirtualDevice -Device $device -Token 'MttVDD') -or (Test-ReadyVirtualDevice -Device $device -Token 'IddSampleDriver')) {
+        return $device
+    }
+    return $null
 }
 
 function Test-PnpSuccess([int]$ExitCode) {
@@ -147,6 +190,9 @@ function Install-FromBundle([string]$Dir) {
     if (-not $nef) {
         $nef = Get-ChildItem -Path $Dir -Recurse -Filter 'nefconw.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
     }
+    if (-not $nef) {
+        $nef = Get-ChildItem -Path $Dir -Recurse -Filter 'devcon.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+    }
 
     $cat = Get-ChildItem -Path $infDir -Filter '*.cat' -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($cat) {
@@ -161,23 +207,23 @@ function Install-FromBundle([string]$Dir) {
         } catch {}
     }
 
-    $added = $false
+    $staged = $false
     $pnputilEc = -1
     try {
         pnputil /add-driver $inf.FullName /install 2>&1 | Out-Null
         $pnputilEc = $LASTEXITCODE
-        if (Test-PnpSuccess $pnputilEc) { $added = $true }
+        if (Test-PnpSuccess $pnputilEc) { $staged = $true }
     } catch {
         $pnputilEc = $LASTEXITCODE
     }
 
+    # Staging (0/259) is not a device node. Always create Root\MttVDD when missing.
     $nefEc = -1
-    if (-not $added -and $nef) {
+    if ((Should-RunNefconInstall ([bool](Find-MttDevice))) -and $nef) {
         Push-Location $infDir
         try {
             & $nef.FullName install $inf.Name 'Root\MttVDD' 2>&1 | Out-Null
             $nefEc = $LASTEXITCODE
-            if (Test-PnpSuccess $nefEc) { $added = $true }
         } catch {
             $nefEc = $LASTEXITCODE
         } finally {
@@ -185,9 +231,9 @@ function Install-FromBundle([string]$Dir) {
         }
     }
 
-    if (-not $added) {
+    if (-not (Find-MttDevice)) {
         if (-not $nef) { throw "DRIVER_INSTALL_FAILED:pnputil=$pnputilEc" }
-        throw "DRIVER_INSTALL_FAILED:pnputil=$pnputilEc,nefcon=$nefEc"
+        throw "DRIVER_INSTALL_FAILED:pnputil=$pnputilEc,nefcon=$nefEc,staged=$staged"
     }
     Start-Sleep -Seconds 6
 }
@@ -209,6 +255,13 @@ function Map-ProvisionError([string]$Message) {
     if ($slug.Length -gt 48) { $slug = $slug.Substring(0, 48) }
     if ([string]::IsNullOrWhiteSpace($slug)) { return 'UNEXPECTED' }
     return "ERR_$slug"
+}
+
+if ($MyInvocation.InvocationName -eq '.') {
+    return
+}
+if ([string]::IsNullOrWhiteSpace($BundleDir) -or [string]::IsNullOrWhiteSpace($ResultFile)) {
+    throw 'BundleDir and ResultFile are required'
 }
 
 try {

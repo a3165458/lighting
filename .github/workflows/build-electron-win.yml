@@ -39,6 +39,9 @@ jobs:
       - name: Stage Idd must fail without LightingIdd.dll
         working-directory: .
         run: pwsh -NoProfile -File scripts/idd/test-stage-requires-dll.ps1
+      - name: Staged INF is not a device
+        working-directory: .
+        run: pwsh -NoProfile -File scripts/vdd/test-provision-match.ps1
 
   electron-win:
     needs: simulate-share

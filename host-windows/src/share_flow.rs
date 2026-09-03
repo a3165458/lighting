@@ -201,6 +201,244 @@ pub fn classify_provision_finish(
     Err(ProvisionFinishError::Interrupted)
 }
 
+/// Hardware IDs of the adapters Lighting actually installs.
+pub const MTT_VDD_HWID: &str = r"Root\MttVDD";
+pub const LIGHTING_IDD_HWID: &str = r"Root\LightingIdd";
+
+/// `pnputil /add-driver` 0 or 259 only means the INF is in the driver store.
+pub fn driver_store_staged(exit_code: i32) -> bool {
+    exit_code == 0 || exit_code == 259
+}
+
+/// A root-enumerated software device still needs nefcon/devcon `install`
+/// unless an instance for the intended HWID already exists.
+pub fn should_create_root_device_node(device_present: bool) -> bool {
+    !device_present
+}
+
+/// `pnputil /enable-device` exit 0 is not proof the instance exists.
+pub fn enable_device_exit_proves_presence(_exit_code: i32) -> bool {
+    false
+}
+
+/// One PnP node as reported by `Get-PnpDevice` or `pnputil /enum-devices`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PnpDeviceMatch {
+    pub instance_id: String,
+    pub hardware_ids: Vec<String>,
+    pub friendly_name: String,
+    pub class_name: String,
+    pub status: String,
+    pub problem_code: Option<u32>,
+}
+
+fn hwid_token(hwid: &str) -> &str {
+    hwid.rsplit(['\\', '/']).next().filter(|s| !s.is_empty()).unwrap_or(hwid)
+}
+
+fn normalize_id_blob(s: &str) -> String {
+    s.to_ascii_uppercase()
+        .replace('/', r"\")
+        .replace('-', "_")
+}
+
+fn looks_like_glidex(blob: &str) -> bool {
+    blob.to_ascii_lowercase().contains("glidex")
+}
+
+/// True when `blob` (instance / hardware IDs) contains `token` as a path segment.
+pub fn blob_has_hwid_token(blob: &str, token: &str) -> bool {
+    let blob = normalize_id_blob(blob);
+    let token = token.trim().to_ascii_uppercase();
+    if token.is_empty() {
+        return false;
+    }
+    blob.split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|part| part == token)
+}
+
+fn id_blob(dev: &PnpDeviceMatch) -> String {
+    let mut parts = vec![dev.instance_id.as_str()];
+    for id in &dev.hardware_ids {
+        parts.push(id.as_str());
+    }
+    parts.join("|")
+}
+
+/// Match `Root\MttVDD` / `Root\LightingIdd` (or that driver's real HWID).
+/// GlideX and a generic “Virtual Display” name are not enough.
+pub fn is_intended_virtual_adapter(dev: &PnpDeviceMatch, intended_hwid: &str) -> bool {
+    let ids = id_blob(dev);
+    let names = format!("{}|{}", ids, dev.friendly_name);
+    if looks_like_glidex(&names) {
+        return false;
+    }
+    let token = hwid_token(intended_hwid);
+    blob_has_hwid_token(&ids, token)
+        || ids.to_ascii_uppercase().contains(&intended_hwid.to_ascii_uppercase())
+}
+
+/// Started Display / System / SoftwareDevice (or IddCx) node for the HWID.
+/// Problem or Unknown-class nodes that never started are not ready.
+pub fn is_ready_virtual_adapter(dev: &PnpDeviceMatch, intended_hwid: &str) -> bool {
+    if !is_intended_virtual_adapter(dev, intended_hwid) {
+        return false;
+    }
+    let class = dev.class_name.trim().to_ascii_lowercase();
+    if class == "unknown" {
+        return false;
+    }
+    let status = dev.status.trim().to_ascii_lowercase();
+    if status.contains("problem") || status == "error" || status == "disabled" {
+        return false;
+    }
+    if dev.problem_code.unwrap_or(0) != 0 {
+        return false;
+    }
+    true
+}
+
+/// `OK|READY` / `OK|ENABLED` is not success unless the detail names our HWID.
+pub fn provision_ok_names_intended_device(line: &str) -> bool {
+    let line = line.trim();
+    let Some(rest) = line.strip_prefix("OK|") else {
+        return false;
+    };
+    let detail = rest
+        .split_once(':')
+        .map(|(_, d)| d)
+        .unwrap_or("")
+        .trim();
+    if detail.is_empty() || detail.eq_ignore_ascii_case("unknown") {
+        return false;
+    }
+    if looks_like_glidex(detail) {
+        return false;
+    }
+    blob_has_hwid_token(detail, "MTTVDD")
+        || blob_has_hwid_token(detail, "LIGHTINGIDD")
+        || blob_has_hwid_token(detail, "IDDSAMPLEDRIVER")
+}
+
+/// QA's false OK: `OK|READY` / `OK|ENABLED` with no intended instance.
+pub fn provision_claimed_ok_without_device(line: &str) -> bool {
+    let line = line.trim();
+    line.starts_with("OK|") && !provision_ok_names_intended_device(line)
+}
+
+/// Decision table for already-elevated Idd / MttVDD Full.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativeProvisionFinish {
+    OkReady(String),
+    OkEnabled(String),
+    Fail(&'static str),
+}
+
+pub fn finish_native_full(
+    staged: bool,
+    enable_exit_ok: bool,
+    device: Option<&PnpDeviceMatch>,
+    intended_hwid: &str,
+) -> NativeProvisionFinish {
+    let _ = enable_exit_ok;
+    if let Some(dev) = device {
+        if is_ready_virtual_adapter(dev, intended_hwid) {
+            return NativeProvisionFinish::OkReady(dev.instance_id.clone());
+        }
+    }
+    if staged {
+        NativeProvisionFinish::Fail("DEVICE_STILL_MISSING")
+    } else {
+        NativeProvisionFinish::Fail("DRIVER_INSTALL_FAILED")
+    }
+}
+
+pub fn finish_native_enable_only(
+    enable_exit_ok: bool,
+    device: Option<&PnpDeviceMatch>,
+    intended_hwid: &str,
+) -> NativeProvisionFinish {
+    let _ = enable_exit_ok;
+    if let Some(dev) = device {
+        if is_ready_virtual_adapter(dev, intended_hwid) {
+            return NativeProvisionFinish::OkEnabled(dev.instance_id.clone());
+        }
+    }
+    NativeProvisionFinish::Fail("DEVICE_NOT_FOUND")
+}
+
+fn pnputil_field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let line = line.trim();
+    if line.len() < key.len() {
+        return None;
+    }
+    if !line[..key.len()].eq_ignore_ascii_case(key) {
+        return None;
+    }
+    Some(line[key.len()..].trim())
+}
+
+/// Parse `pnputil /enum-devices` text. “No devices were found” is empty.
+pub fn parse_pnputil_enum_devices(stdout: &str) -> Vec<PnpDeviceMatch> {
+    if stdout.to_ascii_lowercase().contains("no devices were found") {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut cur = PnpDeviceMatch::default();
+    let flush = |cur: &mut PnpDeviceMatch, out: &mut Vec<PnpDeviceMatch>| {
+        if !cur.instance_id.is_empty() {
+            out.push(std::mem::take(cur));
+        }
+    };
+    for raw in stdout.lines() {
+        let line = raw.trim();
+        if let Some(v) = pnputil_field(line, "Instance ID:") {
+            flush(&mut cur, &mut out);
+            cur.instance_id = v.to_string();
+        } else if let Some(v) = pnputil_field(line, "Device Description:") {
+            cur.friendly_name = v.to_string();
+        } else if let Some(v) = pnputil_field(line, "Class Name:") {
+            cur.class_name = v.to_string();
+        } else if let Some(v) = pnputil_field(line, "Status:") {
+            cur.status = v.to_string();
+        } else if let Some(v) = pnputil_field(line, "Problem Code:") {
+            let digits: String = v.chars().take_while(|c| c.is_ascii_digit()).collect();
+            cur.problem_code = digits.parse().ok();
+        } else if let Some(v) = pnputil_field(line, "Hardware ID:") {
+            if !v.is_empty() {
+                cur.hardware_ids.push(v.to_string());
+            }
+        } else if !line.is_empty()
+            && raw.starts_with([' ', '\t'])
+            && (line.to_ascii_uppercase().starts_with("ROOT\\")
+                || line.to_ascii_uppercase().contains("MTTVDD")
+                || line.to_ascii_uppercase().contains("LIGHTINGIDD"))
+        {
+            cur.hardware_ids.push(line.to_string());
+        }
+    }
+    flush(&mut cur, &mut out);
+    out
+}
+
+pub fn first_ready_intended<'a>(
+    devices: &'a [PnpDeviceMatch],
+    intended_hwid: &str,
+) -> Option<&'a PnpDeviceMatch> {
+    devices
+        .iter()
+        .find(|d| is_ready_virtual_adapter(d, intended_hwid))
+}
+
+pub fn first_intended_adapter<'a>(
+    devices: &'a [PnpDeviceMatch],
+    intended_hwid: &str,
+) -> Option<&'a PnpDeviceMatch> {
+    devices
+        .iter()
+        .find(|d| is_intended_virtual_adapter(d, intended_hwid))
+}
+
 /// LightingIdd was interrupted by AV / missing result — do not hide it behind
 /// MttVDD `DEVICE_NOT_FOUND` / `VDD_NO_MONITOR`.
 pub fn should_surface_provision_interrupt(raw: &str) -> bool {
@@ -713,5 +951,190 @@ mod tests {
         assert!(abort.contains("安装包缺少虚拟屏驱动文件"));
         assert!(!abort.contains("未找到虚拟显示设备"));
         assert!(!abort.contains("自动镜像"));
+    }
+
+    #[test]
+    fn staged_inf_is_not_a_device() {
+        assert!(driver_store_staged(0));
+        assert!(driver_store_staged(259));
+        assert!(!driver_store_staged(1));
+        assert!(should_create_root_device_node(false));
+        assert!(!should_create_root_device_node(true));
+        assert!(!enable_device_exit_proves_presence(0));
+        assert!(!enable_device_exit_proves_presence(259));
+        // QA: oem90 in the store, no Root\MttVDD node — still need nefcon.
+        assert!(should_create_root_device_node(
+            first_ready_intended(&[], MTT_VDD_HWID).is_some()
+        ));
+    }
+
+    fn mtt_started() -> PnpDeviceMatch {
+        PnpDeviceMatch {
+            instance_id: r"ROOT\MTTVDD\0000".into(),
+            hardware_ids: vec![r"ROOT\MTTVDD".into()],
+            friendly_name: "Virtual Display Driver".into(),
+            class_name: "Display".into(),
+            status: "Started".into(),
+            problem_code: Some(0),
+        }
+    }
+
+    #[test]
+    fn glidex_and_generic_virtual_display_are_not_intended() {
+        let glidex = PnpDeviceMatch {
+            instance_id: r"PCI\VEN_1002&DEV_1681".into(),
+            hardware_ids: vec!["PCI\\VEN_1002".into()],
+            friendly_name: "ASUS GlideX Display".into(),
+            class_name: "Display".into(),
+            status: "OK".into(),
+            problem_code: Some(0),
+        };
+        assert!(!is_intended_virtual_adapter(&glidex, MTT_VDD_HWID));
+        assert!(!is_ready_virtual_adapter(&glidex, MTT_VDD_HWID));
+        assert!(!is_intended_virtual_adapter(&glidex, LIGHTING_IDD_HWID));
+
+        let generic = PnpDeviceMatch {
+            instance_id: r"DISPLAY\DEFAULT\1".into(),
+            hardware_ids: vec!["MONITOR\\DEFAULT".into()],
+            friendly_name: "Virtual Display".into(),
+            class_name: "Monitor".into(),
+            status: "OK".into(),
+            problem_code: Some(0),
+        };
+        assert!(!is_intended_virtual_adapter(&generic, MTT_VDD_HWID));
+        assert!(!provision_ok_names_intended_device("OK|READY:Virtual_Display"));
+        assert!(!provision_ok_names_intended_device("OK|READY:Virtual_Display_Driver"));
+        assert!(!provision_ok_names_intended_device("OK|ENABLED:GlideX"));
+    }
+
+    #[test]
+    fn root_mttvdd_and_lightingidd_are_intended_when_started() {
+        let mtt = mtt_started();
+        assert!(is_intended_virtual_adapter(&mtt, MTT_VDD_HWID));
+        assert!(is_ready_virtual_adapter(&mtt, MTT_VDD_HWID));
+        assert!(!is_intended_virtual_adapter(&mtt, LIGHTING_IDD_HWID));
+
+        let idd = PnpDeviceMatch {
+            instance_id: r"ROOT\LIGHTINGIDD\0000".into(),
+            hardware_ids: vec![r"Root\LightingIdd".into()],
+            friendly_name: "Lighting Virtual Display".into(),
+            class_name: "System".into(),
+            status: "OK".into(),
+            problem_code: Some(0),
+        };
+        assert!(is_intended_virtual_adapter(&idd, LIGHTING_IDD_HWID));
+        assert!(is_ready_virtual_adapter(&idd, LIGHTING_IDD_HWID));
+    }
+
+    #[test]
+    fn problem_or_unknown_class_node_is_not_ready() {
+        let problem = PnpDeviceMatch {
+            instance_id: r"ROOT\MTTVDD\0000".into(),
+            hardware_ids: vec![r"ROOT\MTTVDD".into()],
+            friendly_name: "Virtual Display Driver".into(),
+            class_name: "Unknown".into(),
+            status: "Problem".into(),
+            problem_code: Some(28),
+        };
+        assert!(is_intended_virtual_adapter(&problem, MTT_VDD_HWID));
+        assert!(!is_ready_virtual_adapter(&problem, MTT_VDD_HWID));
+
+        let unknown_class = PnpDeviceMatch {
+            instance_id: r"ROOT\LIGHTINGIDD\0000".into(),
+            hardware_ids: vec![r"ROOT\LIGHTINGIDD".into()],
+            friendly_name: "Lighting Virtual Display".into(),
+            class_name: "Unknown".into(),
+            status: "Unknown".into(),
+            problem_code: None,
+        };
+        assert!(!is_ready_virtual_adapter(&unknown_class, LIGHTING_IDD_HWID));
+    }
+
+    #[test]
+    fn provision_ok_line_requires_intended_hwid() {
+        assert!(provision_claimed_ok_without_device("OK|READY"));
+        assert!(provision_claimed_ok_without_device("OK|ENABLED"));
+        assert!(provision_claimed_ok_without_device("OK|READY:unknown"));
+        assert!(provision_claimed_ok_without_device("OK|ENABLED:Virtual_Display"));
+        assert!(!provision_claimed_ok_without_device(r"OK|READY:ROOT\MttVDD\0000"));
+        assert!(!provision_claimed_ok_without_device("OK|ENABLED:ROOT_LightingIdd_0000"));
+        assert!(!provision_claimed_ok_without_device("FAIL|DEVICE_NOT_FOUND"));
+        assert!(provision_ok_names_intended_device("OK|READY:ROOT_MTTVDD_0000"));
+        assert!(provision_ok_names_intended_device("OK|ENABLED:ROOT_IddSampleDriver_0000"));
+        // classify_provision_finish still accepts a parseable OK| — that is
+        // "not an interrupt", not "a real device exists".
+        assert_eq!(
+            classify_provision_finish(false, true, true, "OK|READY"),
+            Ok(())
+        );
+        assert!(provision_claimed_ok_without_device("OK|READY"));
+    }
+
+    #[test]
+    fn idd_native_full_does_not_ok_when_only_staged() {
+        // QA: added=true from pnputil 0/259, enable-device exit 0, no node.
+        let finish = finish_native_full(true, true, None, LIGHTING_IDD_HWID);
+        assert_eq!(
+            finish,
+            NativeProvisionFinish::Fail("DEVICE_STILL_MISSING")
+        );
+        let finish = finish_native_enable_only(true, None, LIGHTING_IDD_HWID);
+        assert_eq!(finish, NativeProvisionFinish::Fail("DEVICE_NOT_FOUND"));
+        let mtt = mtt_started();
+        assert_eq!(
+            finish_native_full(true, true, Some(&mtt), MTT_VDD_HWID),
+            NativeProvisionFinish::OkReady(r"ROOT\MTTVDD\0000".into())
+        );
+    }
+
+    #[test]
+    fn parse_pnputil_enum_distinguishes_missing_and_started() {
+        assert!(parse_pnputil_enum_devices(
+            "Microsoft PnP Utility\n\nNo devices were found on the system.\n"
+        )
+        .is_empty());
+
+        let started = parse_pnputil_enum_devices(
+            r#"
+Microsoft PnP Utility
+
+Instance ID:                ROOT\MTTVDD\0000
+Device Description:         Virtual Display Driver
+Class Name:                 Display
+Class GUID:                 {4d36e968-e325-11ce-bfc1-08002be10318}
+Manufacturer Name:          MikeTheTech
+Status:                     Started
+Driver Name:                oem90.inf
+"#,
+        );
+        assert_eq!(started.len(), 1);
+        assert!(first_ready_intended(&started, MTT_VDD_HWID).is_some());
+        assert!(first_ready_intended(&started, LIGHTING_IDD_HWID).is_none());
+
+        let problem = parse_pnputil_enum_devices(
+            r#"
+Instance ID:                ROOT\LIGHTINGIDD\0000
+Device Description:         Lighting Virtual Display
+Class Name:                 Unknown
+Status:                     Problem
+Problem Code:               28 (0x1C)
+"#,
+        );
+        assert!(first_intended_adapter(&problem, LIGHTING_IDD_HWID).is_some());
+        assert!(first_ready_intended(&problem, LIGHTING_IDD_HWID).is_none());
+    }
+
+    #[test]
+    fn tablet_only_still_aborts_when_provision_lied_about_ok() {
+        assert!(provision_claimed_ok_without_device("OK|ENABLED"));
+        let out = decide_after_virtual_prepare(
+            ShareMode::External,
+            false,
+            "DEVICE_STILL_MISSING",
+            false,
+            false,
+        );
+        assert!(matches!(out, VirtualPrepareOutcome::Abort { .. }));
+        assert!(!matches!(out, VirtualPrepareOutcome::FallbackMirror { .. }));
     }
 }
