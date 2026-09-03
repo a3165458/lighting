@@ -300,7 +300,9 @@ pub fn human_vdd_error(raw: &str) -> Option<String> {
 
     let msg = if code_upper.contains("UAC_DENIED") {
         "需要管理员权限才能安装虚拟显示驱动。未提权时请在蓝底 UAC 窗口点「是」；已用管理员运行则不会再弹窗。"
-    } else if code_upper.contains("VDD_BUNDLE_MISSING") || code_upper.contains("BUNDLE_INF_MISSING") {
+    } else if code_upper.contains("BUNDLE_DLL_MISSING") || code_upper.contains("BUNDLE_INF_MISSING") {
+        "安装包缺少虚拟屏驱动文件"
+    } else if code_upper.contains("VDD_BUNDLE_MISSING") {
         "安装包缺少虚拟显示驱动文件。请从 GitHub 下载最新版 Lighting 便携版/安装包。"
     } else if code_upper.contains("VDD_SCRIPT_MISSING") {
         "虚拟显示驱动安装脚本缺失。请重新下载完整安装包。"
@@ -308,7 +310,7 @@ pub fn human_vdd_error(raw: &str) -> Option<String> {
         "虚拟显示驱动安装失败。请完全退出后右键 Lighting 选「以管理员身份运行」再试；仍失败可到 GitHub 手动安装 Virtual Display Driver。"
     } else if code_upper.contains("VDD_PIPE_DOWN") {
         "虚拟显示驱动未响应。请完全退出 Lighting 后以管理员身份运行再试（已是管理员时不会再弹窗）。"
-    } else if code_upper.contains("IDD_NO_MONITOR") || code_upper.contains("BUNDLE_DLL_MISSING") {
+    } else if code_upper.contains("IDD_NO_MONITOR") {
         "Lighting 自有虚拟显示驱动未能创建扩展屏。请完全退出后以管理员运行再试；开发机还需测试签名。"
     } else if code_upper.contains("DRIVER_SIGNATURE") {
         "虚拟显示驱动签名不被系统接受。开发请开 testsigning；发布需 Attestation 签名。"
@@ -319,7 +321,7 @@ pub fn human_vdd_error(raw: &str) -> Option<String> {
     } else if code_upper.contains("UAC_TIMEOUT") {
         "等了很久也没有管理员确认窗口。请完全退出 Lighting，右键选「以管理员身份运行」后再点开始共享（已是管理员时不会再弹窗）。"
     } else if code_upper.contains("INSTALL_INTERRUPTED") {
-        "安装被中断（可能是 360/杀毒软件）。请在安全软件里允许 Lighting、powershell、pnputil，然后完全退出再试。已是管理员时不会再弹 UAC。"
+        "安装被安全软件中断，请在 360 里允许 Lighting / powershell / pnputil。已是管理员时不会再弹 UAC。"
     } else if code_upper.contains("INSTALL_TIMEOUT") {
         "驱动安装超时。请完全退出 Lighting 后以管理员身份运行再试。若弹出 360/杀毒软件请选允许。"
     } else if code_upper.contains("UAC_NO_RESULT") || code_upper.contains("DRIVER_NO_RESULT") {
@@ -579,7 +581,9 @@ mod tests {
         assert!(!human_vdd_error("DRIVER_UNKNOWN_RESULT").unwrap().contains("取消"));
         assert!(!human_vdd_error("INSTALL_TIMEOUT").unwrap().contains("已取消"));
         assert!(!human_vdd_error("INSTALL_INTERRUPTED").unwrap().contains("已取消"));
+        assert!(!human_vdd_error("INSTALL_INTERRUPTED").unwrap().contains("未找到虚拟显示设备"));
         assert!(human_vdd_error("INSTALL_INTERRUPTED").unwrap().contains("360"));
+        assert!(human_vdd_error("INSTALL_INTERRUPTED").unwrap().contains("安全软件"));
         assert!(human_vdd_error("DRIVER_NO_RESULT").unwrap().contains("没写出"));
         assert!(human_vdd_error("UAC_NO_RESULT").unwrap().contains("没写出"));
         assert!(human_vdd_error("UAC_HIDDEN_HOST").unwrap().contains("可见窗口"));
@@ -593,6 +597,17 @@ mod tests {
         assert!(human_vdd_error("DRIVER_LAUNCHER_FAILED").unwrap().contains("360"));
         assert!(!human_vdd_error("DRIVER_LAUNCHER_FAILED").unwrap().contains("已取消"));
         assert!(human_last_error("VDD_BUNDLE_MISSING").contains("缺少"));
+        assert_eq!(
+            human_vdd_error("BUNDLE_DLL_MISSING").unwrap(),
+            "安装包缺少虚拟屏驱动文件"
+        );
+        assert_eq!(
+            human_vdd_error("BUNDLE_INF_MISSING").unwrap(),
+            "安装包缺少虚拟屏驱动文件"
+        );
+        assert!(!human_vdd_error("BUNDLE_DLL_MISSING")
+            .unwrap()
+            .contains("未找到虚拟显示设备"));
         assert!(looks_like_bind_or_port("connection refused"));
         assert!(looks_technical("adb reverse tcp:17400"));
         assert!(!looks_technical("没有可用显示器"));

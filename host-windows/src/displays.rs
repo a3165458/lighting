@@ -188,28 +188,53 @@ pub fn ensure_secondary_display_with_progress(
         return Ok(());
     }
 
-    if find_idd_bundle().is_some() {
-        progress(lighting_host::share_flow::virtual_driver_install_copy(
-            process_is_elevated(),
-        ));
-        tracing::info!("no secondary; provisioning LightingIdd (IddCx Option B)");
-        match ensure_via_lighting_idd(&mut progress) {
-            Ok(()) => {
-                progress("Lighting 虚拟屏已就绪");
-                return Ok(());
-            }
-            Err(err) => {
-                progress(&format!(
-                    "自有驱动未就绪（{err:#}），改试备用虚拟显示驱动…"
-                ));
-                tracing::warn!("LightingIdd failed ({err:#}); falling back to MttVDD");
+    match inspect_idd_bundle() {
+        IddBundleStatus::Complete(_) => {
+            progress(lighting_host::share_flow::virtual_driver_install_copy(
+                process_is_elevated(),
+            ));
+            tracing::info!("no secondary; provisioning LightingIdd (IddCx Option B)");
+            match ensure_via_lighting_idd(&mut progress) {
+                Ok(()) => {
+                    progress("Lighting 虚拟屏已就绪");
+                    return Ok(());
+                }
+                Err(err)
+                    if lighting_host::share_flow::is_idd_bundle_incomplete(&format!(
+                        "{err:#}"
+                    )) =>
+                {
+                    progress(lighting_host::share_flow::idd_bundle_incomplete_copy());
+                    tracing::warn!(
+                        "LightingIdd bundle incomplete ({err:#}); skipping Idd, using MttVDD"
+                    );
+                }
+                Err(err)
+                    if lighting_host::share_flow::should_surface_provision_interrupt(&format!(
+                        "{err:#}"
+                    )) =>
+                {
+                    return Err(err);
+                }
+                Err(err) => {
+                    progress(&format!(
+                        "自有驱动未就绪（{err:#}），改试备用虚拟显示驱动…"
+                    ));
+                    tracing::warn!("LightingIdd failed ({err:#}); falling back to MttVDD");
+                }
             }
         }
-    } else {
-        tracing::info!("LightingIdd bundle absent; using legacy MttVDD path");
-        progress(lighting_host::share_flow::virtual_driver_install_copy(
-            process_is_elevated(),
-        ));
+        IddBundleStatus::Incomplete => {
+            // INF without DLL: do not launch provision.ps1 (1-second BUNDLE_DLL_MISSING flash).
+            progress(lighting_host::share_flow::idd_bundle_incomplete_copy());
+            tracing::warn!("LightingIdd INF present without LightingIdd.dll; skipping Idd, using MttVDD");
+        }
+        IddBundleStatus::Absent => {
+            tracing::info!("LightingIdd bundle absent; using legacy MttVDD path");
+            progress(lighting_host::share_flow::virtual_driver_install_copy(
+                process_is_elevated(),
+            ));
+        }
     }
 
     tracing::info!("provisioning bundled MttVDD (legacy fallback)");
@@ -262,11 +287,22 @@ pub fn ensure_secondary_display_with_progress(
     anyhow::bail!("VDD_NO_MONITOR");
 }
 
+fn provision_err_text(err: &anyhow::Error) -> String {
+    format!("{err:#}")
+}
+
 fn ensure_via_lighting_idd(progress: &mut impl FnMut(&str)) -> Result<()> {
     progress("正在尝试启用已安装的 Lighting 虚拟屏…");
-    let _ = run_idd_provision(IddProvisionMode::EnableOnly);
-    if poll_secondary(12, progress) {
-        return Ok(());
+    match run_idd_provision(IddProvisionMode::EnableOnly) {
+        Ok(()) => {
+            if poll_secondary(12, progress) {
+                return Ok(());
+            }
+        }
+        Err(err) if lighting_host::share_flow::should_surface_provision_interrupt(&provision_err_text(&err)) => {
+            return Err(err);
+        }
+        Err(_) => {}
     }
     progress(lighting_host::share_flow::virtual_driver_install_copy(
         process_is_elevated(),
@@ -275,9 +311,16 @@ fn ensure_via_lighting_idd(progress: &mut impl FnMut(&str)) -> Result<()> {
     if poll_secondary(40, progress) {
         return Ok(());
     }
-    let _ = run_idd_provision(IddProvisionMode::EnableOnly);
-    if poll_secondary(20, progress) {
-        return Ok(());
+    match run_idd_provision(IddProvisionMode::EnableOnly) {
+        Ok(()) => {
+            if poll_secondary(20, progress) {
+                return Ok(());
+            }
+        }
+        Err(err) if lighting_host::share_flow::should_surface_provision_interrupt(&provision_err_text(&err)) => {
+            return Err(err);
+        }
+        Err(_) => {}
     }
     anyhow::bail!("IDD_NO_MONITOR")
 }
@@ -288,7 +331,27 @@ enum IddProvisionMode {
     EnableOnly,
 }
 
-fn find_idd_bundle() -> Option<PathBuf> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum IddBundleStatus {
+    Complete(PathBuf),
+    Incomplete,
+    Absent,
+}
+
+fn idd_dir_status(dir: &std::path::Path) -> IddBundleStatus {
+    let inf = dir.join("LightingIdd.inf").is_file();
+    let dll = dir.join("LightingIdd.dll").is_file()
+        || find_bundle_file(dir, "LightingIdd.dll").is_some();
+    if lighting_host::share_flow::should_attempt_idd_install(inf, dll) {
+        IddBundleStatus::Complete(dir.to_path_buf())
+    } else if inf {
+        IddBundleStatus::Incomplete
+    } else {
+        IddBundleStatus::Absent
+    }
+}
+
+fn idd_bundle_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -316,8 +379,29 @@ fn find_idd_bundle() -> Option<PathBuf> {
             .join("idd"),
     );
     candidates
-        .into_iter()
-        .find(|p| p.join("LightingIdd.inf").is_file())
+}
+
+fn inspect_idd_bundle() -> IddBundleStatus {
+    let mut saw_incomplete = false;
+    for dir in idd_bundle_candidates() {
+        match idd_dir_status(&dir) {
+            IddBundleStatus::Complete(p) => return IddBundleStatus::Complete(p),
+            IddBundleStatus::Incomplete => saw_incomplete = true,
+            IddBundleStatus::Absent => {}
+        }
+    }
+    if saw_incomplete {
+        IddBundleStatus::Incomplete
+    } else {
+        IddBundleStatus::Absent
+    }
+}
+
+fn find_idd_bundle() -> Option<PathBuf> {
+    match inspect_idd_bundle() {
+        IddBundleStatus::Complete(p) => Some(p),
+        _ => None,
+    }
 }
 
 fn run_idd_provision(mode: IddProvisionMode) -> Result<()> {
@@ -340,7 +424,220 @@ fn run_idd_provision(mode: IddProvisionMode) -> Result<()> {
         IddProvisionMode::Full => "Full",
         IddProvisionMode::EnableOnly => "EnableOnly",
     };
+    if process_is_elevated() {
+        return run_idd_native(&bundle, mode);
+    }
     run_provision_script(&script, &bundle, mode_s)
+}
+
+const LIGHTING_IDD_HWID: &str = r"Root\LightingIdd";
+
+fn write_drv_result(path: &std::path::Path, status: &str, detail: &str) {
+    let line = format!("{status}|{detail}");
+    let _ = std::fs::write(path, line);
+}
+
+fn find_bundle_file(bundle: &std::path::Path, name: &str) -> Option<PathBuf> {
+    let direct = bundle.join(name);
+    if direct.is_file() {
+        return Some(direct);
+    }
+    let Ok(entries) = std::fs::read_dir(bundle) else {
+        return None;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_file() && p.file_name().is_some_and(|n| n == name) {
+            return Some(p);
+        }
+        if p.is_dir() {
+            let nested = p.join(name);
+            if nested.is_file() {
+                return Some(nested);
+            }
+        }
+    }
+    None
+}
+
+fn pnputil_exe() -> PathBuf {
+    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    PathBuf::from(root).join("System32").join("pnputil.exe")
+}
+
+fn pnp_success(code: i32) -> bool {
+    code == 0 || code == 259
+}
+
+fn stay_open_console(last_line: &str) {
+    let safe = last_line
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-' || *c == '|' || *c == ' ')
+        .collect::<String>();
+    let script = format!(
+        "echo {safe} & echo Allow Lighting pnputil nefconc in 360 if prompted. & pause"
+    );
+    let _ = Command::new("cmd.exe")
+        .args(["/c", &script])
+        .creation_flags(CREATE_NEW_CONSOLE)
+        .spawn();
+}
+
+fn run_visible_exe(exe: &std::path::Path, args: &[&str], cwd: Option<&std::path::Path>) -> Result<i32> {
+    let mut cmd = Command::new(exe);
+    cmd.args(args).creation_flags(CREATE_NEW_CONSOLE);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    let mut child = cmd.spawn().map_err(|err| {
+        anyhow::anyhow!("INSTALL_INTERRUPTED:{err}")
+    })?;
+    let status = wait_child_status(&mut child, PROVISION_TIMEOUT)?;
+    match status.code() {
+        Some(code) => Ok(code),
+        None => anyhow::bail!("INSTALL_INTERRUPTED"),
+    }
+}
+
+fn wait_child_status(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> Result<std::process::ExitStatus> {
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) if start.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                anyhow::bail!("INSTALL_TIMEOUT");
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(150)),
+            Err(err) => anyhow::bail!("INSTALL_INTERRUPTED:{err}"),
+        }
+    }
+}
+
+fn enable_lighting_idd_native() -> Result<bool> {
+    let pnputil = pnputil_exe();
+    if !pnputil.is_file() {
+        anyhow::bail!("INSTALL_INTERRUPTED");
+    }
+    let code = run_visible_exe(
+        &pnputil,
+        &["/enable-device", "/deviceid", LIGHTING_IDD_HWID],
+        None,
+    )?;
+    if pnp_success(code) {
+        return Ok(true);
+    }
+    let _ = run_visible_exe(&pnputil, &["/enum-devices", "/deviceid", LIGHTING_IDD_HWID], None);
+    Ok(false)
+}
+
+/// Already-elevated LightingIdd install: call pnputil / nefconc directly.
+/// 360 often kills powershell.exe before Write-Result; do not go through it.
+fn run_idd_native(bundle: &std::path::Path, mode: IddProvisionMode) -> Result<()> {
+    let result_file = std::env::temp_dir().join(format!(
+        "lighting-drv-{}.txt",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    ));
+    let finish = |status: &str, detail: &str, ok: bool| -> Result<()> {
+        write_drv_result(&result_file, status, detail);
+        if ok {
+            Ok(())
+        } else {
+            if status == "FAIL" && detail != "DEVICE_NOT_FOUND" {
+                stay_open_console(&format!("{status}|{detail}"));
+            }
+            anyhow::bail!("{detail}")
+        }
+    };
+
+    if matches!(mode, IddProvisionMode::EnableOnly) {
+        return match enable_lighting_idd_native() {
+            Ok(true) => finish("OK", "ENABLED", true),
+            Ok(false) => finish("FAIL", "DEVICE_NOT_FOUND", false),
+            Err(err) => {
+                let code = if lighting_host::share_flow::should_surface_provision_interrupt(&format!("{err:#}")) {
+                    "INSTALL_INTERRUPTED"
+                } else {
+                    "DEVICE_NOT_FOUND"
+                };
+                finish("FAIL", code, false)
+            }
+        };
+    }
+
+    let inf = match find_bundle_file(bundle, "LightingIdd.inf") {
+        Some(p) => p,
+        None => return finish("FAIL", "BUNDLE_INF_MISSING", false),
+    };
+    if find_bundle_file(bundle, "LightingIdd.dll").is_none() {
+        return finish("FAIL", "BUNDLE_DLL_MISSING", false);
+    }
+    let pnputil = pnputil_exe();
+    if !pnputil.is_file() {
+        return finish("FAIL", "INSTALL_INTERRUPTED", false);
+    }
+
+    let mut added = false;
+    match run_visible_exe(
+        &pnputil,
+        &["/add-driver", &inf.to_string_lossy(), "/install"],
+        inf.parent(),
+    ) {
+        Ok(code) if pnp_success(code) => added = true,
+        Ok(code) => {
+            tracing::warn!("pnputil /add-driver exit {code}");
+        }
+        Err(err) => {
+            if lighting_host::share_flow::should_surface_provision_interrupt(&format!("{err:#}")) {
+                return finish("FAIL", "INSTALL_INTERRUPTED", false);
+            }
+        }
+    }
+
+    let nef = find_bundle_file(bundle, "nefconc.exe")
+        .or_else(|| find_bundle_file(bundle, "nefconw.exe"));
+    if let Some(nef) = nef {
+        match run_visible_exe(
+            &nef,
+            &["install", "LightingIdd.inf", LIGHTING_IDD_HWID],
+            inf.parent(),
+        ) {
+            Ok(code) if pnp_success(code) => added = true,
+            Ok(_) => {}
+            Err(err) => {
+                if lighting_host::share_flow::should_surface_provision_interrupt(&format!("{err:#}"))
+                    && !added
+                {
+                    return finish("FAIL", "INSTALL_INTERRUPTED", false);
+                }
+            }
+        }
+    }
+
+    match enable_lighting_idd_native() {
+        Ok(true) => return finish("OK", "READY", true),
+        Ok(false) if added => {}
+        Ok(false) => return finish("FAIL", "DEVICE_STILL_MISSING", false),
+        Err(err)
+            if lighting_host::share_flow::should_surface_provision_interrupt(&format!("{err:#}")) =>
+        {
+            return finish("FAIL", "INSTALL_INTERRUPTED", false);
+        }
+        Err(_) => {}
+    }
+
+    if added {
+        finish("OK", "READY", true)
+    } else {
+        finish("FAIL", "DRIVER_INSTALL_FAILED", false)
+    }
 }
 
 /// Installer launcher.

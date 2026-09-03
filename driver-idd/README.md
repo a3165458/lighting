@@ -18,7 +18,7 @@ This Linux CI agent **cannot** link UMDF/IddCx. Build on a Windows 11 machine:
 2. Open `driver-idd/LightingIdd.sln`
 3. Configuration: `Release | x64`
 4. Build → output `LightingIdd.dll` under WDK/UMDF out dir (check project Output Directory)
-5. Run `scripts/idd/stage-idd-bundle.ps1` to copy `LightingIdd.dll` + `LightingIdd.inf` + `nefconw.exe` into `host-ui/resources/idd/`
+5. Run `scripts/idd/stage-idd-bundle.ps1` to copy `LightingIdd.dll` + `LightingIdd.inf` + `nefconc.exe` into `host-ui/resources/idd/`. The script **fails** if the DLL or nefconc is missing (INF-only staging is forbidden). CI builds this sln on `windows-2022` (WDK) before Electron pack.
 
 ### Test signing (dev machines only)
 
@@ -42,8 +42,9 @@ ASCII result file: `OK|...` / `FAIL|CODE` (same protocol as VDD provision).
 
 `host-windows` `ensure_secondary_display`:
 
-1. Try **LightingIdd** bundle (`resources/idd/`)
-2. Fall back to legacy **MttVDD** (`resources/vdd/`) if IDD missing or fails
+1. Try **LightingIdd** only when the bundle is complete (`LightingIdd.inf` **and** `LightingIdd.dll`)
+2. If the pack shipped INF without the DLL, skip Idd (do not flash `provision.ps1`) and use **MttVDD**
+3. Fall back to legacy **MttVDD** (`resources/vdd/`) if Idd is absent or fails for a non-interrupt reason
 
 ## License
 
