@@ -241,11 +241,8 @@ pub fn ensure_secondary_display_with_progress(
     let _ = prepare_vdd_settings(1920, 1080, 60);
 
     if !vdd_pipe_alive() {
-        progress("正在启动虚拟显示驱动服务…");
-        let _ = run_vdd_provision(VddProvisionMode::EnableOnly);
-        wait_for_vdd_pipe(10);
-    }
-    if !vdd_pipe_alive() {
+        // EnableOnly used to report OK on GlideX / enable-device exit 0 with
+        // no Root\MttVDD node. Go straight to Full so nefcon can create it.
         progress(lighting_host::share_flow::virtual_driver_install_copy(
             process_is_elevated(),
         ));
@@ -430,7 +427,8 @@ fn run_idd_provision(mode: IddProvisionMode) -> Result<()> {
     run_provision_script(&script, &bundle, mode_s)
 }
 
-const LIGHTING_IDD_HWID: &str = r"Root\LightingIdd";
+const LIGHTING_IDD_HWID: &str = lighting_host::share_flow::LIGHTING_IDD_HWID;
+const MTT_VDD_HWID: &str = lighting_host::share_flow::MTT_VDD_HWID;
 
 fn write_drv_result(path: &std::path::Path, status: &str, detail: &str) {
     let line = format!("{status}|{detail}");
@@ -466,7 +464,47 @@ fn pnputil_exe() -> PathBuf {
 }
 
 fn pnp_success(code: i32) -> bool {
-    code == 0 || code == 259
+    lighting_host::share_flow::driver_store_staged(code)
+}
+
+fn run_silent_exe(
+    exe: &std::path::Path,
+    args: &[&str],
+    cwd: Option<&std::path::Path>,
+) -> Result<(i32, String)> {
+    let mut cmd = Command::new(exe);
+    cmd.args(args)
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    let output = cmd.output().map_err(|err| anyhow::anyhow!("INSTALL_INTERRUPTED:{err}"))?;
+    let code = output.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    Ok((code, stdout))
+}
+
+fn enum_intended_devices(hwid: &str) -> Vec<lighting_host::share_flow::PnpDeviceMatch> {
+    let pnputil = pnputil_exe();
+    if !pnputil.is_file() {
+        return Vec::new();
+    }
+    let Ok((_code, stdout)) = run_silent_exe(
+        &pnputil,
+        &["/enum-devices", "/deviceid", hwid],
+        None,
+    ) else {
+        return Vec::new();
+    };
+    lighting_host::share_flow::parse_pnputil_enum_devices(&stdout)
+}
+
+fn ready_intended_instance(hwid: &str) -> Option<String> {
+    let devices = enum_intended_devices(hwid);
+    lighting_host::share_flow::first_ready_intended(&devices, hwid)
+        .map(|d| d.instance_id.clone())
 }
 
 fn stay_open_console(last_line: &str) {
@@ -518,26 +556,78 @@ fn wait_child_status(
     }
 }
 
-fn enable_lighting_idd_native() -> Result<bool> {
+fn enable_root_device_native(hwid: &str) -> Result<Option<String>> {
+    let existing = enum_intended_devices(hwid);
+    let Some(dev) = lighting_host::share_flow::first_intended_adapter(&existing, hwid) else {
+        // Do not call /enable-device just to treat exit 0 as "present".
+        return Ok(None);
+    };
     let pnputil = pnputil_exe();
     if !pnputil.is_file() {
         anyhow::bail!("INSTALL_INTERRUPTED");
     }
-    let code = run_visible_exe(
-        &pnputil,
-        &["/enable-device", "/deviceid", LIGHTING_IDD_HWID],
-        None,
-    )?;
-    if pnp_success(code) {
-        return Ok(true);
-    }
-    let _ = run_visible_exe(&pnputil, &["/enum-devices", "/deviceid", LIGHTING_IDD_HWID], None);
-    Ok(false)
+    let _ = run_visible_exe(&pnputil, &["/enable-device", &dev.instance_id], None);
+    let _ = run_visible_exe(&pnputil, &["/restart-device", &dev.instance_id], None);
+    std::thread::sleep(Duration::from_secs(2));
+    Ok(ready_intended_instance(hwid))
 }
 
-/// Already-elevated LightingIdd install: call pnputil / nefconc directly.
-/// 360 often kills powershell.exe before Write-Result; do not go through it.
-fn run_idd_native(bundle: &std::path::Path, mode: IddProvisionMode) -> Result<()> {
+fn import_bundle_publisher_certs(inf_dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(inf_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("cat"))
+        {
+            continue;
+        }
+        let cat = path.to_string_lossy().replace('\'', "''");
+        let ps = format!(
+            r#"$ErrorActionPreference='SilentlyContinue'; $certs=New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection; $certs.Import([IO.File]::ReadAllBytes('{cat}')); foreach($c in $certs){{ $cer=Join-Path $env:TEMP ($c.Thumbprint+'.cer'); [IO.File]::WriteAllBytes($cer,$c.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)); Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\LocalMachine\TrustedPublisher' | Out-Null }}"#
+        );
+        let _ = Command::new("powershell.exe")
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &ps])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+    }
+}
+
+fn finish_native_result(
+    result_file: &std::path::Path,
+    outcome: lighting_host::share_flow::NativeProvisionFinish,
+) -> Result<()> {
+    use lighting_host::share_flow::NativeProvisionFinish;
+    let (status, detail, ok) = match &outcome {
+        NativeProvisionFinish::OkReady(id) => ("OK", format!("READY:{id}"), true),
+        NativeProvisionFinish::OkEnabled(id) => ("OK", format!("ENABLED:{id}"), true),
+        NativeProvisionFinish::Fail(code) => ("FAIL", (*code).to_string(), false),
+    };
+    let line = format!("{status}|{detail}");
+    write_drv_result(result_file, status, &detail);
+    if ok {
+        if !lighting_host::share_flow::provision_ok_names_intended_device(&line) {
+            anyhow::bail!("DEVICE_STILL_MISSING");
+        }
+        return Ok(());
+    }
+    if status == "FAIL" && detail != "DEVICE_NOT_FOUND" {
+        stay_open_console(&line);
+    }
+    anyhow::bail!("{detail}")
+}
+
+/// Already-elevated root-device install: pnputil stages the INF; nefcon
+/// creates `Root\…`. Staging / enable-device exit 0 is never OK by itself.
+fn run_root_device_native(
+    bundle: &std::path::Path,
+    inf_name: &str,
+    hwid: &str,
+    require_dll: Option<&str>,
+    full: bool,
+) -> Result<()> {
     let result_file = std::env::temp_dir().join(format!(
         "lighting-drv-{}.txt",
         std::time::SystemTime::now()
@@ -545,99 +635,158 @@ fn run_idd_native(bundle: &std::path::Path, mode: IddProvisionMode) -> Result<()
             .map(|d| d.as_millis())
             .unwrap_or(0)
     ));
-    let finish = |status: &str, detail: &str, ok: bool| -> Result<()> {
-        write_drv_result(&result_file, status, detail);
-        if ok {
-            Ok(())
-        } else {
-            if status == "FAIL" && detail != "DEVICE_NOT_FOUND" {
-                stay_open_console(&format!("{status}|{detail}"));
-            }
-            anyhow::bail!("{detail}")
-        }
-    };
 
-    if matches!(mode, IddProvisionMode::EnableOnly) {
-        return match enable_lighting_idd_native() {
-            Ok(true) => finish("OK", "ENABLED", true),
-            Ok(false) => finish("FAIL", "DEVICE_NOT_FOUND", false),
+    if !full {
+        return match enable_root_device_native(hwid) {
+            Ok(Some(id)) => finish_native_result(
+                &result_file,
+                lighting_host::share_flow::NativeProvisionFinish::OkEnabled(id),
+            ),
+            Ok(None) => finish_native_result(
+                &result_file,
+                lighting_host::share_flow::NativeProvisionFinish::Fail("DEVICE_NOT_FOUND"),
+            ),
             Err(err) => {
                 let code = if lighting_host::share_flow::should_surface_provision_interrupt(&format!("{err:#}")) {
                     "INSTALL_INTERRUPTED"
                 } else {
                     "DEVICE_NOT_FOUND"
                 };
-                finish("FAIL", code, false)
+                finish_native_result(
+                    &result_file,
+                    lighting_host::share_flow::NativeProvisionFinish::Fail(code),
+                )
             }
         };
     }
 
-    let inf = match find_bundle_file(bundle, "LightingIdd.inf") {
+    let inf = match find_bundle_file(bundle, inf_name) {
         Some(p) => p,
-        None => return finish("FAIL", "BUNDLE_INF_MISSING", false),
+        None => {
+            return finish_native_result(
+                &result_file,
+                lighting_host::share_flow::NativeProvisionFinish::Fail("BUNDLE_INF_MISSING"),
+            );
+        }
     };
-    if find_bundle_file(bundle, "LightingIdd.dll").is_none() {
-        return finish("FAIL", "BUNDLE_DLL_MISSING", false);
+    if let Some(dll_name) = require_dll {
+        if find_bundle_file(bundle, dll_name).is_none() {
+            return finish_native_result(
+                &result_file,
+                lighting_host::share_flow::NativeProvisionFinish::Fail("BUNDLE_DLL_MISSING"),
+            );
+        }
     }
     let pnputil = pnputil_exe();
     if !pnputil.is_file() {
-        return finish("FAIL", "INSTALL_INTERRUPTED", false);
+        return finish_native_result(
+            &result_file,
+            lighting_host::share_flow::NativeProvisionFinish::Fail("INSTALL_INTERRUPTED"),
+        );
     }
 
-    let mut added = false;
+    if let Some(dir) = inf.parent() {
+        import_bundle_publisher_certs(dir);
+    }
+
+    let mut staged = false;
     match run_visible_exe(
         &pnputil,
         &["/add-driver", &inf.to_string_lossy(), "/install"],
         inf.parent(),
     ) {
-        Ok(code) if pnp_success(code) => added = true,
+        Ok(code) if pnp_success(code) => staged = true,
         Ok(code) => {
             tracing::warn!("pnputil /add-driver exit {code}");
         }
         Err(err) => {
             if lighting_host::share_flow::should_surface_provision_interrupt(&format!("{err:#}")) {
-                return finish("FAIL", "INSTALL_INTERRUPTED", false);
+                return finish_native_result(
+                    &result_file,
+                    lighting_host::share_flow::NativeProvisionFinish::Fail("INSTALL_INTERRUPTED"),
+                );
             }
         }
     }
 
-    let nef = find_bundle_file(bundle, "nefconc.exe")
-        .or_else(|| find_bundle_file(bundle, "nefconw.exe"));
-    if let Some(nef) = nef {
-        match run_visible_exe(
-            &nef,
-            &["install", "LightingIdd.inf", LIGHTING_IDD_HWID],
-            inf.parent(),
-        ) {
-            Ok(code) if pnp_success(code) => added = true,
-            Ok(_) => {}
-            Err(err) => {
-                if lighting_host::share_flow::should_surface_provision_interrupt(&format!("{err:#}"))
-                    && !added
-                {
-                    return finish("FAIL", "INSTALL_INTERRUPTED", false);
+    let already = enum_intended_devices(hwid);
+    let present = lighting_host::share_flow::first_intended_adapter(&already, hwid).is_some();
+    if lighting_host::share_flow::should_create_root_device_node(present) {
+        let nef = find_bundle_file(bundle, "nefconc.exe")
+            .or_else(|| find_bundle_file(bundle, "nefconw.exe"))
+            .or_else(|| find_bundle_file(bundle, "devcon.exe"));
+        if let Some(nef) = nef {
+            match run_visible_exe(
+                &nef,
+                &["install", inf_name, hwid],
+                inf.parent(),
+            ) {
+                Ok(_) => {
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+                Err(err) => {
+                    if lighting_host::share_flow::should_surface_provision_interrupt(&format!(
+                        "{err:#}"
+                    )) && !present
+                    {
+                        return finish_native_result(
+                            &result_file,
+                            lighting_host::share_flow::NativeProvisionFinish::Fail(
+                                "INSTALL_INTERRUPTED",
+                            ),
+                        );
+                    }
                 }
             }
+        } else if !present {
+            return finish_native_result(
+                &result_file,
+                lighting_host::share_flow::NativeProvisionFinish::Fail("DRIVER_INSTALL_FAILED"),
+            );
         }
     }
 
-    match enable_lighting_idd_native() {
-        Ok(true) => return finish("OK", "READY", true),
-        Ok(false) if added => {}
-        Ok(false) => return finish("FAIL", "DEVICE_STILL_MISSING", false),
+    match enable_root_device_native(hwid) {
+        Ok(_) => {}
         Err(err)
             if lighting_host::share_flow::should_surface_provision_interrupt(&format!("{err:#}")) =>
         {
-            return finish("FAIL", "INSTALL_INTERRUPTED", false);
+            return finish_native_result(
+                &result_file,
+                lighting_host::share_flow::NativeProvisionFinish::Fail("INSTALL_INTERRUPTED"),
+            );
         }
         Err(_) => {}
     }
 
-    if added {
-        finish("OK", "READY", true)
-    } else {
-        finish("FAIL", "DRIVER_INSTALL_FAILED", false)
-    }
+    let devices = enum_intended_devices(hwid);
+    let ready = lighting_host::share_flow::first_ready_intended(&devices, hwid);
+    finish_native_result(
+        &result_file,
+        lighting_host::share_flow::finish_native_full(staged, false, ready, hwid),
+    )
+}
+
+/// Already-elevated LightingIdd install: call pnputil / nefconc directly.
+/// 360 often kills powershell.exe before Write-Result; do not go through it.
+fn run_idd_native(bundle: &std::path::Path, mode: IddProvisionMode) -> Result<()> {
+    run_root_device_native(
+        bundle,
+        "LightingIdd.inf",
+        LIGHTING_IDD_HWID,
+        Some("LightingIdd.dll"),
+        matches!(mode, IddProvisionMode::Full),
+    )
+}
+
+fn run_vdd_native(bundle: &std::path::Path, mode: VddProvisionMode) -> Result<()> {
+    run_root_device_native(
+        bundle,
+        "MttVDD.inf",
+        MTT_VDD_HWID,
+        None,
+        matches!(mode, VddProvisionMode::Full),
+    )
 }
 
 /// Installer launcher.
@@ -687,8 +836,12 @@ fn run_provision_script(
     let _ = std::fs::remove_file(&result_file);
     let line = raw.trim();
     if line.starts_with("OK|") {
-        tracing::info!("driver provision ok: {line}");
-        return Ok(());
+        if lighting_host::share_flow::provision_ok_names_intended_device(line) {
+            tracing::info!("driver provision ok: {line}");
+            return Ok(());
+        }
+        tracing::warn!("provision claimed OK without intended HWID: {line}");
+        anyhow::bail!("DEVICE_STILL_MISSING");
     }
     if line.starts_with("FAIL|") {
         anyhow::bail!("{}", line.trim_start_matches("FAIL|"));
@@ -897,6 +1050,9 @@ fn run_vdd_provision(mode: VddProvisionMode) -> Result<()> {
         VddProvisionMode::Full => "Full",
         VddProvisionMode::EnableOnly => "EnableOnly",
     };
+    if process_is_elevated() {
+        return run_vdd_native(&bundle, mode);
+    }
     run_provision_script(&script, &bundle, mode_s)
 }
 
