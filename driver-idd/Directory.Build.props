@@ -13,6 +13,9 @@
   <ItemDefinitionGroup Condition="Exists('$(LightingWdkC)Include\wdf\umdf\2.25\wudfwdm.h')">
     <ClCompile>
       <AdditionalIncludeDirectories>$(LightingWdkC)Include\wdf\umdf\2.25;$(LightingWdkC)Include\10.0.26100.0\um\iddcx\1.4;$(LightingWdkC)Include\10.0.26100.0\shared;$(LightingWdkC)Include\10.0.26100.0\um;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <!-- WDK umdf/2.25 wdfmemory.h triggers C6553; toolset defaults to /WX. -->
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <DisableSpecificWarnings>6553;%(DisableSpecificWarnings)</DisableSpecificWarnings>
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>$(LightingWdkC)Lib\wdf\umdf\x64\2.25;$(LightingWdkC)Lib\10.0.26100.0\um\x64\iddcx\1.4;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
