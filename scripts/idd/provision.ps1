@@ -125,6 +125,7 @@ try {
             exit 0
         }
         Write-Result 'FAIL' 'DEVICE_NOT_FOUND'
+        Write-Host 'FAIL|DEVICE_NOT_FOUND'
         exit 1
     }
 
@@ -136,12 +137,17 @@ try {
 
     if (-not $dev) {
         Write-Result 'FAIL' 'DEVICE_STILL_MISSING'
+        Write-Host 'FAIL|DEVICE_STILL_MISSING'
+        Read-Host 'Lighting provision failed. Press Enter'
         exit 1
     }
 
     Write-Result 'OK' ('READY:' + $(if ($dev.InstanceId) { $dev.InstanceId } else { 'unknown' }))
     exit 0
 } catch {
-    Write-Result 'FAIL' (Map-ProvisionError $_.Exception.Message)
+    $code = Map-ProvisionError $_.Exception.Message
+    Write-Result 'FAIL' $code
+    Write-Host ('FAIL|' + $code)
+    Read-Host 'Lighting provision failed. Press Enter'
     exit 1
 }

@@ -319,7 +319,7 @@ pub fn human_vdd_error(raw: &str) -> Option<String> {
     } else if code_upper.contains("UAC_TIMEOUT") {
         "等了很久也没有管理员确认窗口。请完全退出 Lighting，右键选「以管理员身份运行」后再点开始共享（已是管理员时不会再弹窗）。"
     } else if code_upper.contains("INSTALL_INTERRUPTED") {
-        "安装被中断（可能是 360/杀毒软件）。请在安全软件里允许 Lighting、powershell、pnputil，然后完全退出再试。已是管理员时不会再弹 UAC。"
+        "安装被安全软件中断，请在 360 里允许 Lighting / powershell / pnputil。已是管理员时不会再弹 UAC。"
     } else if code_upper.contains("INSTALL_TIMEOUT") {
         "驱动安装超时。请完全退出 Lighting 后以管理员身份运行再试。若弹出 360/杀毒软件请选允许。"
     } else if code_upper.contains("UAC_NO_RESULT") || code_upper.contains("DRIVER_NO_RESULT") {
@@ -579,7 +579,9 @@ mod tests {
         assert!(!human_vdd_error("DRIVER_UNKNOWN_RESULT").unwrap().contains("取消"));
         assert!(!human_vdd_error("INSTALL_TIMEOUT").unwrap().contains("已取消"));
         assert!(!human_vdd_error("INSTALL_INTERRUPTED").unwrap().contains("已取消"));
+        assert!(!human_vdd_error("INSTALL_INTERRUPTED").unwrap().contains("未找到虚拟显示设备"));
         assert!(human_vdd_error("INSTALL_INTERRUPTED").unwrap().contains("360"));
+        assert!(human_vdd_error("INSTALL_INTERRUPTED").unwrap().contains("安全软件"));
         assert!(human_vdd_error("DRIVER_NO_RESULT").unwrap().contains("没写出"));
         assert!(human_vdd_error("UAC_NO_RESULT").unwrap().contains("没写出"));
         assert!(human_vdd_error("UAC_HIDDEN_HOST").unwrap().contains("可见窗口"));
