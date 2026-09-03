@@ -8,6 +8,7 @@ on:
       - "host-windows/**"
       - "android/**"
       - "scripts/**"
+      - "driver-idd/**"
       - ".github/workflows/build-electron-win.yml"
   pull_request:
     branches: [main]
@@ -15,6 +16,8 @@ on:
       - "host-ui/**"
       - "host-windows/**"
       - "android/**"
+      - "scripts/**"
+      - "driver-idd/**"
   workflow_dispatch:
 
 permissions:
@@ -33,13 +36,20 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Simulate share policy (no DXGI)
         run: cargo test --lib
+      - name: Stage Idd must fail without LightingIdd.dll
+        working-directory: .
+        run: pwsh -NoProfile -File scripts/idd/test-stage-requires-dll.ps1
 
   electron-win:
     needs: simulate-share
-    runs-on: windows-latest
+    # windows-2022 still ships a standalone WDK; windows-2025 (latest) does not.
+    runs-on: windows-2022
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -72,15 +82,31 @@ jobs:
         working-directory: host-windows
         run: cargo build --release
 
-      - name: Stage resources (host + APK)
+      - name: Stage resources (host + APK + Idd)
         shell: pwsh
         run: |
           Copy-Item host-windows/target/release/lighting-host.exe host-ui/resources/lighting-host.exe -Force
           pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/vdd/stage-vdd-bundle.ps1
-          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/idd/stage-idd-bundle.ps1
+          $iddBuilt = $false
+          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/idd/build-idd.ps1
+          if ($LASTEXITCODE -eq 0) { $iddBuilt = $true } else {
+            Write-Warning "LightingIdd WDK build unavailable (exit $LASTEXITCODE)"
+          }
+          if ($iddBuilt) {
+            pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/idd/stage-idd-bundle.ps1
+            if ($LASTEXITCODE -ne 0) { throw "stage-idd-bundle failed after a successful driver build" }
+            pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/idd/assert-idd-bundle.ps1 -RequireComplete
+          } else {
+            Write-Warning "No LightingIdd.dll — omitting Idd (MttVDD only). INF-only Idd is forbidden."
+            pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/idd/stage-idd-bundle.ps1 -AllowMissingDll
+            pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/idd/assert-idd-bundle.ps1 -ForbidIncomplete
+          }
           Get-ChildItem host-ui/resources | Format-Table Name, Length
           Get-ChildItem host-ui/resources/vdd -ErrorAction SilentlyContinue | Format-Table Name, Length
           Get-ChildItem host-ui/resources/idd -ErrorAction SilentlyContinue | Format-Table Name, Length
+          if ((Test-Path host-ui/resources/idd/LightingIdd.inf) -and -not (Test-Path host-ui/resources/idd/LightingIdd.dll)) {
+            throw "pack job refused INF-only Idd bundle"
+          }
 
       - name: Setup Node
         uses: actions/setup-node@v4

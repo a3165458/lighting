@@ -23,6 +23,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
       - name: Simulate share policy (no DXGI)
         run: cargo test --lib
+      - name: Stage Idd must fail without LightingIdd.dll
+        working-directory: .
+        run: pwsh -NoProfile -File scripts/idd/test-stage-requires-dll.ps1
 
   windows-exe:
     needs: simulate-share
