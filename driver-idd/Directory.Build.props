@@ -7,6 +7,8 @@
   <PropertyGroup>
     <LightingWdkVersion>10.0.26100.6584</LightingWdkVersion>
     <LightingWdkC>$(MSBuildThisFileDirectory)packages\Microsoft.Windows.WDK.x64.$(LightingWdkVersion)\c\</LightingWdkC>
+    <!-- windows-2022 kit tree is missing x86\InfVerif.dll; do not fail the product pack on that. -->
+    <InfVerif Condition="'$(InfVerif)' == ''">false</InfVerif>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="Exists('$(LightingWdkC)Include\wdf\umdf\2.25\wudfwdm.h')">
     <ClCompile>
