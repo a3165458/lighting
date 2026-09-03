@@ -1,0 +1,24 @@
+<Project>
+  <!-- Do NOT import Microsoft.Windows.WDK.x64.props: that sets WDKContentRoot and
+       loads NuGet WindowsDriver.common.targets, which MSBuild 17.14 rejects
+       (MSB4086: version string compared as a number).
+       Keep the inbox WindowsUserModeDriver10.0 toolset and only append UMDF/IddCx
+       include + lib paths from the restored NuGet package. -->
+  <PropertyGroup>
+    <LightingWdkVersion>10.0.26100.6584</LightingWdkVersion>
+    <LightingWdkC>$(MSBuildThisFileDirectory)packages\Microsoft.Windows.WDK.x64.$(LightingWdkVersion)\c\</LightingWdkC>
+    <!-- windows-2022 kit tree is missing x86\InfVerif.dll; do not fail the product pack on that. -->
+    <InfVerif Condition="'$(InfVerif)' == ''">false</InfVerif>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="Exists('$(LightingWdkC)Include\wdf\umdf\2.25\wudfwdm.h')">
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(LightingWdkC)Include\wdf\umdf\2.25;$(LightingWdkC)Include\10.0.26100.0\um\iddcx\1.4;$(LightingWdkC)Include\10.0.26100.0\shared;$(LightingWdkC)Include\10.0.26100.0\um;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <!-- WDK umdf/2.25 wdfmemory.h triggers C6553; toolset defaults to /WX. -->
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <DisableSpecificWarnings>6553;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <Link>
+      <AdditionalLibraryDirectories>$(LightingWdkC)Lib\wdf\umdf\x64\2.25;$(LightingWdkC)Lib\10.0.26100.0\um\x64\iddcx\1.4;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+  </ItemDefinitionGroup>
+</Project>
