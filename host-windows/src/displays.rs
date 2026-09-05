@@ -1,21 +1,25 @@
 //! Capture targets and Windows projection helpers (Win+P equivalents).
 //!
-//! Extend / 「仅投扩展屏」 rely on Virtual Display Driver (MttVDD). Installing the
-//! package alone is not enough — we must create a monitor via the driver's named
-//! pipe and set its mode to the tablet's native resolution for 1:1 encode.
+//! Virtual monitors are provisioned by the bundled, signed MttVDD driver.
+//! A healthy PnP device is necessary but not sufficient: only an active desktop
+//! monitor makes extension ready. The optional control pipe is not a health gate.
 
 use anyhow::{Context, Result};
-use std::io::{Read, Write};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
 use windows::Win32::Foundation::{BOOL, CloseHandle, HANDLE, LPARAM, RECT, WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows::Win32::Devices::Display::{
+    SetDisplayConfig, SDC_APPLY, SDC_TOPOLOGY_CLONE, SDC_TOPOLOGY_EXTEND,
+    SDC_TOPOLOGY_EXTERNAL, SET_DISPLAY_CONFIG_FLAGS,
+};
 use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1};
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, DISPLAY_DEVICEW, HDC, HMONITOR,
-    MONITORINFO,
+    MONITORINFOEXW,
 };
 use windows::Win32::Security::{
     GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
@@ -30,6 +34,7 @@ use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLE
 use windows::Win32::UI::WindowsAndMessaging::{MONITORINFOF_PRIMARY, SW_SHOWNORMAL};
 use windows::core::PCWSTR;
 
+use lighting_host::capture_graph::DxgiCapture;
 use lighting_host::view::{looks_virtual_display, ShareMode};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -62,8 +67,8 @@ pub fn process_is_elevated() -> bool {
 
 #[derive(Debug, Clone)]
 pub struct DisplayInfo {
-    /// DXGI output index, matches FFmpeg `ddagrab=output_idx`.
-    pub dxgi_index: u32,
+    /// Absent for GDI-only virtual monitors; never synthesize a DXGI index.
+    pub dxgi: Option<DxgiCapture>,
     pub name: String,
     pub friendly: String,
     pub x: i32,
@@ -84,13 +89,12 @@ impl DisplayInfo {
             "副屏"
         };
         let title = if self.friendly.is_empty() {
-            self.name.clone()
+            &self.name
         } else {
-            self.friendly.clone()
+            &self.friendly
         };
         format!(
-            "#{dxgi} {kind} {w}×{h} · {title}",
-            dxgi = self.dxgi_index,
+            "{kind} {w}×{h} · {title}",
             w = self.width,
             h = self.height,
         )
@@ -98,45 +102,48 @@ impl DisplayInfo {
 }
 
 pub fn list_displays() -> Result<Vec<DisplayInfo>> {
+    // GDI describes the active desktop, including indirect displays DXGI omits.
+    // DXGI only enriches that list with an adapter-local duplication identity.
+    let mut displays = list_via_gdi()?;
     match list_via_dxgi() {
-        Ok(list) if !list.is_empty() => Ok(list),
-        Ok(_) => list_via_gdi(),
-        Err(err) => {
-            tracing::warn!("DXGI enum failed ({err:#}), fallback to GDI");
-            list_via_gdi()
+        Ok(outputs) => {
+            for display in &mut displays {
+                display.dxgi = outputs
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case(&display.name))
+                    .map(|(_, capture)| *capture);
+            }
         }
+        Err(err) => tracing::warn!("DXGI enum failed ({err:#}); using selected GDI regions"),
     }
+    Ok(displays)
 }
 
 /// Apply Win+P topology. External (tablet-only) still uses `/extend` here so the
 /// Lighting window stays on a visible monitor until the tablet Hello arrives;
 /// [`apply_tablet_only_output`] blanks the PC panel afterwards.
 pub fn apply_project_mode(mode: ShareMode) -> Result<()> {
-    let arg = match mode {
-        ShareMode::Mirror => "/clone",
-        ShareMode::Extend | ShareMode::External => "/extend",
+    let topology = match mode {
+        ShareMode::Mirror => SDC_TOPOLOGY_CLONE,
+        ShareMode::Extend | ShareMode::External => SDC_TOPOLOGY_EXTEND,
     };
-    display_switch(arg)
+    apply_topology(topology)
 }
 
 /// Win+P “仅第二屏幕”: laptop panel off, desktop lives on the virtual display.
 pub fn apply_tablet_only_output() -> Result<()> {
-    display_switch("/external")
+    apply_topology(SDC_TOPOLOGY_EXTERNAL)
 }
 
 /// Bring the PC panel back after a tablet-only session.
 pub fn restore_pc_monitor() -> Result<()> {
-    display_switch("/extend")
+    apply_topology(SDC_TOPOLOGY_EXTEND)
 }
 
-fn display_switch(arg: &str) -> Result<()> {
-    let status = Command::new("DisplaySwitch.exe")
-        .arg(arg)
-        .creation_flags(CREATE_NO_WINDOW)
-        .status()
-        .context("启动 DisplaySwitch.exe 失败")?;
-    if !status.success() {
-        anyhow::bail!("DisplaySwitch {arg} 返回 {status}");
+fn apply_topology(topology: SET_DISPLAY_CONFIG_FLAGS) -> Result<()> {
+    let code = unsafe { SetDisplayConfig(None, None, SDC_APPLY | topology) };
+    if code != 0 {
+        anyhow::bail!("DISPLAY_TOPOLOGY_FAILED:{code}");
     }
     std::thread::sleep(Duration::from_millis(900));
     Ok(())
@@ -165,180 +172,48 @@ pub fn pick_virtual(displays: &[DisplayInfo]) -> Option<&DisplayInfo> {
         .or_else(|| displays.iter().find(|d| !d.primary))
 }
 
-/// Ensure a virtual secondary exists and Windows is in extend topology.
-///
-/// Option B (preferred): LightingIdd — our IddCx UMDF (`Root\LightingIdd`).
-/// Enabling the device makes one monitor arrive (GlideX-class lifecycle).
-/// Legacy fallback: bundled MttVDD + named-pipe SETDISPLAYCOUNT.
+/// Ensure a real secondary desktop exists; never equate driver-store staging or
+/// a control-pipe heartbeat with a working second screen.
 pub fn ensure_secondary_display(mode: ShareMode) -> Result<()> {
     ensure_secondary_display_with_progress(mode, |_| {})
 }
 
 pub fn ensure_secondary_display_with_progress(
-    _mode: ShareMode,
+    mode: ShareMode,
     mut progress: impl FnMut(&str),
 ) -> Result<()> {
-    progress("正在检查是否已有扩展屏…");
-    let list = list_displays().unwrap_or_default();
-    if has_secondary(&list) || has_virtual_display(&list) {
-        progress("已有扩展/虚拟屏，切换到扩展模式…");
-        let _ = apply_project_mode(ShareMode::Extend);
+    progress("正在启用 Windows 扩展桌面…");
+    if let Err(err) = apply_project_mode(ShareMode::Extend) {
+        // No second target may exist yet. Provision it before requiring a
+        // successful topology change; privilege does not create a target.
+        tracing::info!("initial extend topology unavailable: {err:#}");
+    }
+    if poll_share_target(4, &mut progress, mode) {
         return Ok(());
     }
 
-    if find_idd_bundle().is_some() {
-        progress(lighting_host::share_flow::virtual_driver_install_copy(
-            process_is_elevated(),
-        ));
-        tracing::info!("no secondary; provisioning LightingIdd (IddCx Option B)");
-        match ensure_via_lighting_idd(&mut progress) {
-            Ok(()) => {
-                progress("Lighting 虚拟屏已就绪");
-                return Ok(());
-            }
-            Err(err) => {
-                progress(&format!(
-                    "自有驱动未就绪（{err:#}），改试备用虚拟显示驱动…"
-                ));
-                tracing::warn!("LightingIdd failed ({err:#}); falling back to MttVDD");
-            }
-        }
-    } else {
-        tracing::info!("LightingIdd bundle absent; using legacy MttVDD path");
-        progress(lighting_host::share_flow::virtual_driver_install_copy(
-            process_is_elevated(),
-        ));
-    }
-
-    tracing::info!("provisioning bundled MttVDD (legacy fallback)");
-    let _ = prepare_vdd_settings(1920, 1080, 60);
-
-    if !vdd_pipe_alive() {
-        progress("正在启动虚拟显示驱动服务…");
-        let _ = run_vdd_provision(VddProvisionMode::EnableOnly);
-        wait_for_vdd_pipe(10);
-    }
-    if !vdd_pipe_alive() {
-        progress(lighting_host::share_flow::virtual_driver_install_copy(
-            process_is_elevated(),
-        ));
-        run_vdd_provision(VddProvisionMode::Full)?;
-        wait_for_vdd_pipe(24);
-    }
-    if !vdd_pipe_alive() {
-        progress("驱动未响应，正在尝试系统安装通道…");
-        let _ = install_virtual_display_driver_winget();
-        let _ = run_vdd_provision(VddProvisionMode::Full);
-        wait_for_vdd_pipe(16);
-    }
-    if !vdd_pipe_alive() {
-        anyhow::bail!("VDD_PIPE_DOWN");
-    }
-
-    let _ = run_vdd_provision(VddProvisionMode::EnableOnly);
-    wait_for_vdd_pipe(16);
-    if vdd_pipe_alive() {
-        progress("正在创建虚拟显示器…");
-        let _ = vdd_set_display_count(1);
-        wait_for_pipe_reload(20);
-    }
-
-    if poll_secondary(40, &mut progress) {
-        progress("虚拟屏已出现");
-        return Ok(());
-    }
-
-    let _ = prepare_vdd_settings(1920, 1080, 60);
-    let _ = run_vdd_provision(VddProvisionMode::EnableOnly);
-    wait_for_vdd_pipe(16);
-    let _ = vdd_set_display_count(1);
-    wait_for_pipe_reload(24);
-    if poll_secondary(30, &mut progress) {
-        progress("虚拟屏已出现");
-        return Ok(());
-    }
-    anyhow::bail!("VDD_NO_MONITOR");
-}
-
-fn ensure_via_lighting_idd(progress: &mut impl FnMut(&str)) -> Result<()> {
-    progress("正在尝试启用已安装的 Lighting 虚拟屏…");
-    let _ = run_idd_provision(IddProvisionMode::EnableOnly);
-    if poll_secondary(12, progress) {
-        return Ok(());
-    }
     progress(lighting_host::share_flow::virtual_driver_install_copy(
         process_is_elevated(),
     ));
-    run_idd_provision(IddProvisionMode::Full)?;
-    if poll_secondary(40, progress) {
+    // Full also repairs an existing unhealthy root device. INF-only LightingIdd
+    // bundles are not installable drivers and must not precede this signed path.
+    run_vdd_provision()?;
+    apply_project_mode(ShareMode::Extend)?;
+    if poll_share_target(20, &mut progress, mode) {
+        progress("虚拟屏已就绪");
         return Ok(());
     }
-    let _ = run_idd_provision(IddProvisionMode::EnableOnly);
-    if poll_secondary(20, progress) {
-        return Ok(());
-    }
-    anyhow::bail!("IDD_NO_MONITOR")
-}
 
-#[derive(Clone, Copy)]
-enum IddProvisionMode {
-    Full,
-    EnableOnly,
-}
-
-fn find_idd_bundle() -> Option<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("idd"));
-            candidates.push(dir.join("resources").join("idd"));
+    // A user may have configured zero virtual monitors. Request one only when
+    // none appeared; do not reduce a working multi-monitor configuration.
+    if vdd_pipe_alive() {
+        progress("正在请求虚拟显示驱动创建屏幕…");
+        vdd_set_display_count(1)?;
+        if poll_share_target(20, &mut progress, mode) {
+            return Ok(());
         }
     }
-    if let Ok(runtime) = std::env::var("LIGHTING_RUNTIME_DIR") {
-        candidates.push(PathBuf::from(runtime).join("idd"));
-    }
-    if let Ok(resources) = std::env::var("LIGHTING_RESOURCES_DIR") {
-        candidates.push(PathBuf::from(resources).join("idd"));
-    }
-    candidates.push(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("host-ui")
-            .join("resources")
-            .join("idd"),
-    );
-    candidates.push(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("scripts")
-            .join("idd"),
-    );
-    candidates
-        .into_iter()
-        .find(|p| p.join("LightingIdd.inf").is_file())
-}
-
-fn run_idd_provision(mode: IddProvisionMode) -> Result<()> {
-    let bundle = find_idd_bundle().context("IDD_BUNDLE_MISSING")?;
-    let script = bundle.join("provision.ps1");
-    let script = if script.is_file() {
-        script
-    } else {
-        let alt = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("scripts")
-            .join("idd")
-            .join("provision.ps1");
-        if !alt.is_file() {
-            anyhow::bail!("IDD_SCRIPT_MISSING");
-        }
-        alt
-    };
-    let mode_s = match mode {
-        IddProvisionMode::Full => "Full",
-        IddProvisionMode::EnableOnly => "EnableOnly",
-    };
-    run_provision_script(&script, &bundle, mode_s)
+    anyhow::bail!("VDD_NO_MONITOR:{}", mode.as_wire())
 }
 
 /// Installer launcher.
@@ -476,7 +351,11 @@ fn run_provision_with_uac(
 }
 
 
-fn poll_secondary(attempts: u32, progress: &mut impl FnMut(&str)) -> bool {
+fn poll_share_target(
+    attempts: u32,
+    progress: &mut impl FnMut(&str),
+    mode: ShareMode,
+) -> bool {
     for attempt in 0..attempts {
         progress(&format!(
             "正在等待虚拟屏出现（{}/{}）…",
@@ -488,29 +367,11 @@ fn poll_secondary(attempts: u32, progress: &mut impl FnMut(&str)) -> bool {
             let _ = apply_project_mode(ShareMode::Extend);
         }
         let list = list_displays().unwrap_or_default();
-        if has_secondary(&list) || has_virtual_display(&list) {
+        if has_secondary(&list) || (mode == ShareMode::External && has_virtual_display(&list)) {
             return true;
         }
     }
     false
-}
-
-/// SETDISPLAYCOUNT triggers an adapter reload; pipe drops then returns.
-fn wait_for_pipe_reload(attempts: u32) {
-    // Brief window for disconnect.
-    for _ in 0..6 {
-        if !vdd_pipe_alive() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(250));
-    }
-    wait_for_vdd_pipe(attempts);
-}
-
-#[derive(Clone, Copy)]
-enum VddProvisionMode {
-    Full,
-    EnableOnly,
 }
 
 fn find_vdd_bundle() -> Option<PathBuf> {
@@ -544,48 +405,39 @@ fn find_vdd_bundle() -> Option<PathBuf> {
 }
 
 /// Run bundled provision.ps1 elevated; never surfaces raw PowerShell stderr (GBK garble).
-fn run_vdd_provision(mode: VddProvisionMode) -> Result<()> {
+fn run_vdd_provision() -> Result<()> {
     let bundle = find_vdd_bundle().context("VDD_BUNDLE_MISSING")?;
     let script = bundle.join("provision.ps1");
     if !script.is_file() {
         anyhow::bail!("VDD_SCRIPT_MISSING");
     }
-    let mode_s = match mode {
-        VddProvisionMode::Full => "Full",
-        VddProvisionMode::EnableOnly => "EnableOnly",
-    };
-    run_provision_script(&script, &bundle, mode_s)
+    run_provision_script(&script, &bundle, "Full")
 }
 
-fn wait_for_vdd_pipe(attempts: u32) {
-    for _ in 0..attempts {
-        if vdd_pipe_alive() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(500));
-    }
-}
-
-/// After tablet Hello: make the virtual monitor match tablet pixels for 1:1 capture.
 pub fn configure_virtual_for_tablet(width: u32, height: u32, fps: u32) -> Result<DisplayInfo> {
     let w = (width.max(16) & !1).max(16);
     let h = (height.max(16) & !1).max(16);
     let fps = fps.clamp(30, 120);
 
-    let _ = prepare_vdd_settings(w, h, fps);
-    if vdd_pipe_alive() {
-        // Soft-restart is preferred; SETDISPLAYCOUNT reload is a fallback nudge.
-        let _ = run_vdd_provision(VddProvisionMode::EnableOnly);
-        wait_for_vdd_pipe(10);
-        let _ = vdd_set_display_count(1);
-        wait_for_pipe_reload(12);
-    }
-    let _ = apply_project_mode(ShareMode::Extend);
-
-    let list = list_displays().unwrap_or_default();
+    apply_project_mode(ShareMode::Extend)?;
+    let list = list_displays()?;
     let target = pick_virtual(&list)
         .cloned()
         .context("没有可用的虚拟/扩展屏")?;
+
+    // Do not restart the driver on every Hello: that invalidates capture
+    // identities and removes the very monitor about to be streamed.
+    let modes = list_display_modes(&target.name)?;
+    let advertised = modes.iter().any(|m| m.width == w && m.height == h);
+    let is_mtt = target.friendly.to_ascii_lowercase().contains("mtt")
+        || target.friendly.to_ascii_lowercase().contains("iddsample");
+    if !advertised && is_mtt && vdd_pipe_alive() {
+        prepare_vdd_settings(w, h, fps)?;
+        vdd_send_command("RELOAD_DRIVER")?;
+        if !poll_share_target(20, &mut |_| {}, ShareMode::Extend) {
+            anyhow::bail!("VDD_NO_MONITOR");
+        }
+    }
 
     if target.width != w || target.height != h {
         if let Err(err) = set_display_mode(&target.name, w, h, fps) {
@@ -595,10 +447,10 @@ pub fn configure_virtual_for_tablet(width: u32, height: u32, fps: u32) -> Result
         }
     }
 
-    let list = list_displays().unwrap_or_default();
-    pick_virtual(&list)
-        .cloned()
-        .context("设置平板分辨率后找不到扩展屏")
+    let list = list_displays()?;
+    list.into_iter()
+        .find(|d| d.name == target.name)
+        .context("设置平板分辨率后找不到原扩展屏")
 }
 
 fn vdd_pipe_alive() -> bool {
@@ -612,27 +464,39 @@ fn vdd_set_display_count(n: u32) -> Result<()> {
 }
 
 fn vdd_send_command(cmd: &str) -> Result<String> {
-    let mut pipe = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(VDD_PIPE)
-        .with_context(|| format!("打开 {VDD_PIPE} 失败（驱动未运行？）"))?;
-    let mut utf16: Vec<u8> = Vec::with_capacity(cmd.len() * 2);
-    for unit in cmd.encode_utf16() {
-        utf16.extend_from_slice(&unit.to_le_bytes());
-    }
-    pipe.write_all(&utf16).context("写入 VDD pipe")?;
-    pipe.flush().ok();
-    let mut buf = vec![0u8; 4096];
-    let mut out = Vec::new();
-    loop {
-        match pipe.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => out.extend_from_slice(&buf[..n]),
-            Err(_) => break,
-        }
-    }
-    Ok(String::from_utf8_lossy(&out).into_owned())
+    // The upstream pipe accepts UTF-16 commands and emits UTF-8 logs/PONG,
+    // then disconnects. Drain asynchronously with a deadline: a stalled UMDF
+    // driver must not leave Start Sharing blocked forever.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let mut pipe = tokio::net::windows::named_pipe::ClientOptions::new()
+                .open(VDD_PIPE)
+                .context("打开虚拟显示驱动控制管道失败")?;
+            let bytes: Vec<u8> = cmd.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            pipe.write_all(&bytes).await.context("写入 VDD pipe")?;
+            let mut out = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                match pipe.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        out.extend_from_slice(&buf[..n]);
+                        if out.len() > 65536 {
+                            anyhow::bail!("VDD_PIPE_RESPONSE_TOO_LARGE");
+                        }
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => break,
+                    Err(err) => return Err(err).context("读取 VDD pipe"),
+                }
+            }
+            Ok(String::from_utf8_lossy(&out).into_owned())
+        })
+        .await
+        .context("VDD_PIPE_TIMEOUT")?
+    })
 }
 
 /// Resolve MttVDD settings directory (registry `VDDPATH`, else official default).
@@ -1200,27 +1064,10 @@ if ($r -ne 0) {{
     Ok(())
 }
 
-fn install_virtual_display_driver_winget() -> Result<()> {
-    let ps = r#"
-$ErrorActionPreference = 'SilentlyContinue'
-$winget = Get-Command winget -ErrorAction SilentlyContinue
-if (-not $winget) { exit 0 }
-$p = Start-Process -FilePath $winget.Source -ArgumentList @('install','--id=VirtualDrivers.Virtual-Display-Driver','-e','--accept-package-agreements','--accept-source-agreements','--disable-interactivity') -Verb RunAs -PassThru -Wait -WindowStyle Hidden
-if ($null -eq $p) { exit 0 }
-exit 0
-"#;
-    let _ = Command::new("powershell.exe")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps])
-        .creation_flags(CREATE_NO_WINDOW)
-        .status();
-    Ok(())
-}
-
-fn list_via_dxgi() -> Result<Vec<DisplayInfo>> {
+fn list_via_dxgi() -> Result<Vec<(String, DxgiCapture)>> {
     unsafe {
         let factory: IDXGIFactory1 = CreateDXGIFactory1().context("CreateDXGIFactory1")?;
         let mut out = Vec::new();
-        let mut global = 0u32;
         let mut adapter_idx = 0u32;
         loop {
             let adapter = match factory.EnumAdapters1(adapter_idx) {
@@ -1237,26 +1084,18 @@ fn list_via_dxgi() -> Result<Vec<DisplayInfo>> {
                 let rect = desc.DesktopCoordinates;
                 let width = (rect.right - rect.left).max(0) as u32;
                 let height = (rect.bottom - rect.top).max(0) as u32;
-                if width == 0 || height == 0 {
+                if !desc.AttachedToDesktop.as_bool() || width == 0 || height == 0 {
                     output_idx += 1;
                     continue;
                 }
                 let name = wchar_to_string(&desc.DeviceName);
-                let friendly = device_string_for(&name).unwrap_or_default();
-                let primary = is_primary_rect(rect);
-                let is_virtual = looks_virtual_display(&name, &friendly);
-                out.push(DisplayInfo {
-                    dxgi_index: global,
+                out.push((
                     name,
-                    friendly,
-                    x: rect.left,
-                    y: rect.top,
-                    width,
-                    height,
-                    primary,
-                    is_virtual,
-                });
-                global += 1;
+                    DxgiCapture {
+                        adapter_index: adapter_idx,
+                        output_index: output_idx,
+                    },
+                ));
                 output_idx += 1;
             }
             adapter_idx += 1;
@@ -1269,28 +1108,39 @@ fn device_string_for(device_name: &str) -> Option<String> {
     unsafe {
         let mut wide: Vec<u16> = device_name.encode_utf16().collect();
         wide.push(0);
-        let mut dd = DISPLAY_DEVICEW {
+        let mut monitor = DISPLAY_DEVICEW {
             cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
             ..Default::default()
         };
-        if EnumDisplayDevicesW(PCWSTR(wide.as_ptr()), 0, &mut dd, 0).as_bool() {
-            let s = wchar_to_string(&dd.DeviceString);
-            if !s.is_empty() {
-                return Some(s);
-            }
+        let mut friendly = String::new();
+        if EnumDisplayDevicesW(PCWSTR(wide.as_ptr()), 0, &mut monitor, 0).as_bool() {
+            friendly = wchar_to_string(&monitor.DeviceString);
         }
-        let mut dd2 = DISPLAY_DEVICEW {
-            cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
-            ..Default::default()
-        };
-        if EnumDisplayDevicesW(PCWSTR(wide.as_ptr()), 0, &mut dd2, 0x1).as_bool() {
-            let s = wchar_to_string(&dd2.DeviceString);
-            if !s.is_empty() {
-                return Some(s);
+        // A virtual adapter's monitor can have a generic PnP name. Include the
+        // owning adapter description so virtual-display classification survives.
+        let mut index = 0;
+        loop {
+            let mut adapter = DISPLAY_DEVICEW {
+                cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
+                ..Default::default()
+            };
+            if !EnumDisplayDevicesW(PCWSTR::null(), index, &mut adapter, 0).as_bool() {
+                break;
             }
+            if wchar_to_string(&adapter.DeviceName).eq_ignore_ascii_case(device_name) {
+                let description = wchar_to_string(&adapter.DeviceString);
+                if !description.is_empty() && description != friendly {
+                    if !friendly.is_empty() {
+                        friendly.push_str(" · ");
+                    }
+                    friendly.push_str(&description);
+                }
+                break;
+            }
+            index += 1;
         }
+        (!friendly.is_empty()).then_some(friendly)
     }
-    None
 }
 
 struct GdiBag(Vec<DisplayInfo>);
@@ -1298,11 +1148,15 @@ struct GdiBag(Vec<DisplayInfo>);
 fn list_via_gdi() -> Result<Vec<DisplayInfo>> {
     let mut bag = GdiBag(Vec::new());
     unsafe {
-        let _ = EnumDisplayMonitors(
-            HDC::default(),
-            None,
-            Some(enum_proc),
-            LPARAM(&mut bag as *mut _ as isize),
+        anyhow::ensure!(
+            EnumDisplayMonitors(
+                HDC::default(),
+                None,
+                Some(enum_proc),
+                LPARAM(&mut bag as *mut _ as isize),
+            )
+            .as_bool(),
+            "EnumDisplayMonitors/GetMonitorInfoW failed"
         );
     }
     Ok(bag.0)
@@ -1315,45 +1169,32 @@ unsafe extern "system" fn enum_proc(
     data: LPARAM,
 ) -> BOOL {
     let bag = &mut *(data.0 as *mut GdiBag);
-    let mut info = MONITORINFO {
-        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-        ..Default::default()
-    };
-    if GetMonitorInfoW(monitor, &mut info).as_bool() {
-        let r = info.rcMonitor;
-        let name = format!("Display {}", bag.0.len() + 1);
-        let friendly = String::new();
-        bag.0.push(DisplayInfo {
-            dxgi_index: bag.0.len() as u32,
-            name: name.clone(),
-            friendly,
-            x: r.left,
-            y: r.top,
-            width: (r.right - r.left).max(0) as u32,
-            height: (r.bottom - r.top).max(0) as u32,
-            primary: info.dwFlags & MONITORINFOF_PRIMARY == MONITORINFOF_PRIMARY,
-            is_virtual: looks_virtual_display(&name, ""),
-        });
+    let mut info = MONITORINFOEXW::default();
+    info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+    if !GetMonitorInfoW(monitor, &mut info.monitorInfo).as_bool() {
+        return BOOL(0);
     }
+    let r = info.monitorInfo.rcMonitor;
+    let width = (r.right - r.left).max(0) as u32;
+    let height = (r.bottom - r.top).max(0) as u32;
+    if width == 0 || height == 0 {
+        return BOOL(1);
+    }
+    let name = wchar_to_string(&info.szDevice);
+    let friendly = device_string_for(&name).unwrap_or_default();
+    let is_virtual = looks_virtual_display(&name, &friendly);
+    bag.0.push(DisplayInfo {
+        dxgi: None,
+        name,
+        friendly,
+        x: r.left,
+        y: r.top,
+        width,
+        height,
+        primary: info.monitorInfo.dwFlags & MONITORINFOF_PRIMARY == MONITORINFOF_PRIMARY,
+        is_virtual,
+    });
     BOOL(1)
-}
-
-fn is_primary_rect(rect: RECT) -> bool {
-    let mut bag = GdiBag(Vec::new());
-    unsafe {
-        let _ = EnumDisplayMonitors(
-            HDC::default(),
-            None,
-            Some(enum_proc),
-            LPARAM(&mut bag as *mut _ as isize),
-        );
-    }
-    bag.0.iter().any(|d| {
-        d.primary
-            && d.x == rect.left
-            && d.y == rect.top
-            && d.width == (rect.right - rect.left) as u32
-    })
 }
 
 fn wchar_to_string(buf: &[u16]) -> String {

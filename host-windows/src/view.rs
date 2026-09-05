@@ -80,14 +80,9 @@ impl ShareMode {
         matches!(self, ShareMode::External)
     }
 
-    /// Independent second screen may keep working as a mirror if the driver
-    /// fails. Tablet-only must not — mirroring a locked/lid-closed PC is useless.
-    pub fn allows_mirror_fallback(self) -> bool {
-        matches!(self, ShareMode::Extend)
-    }
 }
 
-/// Pick a DXGI-order index for `mode`. Each item is `(primary, is_virtual)`.
+/// Pick an active monitor for `mode`; extension must not select the physical primary.
 pub fn pick_share_target_index(items: &[(bool, bool)], mode: ShareMode) -> Option<usize> {
     if items.is_empty() {
         return None;
@@ -97,15 +92,13 @@ pub fn pick_share_target_index(items: &[(bool, bool)], mode: ShareMode) -> Optio
         ShareMode::Extend => items
             .iter()
             .position(|(primary, virt)| *virt && !*primary)
-            .or_else(|| items.iter().position(|(primary, _)| !*primary))
-            .or_else(|| items.iter().position(|(primary, _)| *primary)),
+            .or_else(|| items.iter().position(|(primary, _)| !*primary)),
         // After Win+P /external the virtual panel is often the only screen and
         // becomes primary — still capture it.
         ShareMode::External => items
             .iter()
             .position(|(_, virt)| *virt)
-            .or_else(|| items.iter().position(|(primary, _)| !*primary))
-            .or(Some(0)),
+            .or_else(|| items.iter().position(|(primary, _)| !*primary)),
     }
 }
 
@@ -152,8 +145,6 @@ mod share_mode_tests {
         assert!(ShareMode::External.blanks_pc_monitor());
         assert!(!ShareMode::Extend.blanks_pc_monitor());
         assert_eq!(ShareMode::Extend.display_switch_arg(), "/extend");
-        assert!(ShareMode::Extend.allows_mirror_fallback());
-        assert!(!ShareMode::External.allows_mirror_fallback());
     }
 
     #[test]
@@ -170,8 +161,12 @@ mod share_mode_tests {
         );
         assert_eq!(
             pick_share_target_index(&only_virtual, ShareMode::Extend),
-            Some(0)
+            None
         );
+        let only_pc = [(true, false)];
+        assert_eq!(pick_share_target_index(&only_pc, ShareMode::Mirror), Some(0));
+        assert_eq!(pick_share_target_index(&only_pc, ShareMode::Extend), None);
+        assert_eq!(pick_share_target_index(&only_pc, ShareMode::External), None);
     }
 
     #[test]

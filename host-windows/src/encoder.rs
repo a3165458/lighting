@@ -58,9 +58,6 @@ impl Drop for EncoderSession {
 }
 
 pub fn find_ffmpeg() -> Result<PathBuf> {
-    if let Ok(p) = which::which("ffmpeg") {
-        return Ok(p);
-    }
     let mut candidates = Vec::new();
     if let Ok(runtime) = std::env::var("LIGHTING_RUNTIME_DIR") {
         candidates.push(PathBuf::from(&runtime).join("ffmpeg").join("bin").join("ffmpeg.exe"));
@@ -75,7 +72,8 @@ pub fn find_ffmpeg() -> Result<PathBuf> {
     if let Some(found) = candidates.into_iter().find(|p| p.is_file()) {
         return Ok(found);
     }
-    anyhow::bail!("找不到 ffmpeg。便携版首次启动会自动下载；也可手动安装并加入 PATH")
+    which::which("ffmpeg")
+        .context("找不到 ffmpeg。便携版首次启动会自动下载；也可手动安装并加入 PATH")
 }
 
 pub fn pick_encoder(codec: &str) -> &'static str {
@@ -102,7 +100,10 @@ pub fn start_encoder(
     encoder: &str,
     capture_filter: &str,
 ) -> Result<EncoderSession> {
-    let args = build_args(settings, encoder, capture_filter);
+    let Some(capture) = display.dxgi else {
+        return start_encoder_gdigrab(ffmpeg, display, settings, encoder);
+    };
+    let args = build_args(capture, settings, encoder, capture_filter);
     tracing::info!("ffmpeg {}", args.join(" "));
 
     let mut cmd = Command::new(ffmpeg);
@@ -159,7 +160,12 @@ fn tail(s: &str, n: usize) -> String {
         .join("\n")
 }
 
-fn build_args(settings: &EncodeSettings, encoder: &str, capture_filter: &str) -> Vec<String> {
+fn build_args(
+    capture: lighting_host::capture_graph::DxgiCapture,
+    settings: &EncodeSettings,
+    encoder: &str,
+    capture_filter: &str,
+) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-hide_banner".into(),
         "-loglevel".into(),
@@ -176,6 +182,7 @@ fn build_args(settings: &EncodeSettings, encoder: &str, capture_filter: &str) ->
         "2".into(),
     ];
 
+    args.extend(capture.device_args());
     args.extend([
         "-filter_complex".into(),
         capture_filter.to_string(),
@@ -212,6 +219,10 @@ pub fn start_encoder_gdigrab(
     settings: &EncodeSettings,
     encoder: &str,
 ) -> Result<EncoderSession> {
+    anyhow::ensure!(
+        display.width > 0 && display.height > 0,
+        "所选显示器没有可捕获区域"
+    );
     let mut args: Vec<String> = vec![
         "-hide_banner".into(),
         "-loglevel".into(),
@@ -226,20 +237,15 @@ pub fn start_encoder_gdigrab(
         "0".into(),
         "-thread_queue_size".into(),
         "2".into(),
-        "-f".into(),
-        "gdigrab".into(),
-        "-framerate".into(),
-        settings.fps.to_string(),
-        "-offset_x".into(),
-        display.x.to_string(),
-        "-offset_y".into(),
-        display.y.to_string(),
-        "-video_size".into(),
-        format!("{}x{}", display.width, display.height),
-        "-draw_mouse".into(),
-        "1".into(),
-        "-i".into(),
-        "desktop".into(),
+    ];
+    args.extend(lighting_host::capture_graph::gdigrab_input_args(
+        display.x,
+        display.y,
+        display.width,
+        display.height,
+        settings.fps,
+    ));
+    args.extend([
         "-an".into(),
         "-vf".into(),
         lighting_host::capture_graph::gdigrab_vf(
@@ -250,7 +256,7 @@ pub fn start_encoder_gdigrab(
         ),
         "-c:v".into(),
         encoder.to_string(),
-    ];
+    ]);
     args.extend(encoder_flags(encoder, settings));
     args.extend(output_mux_args(encoder));
 

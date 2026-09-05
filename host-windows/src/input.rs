@@ -178,8 +178,10 @@ mod tests {
     #[test]
     fn maps_normalized_touch_onto_selected_display() {
         let display = DisplayInfo {
-            dxgi_index: 1,
+            dxgi: None,
             name: "HDMI".into(),
+            friendly: "HDMI".into(),
+            is_virtual: false,
             x: 1920,
             y: 0,
             width: 1920,

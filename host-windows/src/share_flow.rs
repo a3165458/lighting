@@ -10,11 +10,10 @@ use crate::view::ShareMode;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VirtualPrepareOutcome {
     Ready,
-    FallbackMirror { reason: String },
     Abort { reason: String },
 }
 
-/// Tablet-only must never silently become mirror — that is the bug users hit.
+/// Extension failure must remain a failure, never an unrequested mirror stream.
 pub fn decide_after_virtual_prepare(
     mode: ShareMode,
     ensure_ok: bool,
@@ -22,7 +21,7 @@ pub fn decide_after_virtual_prepare(
     has_secondary: bool,
     has_virtual: bool,
 ) -> VirtualPrepareOutcome {
-    let present = has_secondary || has_virtual;
+    let present = has_secondary || (mode == ShareMode::External && has_virtual);
     if ensure_ok && present {
         return VirtualPrepareOutcome::Ready;
     }
@@ -31,17 +30,11 @@ pub fn decide_after_virtual_prepare(
     } else {
         "虚拟屏未能创建（驱动未就绪）".into()
     };
-    if mode.blanks_pc_monitor() || !mode.allows_mirror_fallback() {
-        VirtualPrepareOutcome::Abort { reason }
-    } else {
-        VirtualPrepareOutcome::FallbackMirror { reason }
-    }
+    VirtualPrepareOutcome::Abort { reason }
 }
 
-pub fn tablet_only_abort_message(reason: &str) -> String {
-    format!(
-        "仅平板需要虚拟屏，没有改用镜像。{reason} 若已用管理员运行仍失败，请完全退出 Lighting 后重试；未提权时请看是否有蓝底「用户账户控制」。"
-    )
+pub fn virtual_prepare_abort_message(reason: &str) -> String {
+    format!("扩展屏未就绪，未改用镜像。{reason} 请保留错误详情；如需镜像，请手动选择「镜像主屏」。")
 }
 
 /// Copy shown while installing the virtual display driver.
@@ -232,9 +225,13 @@ mod tests {
     }
 
     #[test]
-    fn extend_may_fall_back_to_mirror() {
-        let out = decide_after_virtual_prepare(ShareMode::Extend, false, "VDD_PIPE_DOWN", false, false);
-        assert!(matches!(out, VirtualPrepareOutcome::FallbackMirror { .. }));
+    fn extend_failure_preserves_driver_error_without_mirroring() {
+        let out = decide_after_virtual_prepare(ShareMode::Extend, false, "DEVICE_STILL_MISSING", false, false);
+        assert_eq!(out, VirtualPrepareOutcome::Abort { reason: "DEVICE_STILL_MISSING".into() });
+        assert!(matches!(
+            decide_after_virtual_prepare(ShareMode::Extend, true, "", false, true),
+            VirtualPrepareOutcome::Abort { .. }
+        ));
     }
 
     #[test]
@@ -250,12 +247,14 @@ mod tests {
     }
 
     #[test]
-    fn abort_copy_says_we_did_not_switch_to_mirror() {
-        let msg = tablet_only_abort_message("已取消管理员授权。");
-        assert!(msg.contains("没有改用镜像"));
+    fn abort_copy_keeps_the_driver_error_and_refuses_mirror() {
+        let msg = virtual_prepare_abort_message("虚拟显示设备未创建成功。 [DEVICE_STILL_MISSING]");
+        assert!(msg.contains("未改用镜像"));
+        assert!(msg.contains("DEVICE_STILL_MISSING"));
         assert!(virtual_driver_install_copy(true).contains("不会再弹出"));
         assert!(virtual_driver_install_copy(false).contains("用户账户控制"));
     }
+
 
     #[test]
     fn simulated_timeline_never_decides_mirror_for_tablet_only() {

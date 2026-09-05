@@ -1,8 +1,5 @@
-# Lighting bundled virtual display provisioning (ASCII result file only).
-# Writes "<STATUS>|<DETAIL>" to -ResultFile. STATUS is OK or FAIL.
-#
-# GlideX-class setup: install IddCx driver + official settings/registry once,
-# then soft-restart the device. Avoid relying solely on in-pipe RELOAD_DRIVER.
+# Provision the signed MttVDD root device. Rust owns display topology and primary-screen preservation.
+# Writes OK|READY:<instance> or FAIL|<code> to -ResultFile; never treats driver-store staging as a device.
 param(
     [Parameter(Mandatory = $true)]
     [string]$BundleDir,
@@ -13,231 +10,148 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$VddDir = 'C:\VirtualDisplayDriver'
 $VddReg = 'HKLM:\SOFTWARE\MikeTheTech\VirtualDisplayDriver'
+$script:RestartNeeded = $false
 
 function Write-Result([string]$Status, [string]$Detail) {
-    $safe = ($Detail -replace '[^a-zA-Z0-9_\-:.]', '_')
+    $safe = $Detail -replace '[^a-zA-Z0-9_\-:.]', '_'
     if ($safe.Length -gt 120) { $safe = $safe.Substring(0, 120) }
     $parent = Split-Path -Parent $ResultFile
-    if ($parent -and -not (Test-Path $parent)) {
+    if ($parent -and -not (Test-Path -LiteralPath $parent)) {
         New-Item -ItemType Directory -Force -Path $parent | Out-Null
     }
-    Set-Content -Path $ResultFile -Value ($Status + '|' + $safe) -Encoding ASCII -NoNewline
-}
-
-function Ensure-VddSettings {
-    if (-not (Test-Path $VddDir)) {
-        New-Item -ItemType Directory -Force -Path $VddDir | Out-Null
-    }
-    $xmlPath = Join-Path $VddDir 'vdd_settings.xml'
-    if (-not (Test-Path $xmlPath)) {
-        $xml = @"
-<?xml version='1.0' encoding='utf-8'?>
-<vdd_settings>
-    <monitors>
-        <count>1</count>
-    </monitors>
-    <gpu>
-        <friendlyname>default</friendlyname>
-    </gpu>
-    <global>
-        <g_refresh_rate>60</g_refresh_rate>
-        <g_refresh_rate>90</g_refresh_rate>
-        <g_refresh_rate>120</g_refresh_rate>
-        <g_refresh_rate>144</g_refresh_rate>
-    </global>
-    <resolutions>
-        <resolution>
-            <width>1920</width>
-            <height>1080</height>
-            <refresh_rate>60</refresh_rate>
-        </resolution>
-        <resolution>
-            <width>2560</width>
-            <height>1440</height>
-            <refresh_rate>60</refresh_rate>
-        </resolution>
-        <resolution>
-            <width>3840</width>
-            <height>2160</height>
-            <refresh_rate>60</refresh_rate>
-        </resolution>
-    </resolutions>
-    <logging>
-        <SendLogsThroughPipe>true</SendLogsThroughPipe>
-        <logging>false</logging>
-        <debuglogging>false</debuglogging>
-    </logging>
-</vdd_settings>
-"@
-        Set-Content -Path $xmlPath -Value $xml -Encoding UTF8
-    } else {
-        try {
-            $raw = Get-Content -Path $xmlPath -Raw -ErrorAction SilentlyContinue
-            if ($raw -and $raw.Contains('<count>0</count>')) {
-                $raw = $raw.Replace('<count>0</count>', '<count>1</count>')
-                Set-Content -Path $xmlPath -Value $raw -Encoding UTF8
-            }
-        } catch {}
-    }
-    try {
-        New-Item -Path $VddReg -Force | Out-Null
-        Set-ItemProperty -Path $VddReg -Name VDDPATH -Value $VddDir -Type String
-    } catch {}
+    Set-Content -LiteralPath $ResultFile -Value ($Status + '|' + $safe) -Encoding ASCII -NoNewline
 }
 
 function Find-MttDevice {
+    # A newly-created, unbound root node might not have a Display class yet.
+    # HardwareID is stable; nefcon-created instance IDs are usually ROOT\DISPLAY\000x.
+    $devices = @(Get-PnpDevice -PresentOnly -ErrorAction Stop | Where-Object {
+        ($_.HardwareID -contains 'Root\MttVDD') -or ($_.InstanceId -like 'ROOT\MTTVDD\*')
+    })
+    if ($devices.Count -gt 1) { throw 'DEVICE_DUPLICATES:Remove_extra_MttVDD_adapters_in_Device_Manager' }
+    return $devices | Select-Object -First 1
+}
+
+function Ensure-VddSettings {
+    $configured = Get-ItemProperty -Path $VddReg -Name VDDPATH -ErrorAction SilentlyContinue
+    $dir = if ($configured -and $configured.VDDPATH) { [string]$configured.VDDPATH } else { 'C:\VirtualDisplayDriver' }
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $xmlPath = Join-Path $dir 'vdd_settings.xml'
+    if (-not (Test-Path -LiteralPath $xmlPath)) {
+        $defaults = Join-Path $BundleDir 'vdd_settings.xml'
+        if (-not (Test-Path -LiteralPath $defaults)) { throw 'BUNDLE_SETTINGS_MISSING' }
+        Copy-Item -LiteralPath $defaults -Destination $xmlPath
+        $script:RestartNeeded = $true
+    }
+    # Preserve user resolutions, GPU choice, EDID and all other settings.
+    $xml = New-Object System.Xml.XmlDocument
+    $xml.PreserveWhitespace = $true
+    $xml.Load($xmlPath)
+    $count = $xml.SelectSingleNode('/vdd_settings/monitors/count')
+    if (-not $count) { throw 'SETTINGS_MONITOR_COUNT_MISSING' }
+    $number = 0
+    if (-not [int]::TryParse($count.InnerText, [ref]$number) -or $number -lt 0) {
+        throw 'SETTINGS_MONITOR_COUNT_INVALID'
+    }
+    if ($number -eq 0) {
+        Copy-Item -LiteralPath $xmlPath -Destination ($xmlPath + '.lighting-backup-' + [guid]::NewGuid().ToString('N'))
+        $count.InnerText = '1'
+        $xml.Save($xmlPath)
+        $script:RestartNeeded = $true
+    }
+    if (-not $configured -or -not $configured.VDDPATH) {
+        New-Item -Path $VddReg -Force | Out-Null
+        New-ItemProperty -Path $VddReg -Name VDDPATH -Value $dir -PropertyType String -Force | Out-Null
+    }
+}
+
+function Assert-NativeSuccess([int]$Code, [string]$Operation) {
+    if ($Code -eq 3010 -or $Code -eq 1641) { throw 'REBOOT_REQUIRED:Restart_Windows_then_retry' }
+    if ($Code -ne 0) { throw ($Operation + ':exit_' + $Code) }
+}
+
+function Install-FromBundle($Device) {
+    # Pins match the official 25.7.23 driver-only and nefcon v1.14.0 x64 packages.
+    $hashes = @{
+        'MttVDD.inf' = '550d211fe481e74dfe3f9d724ed78be48b3a9113405965d683d9373e8d672f5d'
+        'MttVDD.dll' = 'c9ca837f57a98fbd43bc416a7f535a95843626e7759eaf85cf0cd7ce334dbb05'
+        'mttvdd.cat' = '08a0093fc9b2e32b287a6f8a77ca4de0a31830d29fc33d2b13a918dc859468f6'
+        'nefconc.exe' = '99ed0d588a1eb7c4306ac59aa5bc47f7458fb70d2870957829962203c7fb989d'
+    }
+    foreach ($entry in $hashes.GetEnumerator()) {
+        $file = Join-Path $BundleDir $entry.Key
+        if (-not (Test-Path -LiteralPath $file)) { throw ('BUNDLE_FILE_MISSING:' + $entry.Key) }
+        if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $entry.Value) {
+            throw ('BUNDLE_HASH_MISMATCH:' + $entry.Key)
+        }
+    }
+    $signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $BundleDir 'mttvdd.cat')
+    if ($signature.Status -ne 'Valid' -or -not $signature.SignerCertificate) {
+        throw ('DRIVER_SIGNATURE:' + $signature.Status)
+    }
+    # Trust only the verified catalog publisher, never add certificates to Root or change Secure Boot.
+    $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('TrustedPublisher', 'LocalMachine')
     try {
-        $names = @(
-            'Virtual Display Driver',
-            'IddSampleDriver Device HDR',
-            'MttVDD Display Adapter',
-            'MttVDD'
-        )
-        $device = Get-PnpDevice -Class Display -ErrorAction SilentlyContinue | Where-Object {
-            ($names -contains $_.FriendlyName) -or
-            ($_.InstanceId -like '*MttVDD*') -or
-            ($_.HardwareID -like '*MttVDD*')
-        } | Select-Object -First 1
-        if (-not $device) {
-            $device = Get-PnpDevice -HardwareID 'Root\MttVDD' -ErrorAction SilentlyContinue | Select-Object -First 1
-        }
-        if (-not $device) {
-            $device = Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object {
-                ($_.InstanceId -like '*MttVDD*') -or
-                (($_.FriendlyName) -and ($_.FriendlyName -match 'Virtual Display|MttVDD|IddSample'))
-            } | Select-Object -First 1
-        }
-        return $device
-    } catch {
-        return $null
+        $store.Open('ReadWrite')
+        $store.Add($signature.SignerCertificate)
+    } finally {
+        $store.Close()
     }
-}
-
-function Enable-MttDevice {
-    Ensure-VddSettings
-    $device = Find-MttDevice
-    if (-not $device) {
-        try { pnputil /enable-device /deviceid 'Root\MttVDD' 2>&1 | Out-Null } catch {}
-        $device = Find-MttDevice
+    $inf = Join-Path $BundleDir 'MttVDD.inf'
+    if ($Device) {
+        # Repair binding on an existing node without creating a duplicate adapter.
+        & "$env:SystemRoot\System32\pnputil.exe" /add-driver $inf /install
+        Assert-NativeSuccess $LASTEXITCODE 'DRIVER_BIND_FAILED'
+    } else {
+        # pnputil /add-driver alone does NOT create a root-enumerated virtual display.
+        # nefcon v1.14.0 explicitly supports this devcon-compatible install form.
+        & (Join-Path $BundleDir 'nefconc.exe') install $inf 'Root\MttVDD'
+        Assert-NativeSuccess $LASTEXITCODE 'DRIVER_INSTALL_FAILED'
     }
-    if (-not $device) { return $null }
-    try { Enable-PnpDevice -InstanceId $device.InstanceId -Confirm:$false -ErrorAction SilentlyContinue } catch {}
-    try { pnputil /enable-device $device.InstanceId 2>&1 | Out-Null } catch {}
-    try { pnputil /restart-device $device.InstanceId 2>&1 | Out-Null } catch {}
-    Start-Sleep -Seconds 3
-    return (Find-MttDevice)
-}
-
-function Test-PnpSuccess([int]$ExitCode) {
-    # 0 = ok; 259 (0x103) = driver already in driver store
-    return ($ExitCode -eq 0 -or $ExitCode -eq 259)
-}
-
-function Install-FromBundle([string]$Dir) {
-    if (-not (Test-Path $Dir)) { throw 'BUNDLE_DIR_MISSING' }
-    Ensure-VddSettings
-
-    $inf = Get-ChildItem -Path $Dir -Recurse -Filter 'MttVDD.inf' -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $inf) { throw 'BUNDLE_INF_MISSING' }
-
-    $infDir = $inf.DirectoryName
-    $nef = Get-ChildItem -Path $Dir -Recurse -Filter 'nefconc.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $nef) {
-        $nef = Get-ChildItem -Path $Dir -Recurse -Filter 'nefconw.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-    }
-
-    $cat = Get-ChildItem -Path $infDir -Filter '*.cat' -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($cat) {
-        try {
-            $certs = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2Collection
-            $certs.Import([IO.File]::ReadAllBytes($cat.FullName))
-            foreach ($cert in $certs) {
-                $cer = Join-Path $env:TEMP ($cert.Thumbprint + '.cer')
-                [IO.File]::WriteAllBytes($cer, $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
-                Import-Certificate -FilePath $cer -CertStoreLocation 'Cert:\LocalMachine\TrustedPublisher' -ErrorAction SilentlyContinue | Out-Null
-            }
-        } catch {}
-    }
-
-    $added = $false
-    $pnputilEc = -1
-    try {
-        pnputil /add-driver $inf.FullName /install 2>&1 | Out-Null
-        $pnputilEc = $LASTEXITCODE
-        if (Test-PnpSuccess $pnputilEc) { $added = $true }
-    } catch {
-        $pnputilEc = $LASTEXITCODE
-    }
-
-    $nefEc = -1
-    if (-not $added -and $nef) {
-        Push-Location $infDir
-        try {
-            & $nef.FullName install $inf.Name 'Root\MttVDD' 2>&1 | Out-Null
-            $nefEc = $LASTEXITCODE
-            if (Test-PnpSuccess $nefEc) { $added = $true }
-        } catch {
-            $nefEc = $LASTEXITCODE
-        } finally {
-            Pop-Location
-        }
-    }
-
-    if (-not $added) {
-        if (-not $nef) { throw "DRIVER_INSTALL_FAILED:pnputil=$pnputilEc" }
-        throw "DRIVER_INSTALL_FAILED:pnputil=$pnputilEc,nefcon=$nefEc"
-    }
-    Start-Sleep -Seconds 6
-}
-
-function Map-ProvisionError([string]$Message) {
-    if ($Message -match 'BUNDLE_INF_MISSING|BUNDLE_DIR_MISSING|DRIVER_INSTALL_FAILED|DEVICE') {
-        return $Matches[0]
-    }
-    if ($Message -match 'access|denied|authorized|elevation|administrator|0x5|5\)|1326') {
-        return 'ACCESS_DENIED'
-    }
-    if ($Message -match 'sign|certificate|catalog|trust|blocked') {
-        return 'DRIVER_SIGNATURE'
-    }
-    if ($Message -match 'PnP|Get-PnpDevice|CIM|Win32') {
-        return 'PNP_QUERY_FAILED'
-    }
-    $slug = ($Message -replace '[^a-zA-Z0-9_ ]', '') -replace '\s+', '_'
-    if ($slug.Length -gt 48) { $slug = $slug.Substring(0, 48) }
-    if ([string]::IsNullOrWhiteSpace($slug)) { return 'UNEXPECTED' }
-    return "ERR_$slug"
 }
 
 try {
+    if (-not [Environment]::Is64BitProcess -or $env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
+        throw 'UNSUPPORTED_ARCHITECTURE:Use_x64_Windows_PowerShell'
+    }
+    $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw 'ACCESS_DENIED:Driver_provisioning_requires_elevation'
+    }
+    $BundleDir = (Resolve-Path -LiteralPath $BundleDir).Path
     Ensure-VddSettings
-
-    if ($Mode -eq 'EnableOnly') {
-        $dev = Enable-MttDevice
-        if ($dev) {
-            Write-Result 'OK' ('ENABLED:' + $(if ($dev.InstanceId) { $dev.InstanceId } else { 'unknown' }))
-            exit 0
+    $device = Find-MttDevice
+    if (-not $device -and $Mode -eq 'EnableOnly') { throw 'DEVICE_NOT_FOUND' }
+    if ($Mode -eq 'Full' -and (-not $device -or $device.Status -ne 'OK')) {
+        Install-FromBundle $device
+    }
+    $device = Find-MttDevice
+    if (-not $device) { throw 'DEVICE_STILL_MISSING' }
+    $problem = Get-PnpDeviceProperty -InstanceId $device.InstanceId -KeyName 'DEVPKEY_Device_ProblemCode'
+    if ($problem.Data -eq 22) {
+        Enable-PnpDevice -InstanceId $device.InstanceId -Confirm:$false -ErrorAction Stop
+    }
+    if ($script:RestartNeeded) {
+        & "$env:SystemRoot\System32\pnputil.exe" /restart-device $device.InstanceId
+        Assert-NativeSuccess $LASTEXITCODE 'DEVICE_RESTART_FAILED'
+    }
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        $device = Find-MttDevice
+        if ($device -and $device.Status -eq 'OK') {
+            $problem = Get-PnpDeviceProperty -InstanceId $device.InstanceId -KeyName 'DEVPKEY_Device_ProblemCode'
+            if ($problem.Data -eq 0) {
+                Write-Result 'OK' ('READY:' + $device.InstanceId)
+                exit 0
+            }
         }
-        Write-Result 'FAIL' 'DEVICE_NOT_FOUND'
-        exit 1
+        Start-Sleep -Milliseconds 500
     }
-
-    $dev = Enable-MttDevice
-    if (-not $dev) {
-        Install-FromBundle -Dir $BundleDir
-        $dev = Enable-MttDevice
-    }
-
-    if (-not $dev) {
-        Write-Result 'FAIL' 'DEVICE_STILL_MISSING'
-        exit 1
-    }
-
-    Write-Result 'OK' ('READY:' + $(if ($dev.InstanceId) { $dev.InstanceId } else { 'unknown' }))
-    exit 0
+    if (-not $device) { throw 'DEVICE_STILL_MISSING' }
+    $problem = Get-PnpDeviceProperty -InstanceId $device.InstanceId -KeyName 'DEVPKEY_Device_ProblemCode'
+    throw ('DEVICE_NOT_READY:problem_' + $problem.Data + ':status_' + $device.Status)
 } catch {
-    Write-Result 'FAIL' (Map-ProvisionError $_.Exception.Message)
+    Write-Result 'FAIL' $_.Exception.Message
+    Write-Error -Message $_.Exception.Message -ErrorAction Continue
     exit 1
 }
