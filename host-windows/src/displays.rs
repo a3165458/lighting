@@ -503,8 +503,9 @@ pub fn configure_virtual_for_tablet(
     }
 
     let list = list_displays()?;
-    list.into_iter()
+    list.iter()
         .find(|d| d.name.eq_ignore_ascii_case(&target.name))
+        .cloned()
         .or_else(|| pick_virtual_excluding(&list, primary_name).cloned())
         .context("设置平板分辨率后找不到原扩展屏")
 }
