@@ -157,18 +157,29 @@ async fn run_session_inner(
     controls: Arc<Controls>,
 ) -> Result<()> {
     let mut req = req;
+    let desktop = if req.share_mode.uses_virtual_display() {
+        displays::DesktopRestoreGuard::capture()
+    } else {
+        displays::DesktopRestoreGuard { primary: None }
+    };
+    let preserve = desktop.primary.clone();
     if req.share_mode.uses_virtual_display() {
         set_status(&status, "准备虚拟屏", "正在检查并启用虚拟显示器…");
         let mode = req.share_mode;
         let status_prog = status.clone();
+        let preserve_for_drv = preserve.clone();
         let ensure = tokio::task::spawn_blocking(move || {
-            displays::ensure_secondary_display_with_progress(mode, |step| {
-                if let Ok(mut s) = status_prog.lock() {
-                    s.running = true;
-                    s.phase = "准备虚拟屏".into();
-                    s.detail = step.to_string();
-                }
-            })
+            displays::ensure_secondary_display_with_progress(
+                mode,
+                |step| {
+                    if let Ok(mut s) = status_prog.lock() {
+                        s.running = true;
+                        s.phase = "准备虚拟屏".into();
+                        s.detail = step.to_string();
+                    }
+                },
+                preserve_for_drv.as_ref(),
+            )
         })
         .await;
         let ensure_result = match ensure {
@@ -234,7 +245,7 @@ async fn run_session_inner(
         None
     };
     let tablet_only = Arc::new(AtomicBool::new(false));
-    let _restore_pc = TabletOnlyRestoreGuard(tablet_only.clone());
+    let _restore_pc = TabletOnlyRestoreGuard(tablet_only.clone(), preserve.clone());
 
     let adb_path = adb::find_adb().ok();
     let mut reverse_serial: Option<String> = None;
@@ -348,6 +359,7 @@ async fn run_session_inner(
             stop.clone(),
             controls.clone(),
             tablet_only.clone(),
+            preserve.clone(),
         )
         .await
         {
@@ -357,6 +369,17 @@ async fn run_session_inner(
             Err(err) => {
                 tracing::warn!("client session ended: {err:#}");
             }
+        }
+
+        // Tablet drop / capture interrupt: put the laptop back as primary with
+        // its original Hz so the user is not stuck on a blank panel + CAD.
+        if let Some(snap) = preserve.clone() {
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Err(err) = displays::reassert_primary(&snap) {
+                    tracing::warn!("reassert primary after tablet drop: {err:#}");
+                }
+            })
+            .await;
         }
 
         if !session_policy::continue_accept_loop(stop.load(Ordering::Relaxed)) {
@@ -386,15 +409,19 @@ async fn cleanup_reverse(adb: Option<&std::path::PathBuf>, serial: Option<&str>)
     }
 }
 
-struct TabletOnlyRestoreGuard(Arc<AtomicBool>);
+struct TabletOnlyRestoreGuard(Arc<AtomicBool>, Option<displays::PrimarySnapshot>);
 
 impl Drop for TabletOnlyRestoreGuard {
     fn drop(&mut self) {
         if self.0.swap(false, Ordering::SeqCst) {
-            if let Err(err) = displays::restore_pc_monitor() {
+            if let Some(snap) = self.1.take() {
+                if let Err(err) = displays::restore_desktop(&snap) {
+                    tracing::warn!("restore PC monitor after tablet-only failed: {err:#}");
+                } else {
+                    tracing::info!("restored PC monitor after tablet-only session");
+                }
+            } else if let Err(err) = displays::restore_pc_monitor() {
                 tracing::warn!("restore PC monitor after tablet-only failed: {err:#}");
-            } else {
-                tracing::info!("restored PC monitor after tablet-only session");
             }
         }
     }
@@ -409,6 +436,7 @@ async fn handle_client(
     stop: Arc<AtomicBool>,
     controls: Arc<Controls>,
     tablet_only: Arc<AtomicBool>,
+    preserve: Option<displays::PrimarySnapshot>,
 ) -> Result<()> {
     stream.set_nodelay(true)?;
     let (mut reader, mut writer) = stream.into_split();
@@ -439,8 +467,9 @@ async fn handle_client(
         );
         let (tw, th) = (hello.screen_width, hello.screen_height);
         let want_fps = hello.max_fps.max(req.fps).min(120);
+        let preserve_for_mode = preserve.clone();
         match tokio::task::spawn_blocking(move || {
-            displays::configure_virtual_for_tablet(tw, th, want_fps)
+            displays::configure_virtual_for_tablet(tw, th, want_fps, preserve_for_mode.as_ref())
         })
         .await
         {
@@ -884,6 +913,15 @@ fn start_live_encoder(
     settings: &EncodeSettings,
     hevc: bool,
 ) -> Result<(encoder::EncoderSession, Vec<EncodedPacket>)> {
+    if lighting_host::session_policy::prefer_gdigrab_capture(
+        display.is_virtual,
+        display.dxgi.is_some(),
+    ) {
+        match restart_encoder_with_bootstrap(ffmpeg, display, settings, hevc) {
+            Ok(ok) => return Ok(ok),
+            Err(err) => tracing::warn!("gdigrab-first for virtual display failed: {err:#}"),
+        }
+    }
     let mut last_err: Option<anyhow::Error> = None;
     for enc in encoder::encoder_fallback_chain(&settings.codec) {
         let graphs = lighting_host::capture_graph::dda_capture_graphs(

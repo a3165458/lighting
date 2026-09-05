@@ -14,12 +14,12 @@ use std::time::Duration;
 use windows::Win32::Foundation::{BOOL, CloseHandle, HANDLE, LPARAM, RECT, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::Devices::Display::{
     SetDisplayConfig, SDC_APPLY, SDC_TOPOLOGY_CLONE, SDC_TOPOLOGY_EXTEND,
-    SDC_TOPOLOGY_EXTERNAL, SET_DISPLAY_CONFIG_FLAGS,
+    SDC_TOPOLOGY_EXTERNAL, SDC_TOPOLOGY_INTERNAL, SET_DISPLAY_CONFIG_FLAGS,
 };
 use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1};
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, DISPLAY_DEVICEW, HDC, HMONITOR,
-    MONITORINFOEXW,
+    EnumDisplayDevicesW, EnumDisplayMonitors, EnumDisplaySettingsW, GetMonitorInfoW,
+    DEVMODEW, DISPLAY_DEVICEW, ENUM_CURRENT_SETTINGS, HDC, HMONITOR, MONITORINFOEXW,
 };
 use windows::Win32::Security::{
     GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
@@ -135,9 +135,21 @@ pub fn apply_tablet_only_output() -> Result<()> {
     apply_topology(SDC_TOPOLOGY_EXTERNAL)
 }
 
-/// Bring the PC panel back after a tablet-only session.
+/// Last-resort CCD restore when we do not have a primary snapshot. Prefer
+/// [`restore_desktop`]: SDC_TOPOLOGY_EXTEND replays the polluted extend slot.
 pub fn restore_pc_monitor() -> Result<()> {
-    apply_topology(SDC_TOPOLOGY_EXTEND)
+    let code = unsafe {
+        SetDisplayConfig(
+            None,
+            None,
+            SDC_APPLY | SDC_TOPOLOGY_INTERNAL | SDC_TOPOLOGY_CLONE | SDC_TOPOLOGY_EXTEND | SDC_TOPOLOGY_EXTERNAL,
+        )
+    };
+    if code != 0 {
+        anyhow::bail!("DISPLAY_TOPOLOGY_FAILED:{code}");
+    }
+    std::thread::sleep(Duration::from_millis(400));
+    Ok(())
 }
 
 fn apply_topology(topology: SET_DISPLAY_CONFIG_FLAGS) -> Result<()> {
@@ -166,29 +178,58 @@ pub fn has_virtual_display(displays: &[DisplayInfo]) -> bool {
 }
 
 pub fn pick_virtual(displays: &[DisplayInfo]) -> Option<&DisplayInfo> {
+    pick_virtual_excluding(displays, None)
+}
+
+pub fn pick_virtual_excluding<'a>(
+    displays: &'a [DisplayInfo],
+    primary_device: Option<&str>,
+) -> Option<&'a DisplayInfo> {
+    let not_primary = |d: &&DisplayInfo| {
+        primary_device
+            .map(|p| lighting_host::session_policy::is_safe_virtual_target(&d.name, p))
+            .unwrap_or(true)
+    };
     displays
         .iter()
+        .filter(not_primary)
         .find(|d| d.is_virtual)
-        .or_else(|| displays.iter().find(|d| !d.primary))
+        .or_else(|| displays.iter().filter(not_primary).find(|d| !d.primary))
 }
 
 /// Ensure a real secondary desktop exists; never equate driver-store staging or
 /// a control-pipe heartbeat with a working second screen.
 pub fn ensure_secondary_display(mode: ShareMode) -> Result<()> {
-    ensure_secondary_display_with_progress(mode, |_| {})
+    ensure_secondary_display_with_progress(mode, |_| {}, None)
 }
 
 pub fn ensure_secondary_display_with_progress(
     mode: ShareMode,
     mut progress: impl FnMut(&str),
+    preserve: Option<&PrimarySnapshot>,
 ) -> Result<()> {
+    let reassert = |progress: &mut dyn FnMut(&str)| {
+        if let Some(snap) = preserve {
+            progress("正在确认主屏原始刷新率…");
+            if let Err(err) = reassert_primary(snap) {
+                tracing::warn!("reassert primary after extend: {err:#}");
+            }
+        }
+    };
+
     progress("正在启用 Windows 扩展桌面…");
-    if let Err(err) = apply_project_mode(ShareMode::Extend) {
+    if has_secondary(&list_displays().unwrap_or_default()) {
+        reassert(&mut progress);
+        if poll_share_target(2, &mut progress, mode, preserve) {
+            return Ok(());
+        }
+    } else if let Err(err) = apply_project_mode(ShareMode::Extend) {
         // No second target may exist yet. Provision it before requiring a
         // successful topology change; privilege does not create a target.
         tracing::info!("initial extend topology unavailable: {err:#}");
     }
-    if poll_share_target(4, &mut progress, mode) {
+    reassert(&mut progress);
+    if poll_share_target(4, &mut progress, mode, preserve) {
         return Ok(());
     }
 
@@ -198,8 +239,13 @@ pub fn ensure_secondary_display_with_progress(
     // Full also repairs an existing unhealthy root device. INF-only LightingIdd
     // bundles are not installable drivers and must not precede this signed path.
     run_vdd_provision()?;
-    apply_project_mode(ShareMode::Extend)?;
-    if poll_share_target(20, &mut progress, mode) {
+    if !has_secondary(&list_displays().unwrap_or_default()) {
+        if let Err(err) = apply_project_mode(ShareMode::Extend) {
+            tracing::warn!("extend after driver install: {err:#}");
+        }
+    }
+    reassert(&mut progress);
+    if poll_share_target(20, &mut progress, mode, preserve) {
         progress("虚拟屏已就绪");
         return Ok(());
     }
@@ -209,7 +255,8 @@ pub fn ensure_secondary_display_with_progress(
     if vdd_pipe_alive() {
         progress("正在请求虚拟显示驱动创建屏幕…");
         vdd_set_display_count(1)?;
-        if poll_share_target(20, &mut progress, mode) {
+        reassert(&mut progress);
+        if poll_share_target(20, &mut progress, mode, preserve) {
             return Ok(());
         }
     }
@@ -355,6 +402,7 @@ fn poll_share_target(
     attempts: u32,
     progress: &mut impl FnMut(&str),
     mode: ShareMode,
+    preserve: Option<&PrimarySnapshot>,
 ) -> bool {
     for attempt in 0..attempts {
         progress(&format!(
@@ -363,8 +411,8 @@ fn poll_share_target(
             attempts
         ));
         std::thread::sleep(Duration::from_millis(if attempt < 8 { 800 } else { 500 }));
-        if attempt % 4 == 0 {
-            let _ = apply_project_mode(ShareMode::Extend);
+        if let Some(snap) = preserve {
+            let _ = reassert_primary(snap);
         }
         let list = list_displays().unwrap_or_default();
         if has_secondary(&list) || (mode == ShareMode::External && has_virtual_display(&list)) {
@@ -414,42 +462,50 @@ fn run_vdd_provision() -> Result<()> {
     run_provision_script(&script, &bundle, "Full")
 }
 
-pub fn configure_virtual_for_tablet(width: u32, height: u32, fps: u32) -> Result<DisplayInfo> {
+pub fn configure_virtual_for_tablet(
+    width: u32,
+    height: u32,
+    fps: u32,
+    preserve: Option<&PrimarySnapshot>,
+) -> Result<DisplayInfo> {
     let w = (width.max(16) & !1).max(16);
     let h = (height.max(16) & !1).max(16);
-    let fps = fps.clamp(30, 120);
+    let _fps = fps.clamp(30, 120);
+    let primary_name = preserve.map(|p| p.device.as_str());
 
-    apply_project_mode(ShareMode::Extend)?;
+    // Never reload the IddCx adapter here: InitAdapter makes Windows promote
+    // the virtual panel and drops Desktop Duplication (black host screen).
     let list = list_displays()?;
-    let target = pick_virtual(&list)
+    let target = pick_virtual_excluding(&list, primary_name)
         .cloned()
         .context("没有可用的虚拟/扩展屏")?;
-
-    // Do not restart the driver on every Hello: that invalidates capture
-    // identities and removes the very monitor about to be streamed.
-    let modes = list_display_modes(&target.name)?;
-    let advertised = modes.iter().any(|m| m.width == w && m.height == h);
-    let is_mtt = target.friendly.to_ascii_lowercase().contains("mtt")
-        || target.friendly.to_ascii_lowercase().contains("iddsample");
-    if !advertised && is_mtt && vdd_pipe_alive() {
-        prepare_vdd_settings(w, h, fps)?;
-        vdd_send_command("RELOAD_DRIVER")?;
-        if !poll_share_target(20, &mut |_| {}, ShareMode::Extend) {
-            anyhow::bail!("VDD_NO_MONITOR");
-        }
-    }
+    anyhow::ensure!(
+        primary_name
+            .map(|p| lighting_host::session_policy::is_safe_virtual_target(&target.name, p))
+            .unwrap_or(true),
+        "拒绝改写主屏 {}",
+        target.name
+    );
 
     if target.width != w || target.height != h {
-        if let Err(err) = set_display_mode(&target.name, w, h, fps) {
-            tracing::warn!("set virtual mode {w}×{h}@{fps} failed: {err:#}");
+        // Size only — setting refresh on the virtual path retimes the whole
+        // desktop and is what followed the tablet Hz onto the laptop panel.
+        if let Err(err) = change_display_mode(&target.name, w, h, None, None, false) {
+            tracing::warn!("set virtual mode {w}×{h} failed: {err:#}");
         } else {
-            std::thread::sleep(Duration::from_millis(900));
+            std::thread::sleep(Duration::from_millis(400));
+        }
+    }
+    if let Some(snap) = preserve {
+        if let Err(err) = reassert_primary(snap) {
+            tracing::warn!("reassert primary after virtual mode: {err:#}");
         }
     }
 
     let list = list_displays()?;
     list.into_iter()
-        .find(|d| d.name == target.name)
+        .find(|d| d.name.eq_ignore_ascii_case(&target.name))
+        .or_else(|| pick_virtual_excluding(&list, primary_name).cloned())
         .context("设置平板分辨率后找不到原扩展屏")
 }
 
@@ -632,6 +688,150 @@ pub struct DisplayMode {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
+}
+
+/// Physical panel as it was before Lighting touched CCD / DEVMODE.
+#[derive(Debug, Clone)]
+pub struct PrimarySnapshot {
+    pub device: String,
+    pub mode: DisplayMode,
+    pub x: i32,
+    pub y: i32,
+}
+
+pub fn snapshot_primary() -> Result<PrimarySnapshot> {
+    let list = list_displays()?;
+    let primary = list
+        .iter()
+        .find(|d| d.primary)
+        .cloned()
+        .context("没有主显示器")?;
+    let mode = current_display_mode(&primary.name).unwrap_or(DisplayMode {
+        width: primary.width,
+        height: primary.height,
+        // 0 = unknown; restore must not invent 60 Hz on a high-refresh panel.
+        fps: 0,
+    });
+    Ok(PrimarySnapshot {
+        device: primary.name,
+        mode,
+        x: primary.x,
+        y: primary.y,
+    })
+}
+
+/// Put the laptop/host panel back as primary with its original timing.
+/// Temporary (no CDS_UPDATEREGISTRY) so we do not rewrite the user's profile.
+pub fn restore_primary(snap: &PrimarySnapshot) -> Result<()> {
+    change_display_mode(
+        &snap.device,
+        snap.mode.width,
+        snap.mode.height,
+        (snap.mode.fps >= 30).then_some(snap.mode.fps),
+        Some((snap.x, snap.y)),
+        true,
+    )
+}
+
+/// Live path: restore Hz/primary only when they actually drifted.
+/// Repeated CDS_SET_PRIMARY is what blanks the laptop and kills capture.
+pub fn reassert_primary(snap: &PrimarySnapshot) -> Result<()> {
+    let list = list_displays().unwrap_or_default();
+    let current = list
+        .iter()
+        .find(|d| d.name.eq_ignore_ascii_case(&snap.device));
+    let fps = current
+        .and_then(|d| current_display_mode(&d.name).ok())
+        .map(|m| m.fps)
+        .unwrap_or(0);
+    let action = lighting_host::session_policy::primary_restore_action(
+        current.map(|d| d.name.as_str()),
+        current.map(|d| d.primary).unwrap_or(false),
+        current.map(|d| d.width).unwrap_or(0),
+        current.map(|d| d.height).unwrap_or(0),
+        fps,
+        &snap.device,
+        snap.mode.width,
+        snap.mode.height,
+        snap.mode.fps,
+    );
+    match action {
+        lighting_host::session_policy::PrimaryRestoreAction::Skip => Ok(()),
+        lighting_host::session_policy::PrimaryRestoreAction::TimingOnly => change_display_mode(
+            &snap.device,
+            snap.mode.width,
+            snap.mode.height,
+            (snap.mode.fps >= 30).then_some(snap.mode.fps),
+            Some((snap.x, snap.y)),
+            false,
+        ),
+        lighting_host::session_policy::PrimaryRestoreAction::SetPrimary => restore_primary(snap),
+    }
+}
+
+pub fn restore_desktop(snap: &PrimarySnapshot) -> Result<()> {
+    if let Err(err) = restore_primary(snap) {
+        tracing::warn!("restore_primary failed: {err:#}");
+    }
+    let list = list_displays().unwrap_or_default();
+    let present = list
+        .iter()
+        .any(|d| d.name.eq_ignore_ascii_case(&snap.device));
+    if !present {
+        let _ = restore_pc_monitor();
+        restore_primary(snap)?;
+    } else if let Err(err) = restore_primary(snap) {
+        tracing::warn!("second restore_primary failed: {err:#}");
+    }
+    Ok(())
+}
+
+/// RAII: always restore the host panel, including after a mid-share interrupt.
+pub struct DesktopRestoreGuard {
+    pub primary: Option<PrimarySnapshot>,
+}
+
+impl DesktopRestoreGuard {
+    pub fn capture() -> Self {
+        match snapshot_primary() {
+            Ok(primary) => {
+                tracing::info!(
+                    "captured primary {} {}×{}@{}Hz origin=({},{})",
+                    primary.device,
+                    primary.mode.width,
+                    primary.mode.height,
+                    primary.mode.fps,
+                    primary.x,
+                    primary.y
+                );
+                Self {
+                    primary: Some(primary),
+                }
+            }
+            Err(err) => {
+                tracing::warn!("could not snapshot primary display: {err:#}");
+                Self { primary: None }
+            }
+        }
+    }
+}
+
+impl Drop for DesktopRestoreGuard {
+    fn drop(&mut self) {
+        if let Some(primary) = self.primary.take() {
+            if let Err(err) = restore_desktop(&primary) {
+                tracing::warn!("restore desktop after share failed: {err:#}");
+            } else {
+                tracing::info!(
+                    "restored primary {} to {}×{}@{}Hz",
+                    primary.device,
+                    primary.mode.width,
+                    primary.mode.height,
+                    primary.mode.fps
+                );
+            }
+        }
+    }
 }
 
 /// Snapshot used to restore the PC monitor after a follow-tablet session.
@@ -882,8 +1082,31 @@ pub fn pick_closest_mode(
     })
 }
 
+fn current_display_mode_gdi(device_name: &str) -> Result<DisplayMode> {
+    let mut wide: Vec<u16> = device_name.encode_utf16().collect();
+    wide.push(0);
+    let mut dm = DEVMODEW::default();
+    dm.dmSize = std::mem::size_of::<DEVMODEW>() as u16;
+    unsafe {
+        anyhow::ensure!(
+            EnumDisplaySettingsW(PCWSTR(wide.as_ptr()), ENUM_CURRENT_SETTINGS, &mut dm).as_bool(),
+            "EnumDisplaySettingsW failed"
+        );
+    }
+    anyhow::ensure!(dm.dmPelsWidth > 0 && dm.dmPelsHeight > 0, "empty current mode");
+    Ok(DisplayMode {
+        width: dm.dmPelsWidth,
+        height: dm.dmPelsHeight,
+        fps: dm.dmDisplayFrequency,
+    })
+}
+
 /// Read the monitor's live mode, including refresh rate.
 pub fn current_display_mode(device_name: &str) -> Result<DisplayMode> {
+    match current_display_mode_gdi(device_name) {
+        Ok(mode) => return Ok(mode),
+        Err(err) => tracing::warn!("native EnumDisplaySettings failed ({err:#}); trying PowerShell"),
+    }
     let device = device_name.replace('\'', "''");
     let ps = format!(
         r#"
@@ -932,7 +1155,7 @@ Write-Output ("{{0}}x{{1}}@{{2}}" -f $dm.dmPelsWidth, $dm.dmPelsHeight, $dm.dmDi
     Ok(DisplayMode {
         width: w.trim().parse().context("解析宽度失败")?,
         height: h.trim().parse().context("解析高度失败")?,
-        fps: fps.trim().parse::<u32>().unwrap_or(60).max(30),
+        fps: fps.trim().parse::<u32>().unwrap_or(0),
     })
 }
 
@@ -1002,11 +1225,35 @@ pub fn apply_follow_tablet_mode(
 }
 
 pub fn set_display_mode(device_name: &str, width: u32, height: u32, fps: u32) -> Result<()> {
-    // DEVMODEW layout differs across windows-rs versions; use a tiny elevated-free
-    // PowerShell P/Invoke so we stay compatible with windows 0.58.
-    // Use a *temporary* mode change (no CDS_UPDATEREGISTRY) so casting does not
-    // permanently rewrite the user's preferred resolution.
+    change_display_mode(device_name, width, height, Some(fps.max(30)), None, false)
+}
+
+fn change_display_mode(
+    device_name: &str,
+    width: u32,
+    height: u32,
+    fps: Option<u32>,
+    position: Option<(i32, i32)>,
+    set_primary: bool,
+) -> Result<()> {
+    // Temporary (no CDS_UPDATEREGISTRY): do not rewrite the user's preferred mode.
     let device = device_name.replace('\'', "''");
+    let freq_line = if let Some(fps) = fps {
+        format!("$dm.dmDisplayFrequency = {fps}\n$dm.dmFields = $dm.dmFields -bor [Disp]::DM_DISPLAYFREQUENCY")
+    } else {
+        String::new()
+    };
+    let pos_line = if let Some((x, y)) = position {
+        format!("$dm.dmPositionX = {x}\n$dm.dmPositionY = {y}\n$dm.dmFields = $dm.dmFields -bor [Disp]::DM_POSITION")
+    } else {
+        String::new()
+    };
+    let flags = if set_primary { "0x10000010" } else { "0" }; // CDS_NORESET|CDS_SET_PRIMARY or none
+    let apply = if set_primary {
+        "$r2 = [Disp]::ChangeDisplaySettingsExPtr($null, [IntPtr]::Zero, [IntPtr]::Zero, 0, [IntPtr]::Zero); if ($r2 -ne 0) { throw \"ChangeDisplaySettingsEx apply failed: $r2\" }"
+    } else {
+        ""
+    };
     let ps = format!(
         r#"
 $ErrorActionPreference = 'Stop'
@@ -1028,6 +1275,7 @@ public struct DEVMODE {{
 }}
 public static class Disp {{
   public const int ENUM_CURRENT_SETTINGS = -1;
+  public const int DM_POSITION = 0x20;
   public const int DM_PELSWIDTH = 0x80000;
   public const int DM_PELSHEIGHT = 0x100000;
   public const int DM_DISPLAYFREQUENCY = 0x400000;
@@ -1035,6 +1283,8 @@ public static class Disp {{
   public static extern bool EnumDisplaySettings(string deviceName, int modeNum, ref DEVMODE devMode);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)]
   public static extern int ChangeDisplaySettingsEx(string lpszDeviceName, ref DEVMODE lpDevMode, IntPtr hwnd, int dwflags, IntPtr lParam);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "ChangeDisplaySettingsEx")]
+  public static extern int ChangeDisplaySettingsExPtr(string lpszDeviceName, IntPtr lpDevMode, IntPtr hwnd, int dwflags, IntPtr lParam);
 }}
 "@
 $dm = New-Object DEVMODE
@@ -1042,15 +1292,20 @@ $dm.dmSize = [System.Runtime.InteropServices.Marshal]::SizeOf([type][DEVMODE])
 if (-not [Disp]::EnumDisplaySettings('{device}', [Disp]::ENUM_CURRENT_SETTINGS, [ref]$dm)) {{ throw 'EnumDisplaySettings failed' }}
 $dm.dmPelsWidth = {width}
 $dm.dmPelsHeight = {height}
-$dm.dmDisplayFrequency = {fps}
-$dm.dmFields = [Disp]::DM_PELSWIDTH -bor [Disp]::DM_PELSHEIGHT -bor [Disp]::DM_DISPLAYFREQUENCY
-$r = [Disp]::ChangeDisplaySettingsEx('{device}', [ref]$dm, [IntPtr]::Zero, 0, [IntPtr]::Zero)
-if ($r -ne 0) {{
-  $dm.dmFields = [Disp]::DM_PELSWIDTH -bor [Disp]::DM_PELSHEIGHT
-  $r = [Disp]::ChangeDisplaySettingsEx('{device}', [ref]$dm, [IntPtr]::Zero, 0, [IntPtr]::Zero)
-  if ($r -ne 0) {{ throw "ChangeDisplaySettingsEx failed: $r" }}
-}}
-"#
+$dm.dmFields = [Disp]::DM_PELSWIDTH -bor [Disp]::DM_PELSHEIGHT
+{freq}
+{pos}
+$r = [Disp]::ChangeDisplaySettingsEx('{device}', [ref]$dm, [IntPtr]::Zero, {flags}, [IntPtr]::Zero)
+if ($r -ne 0) {{ throw "ChangeDisplaySettingsEx failed: $r" }}
+{apply}
+"#,
+        device = device,
+        width = width,
+        height = height,
+        freq = freq_line,
+        pos = pos_line,
+        flags = flags,
+        apply = apply,
     );
     let output = Command::new("powershell.exe")
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &ps])
@@ -1063,6 +1318,7 @@ if ($r -ne 0) {{
     }
     Ok(())
 }
+
 
 fn list_via_dxgi() -> Result<Vec<(String, DxgiCapture)>> {
     unsafe {
