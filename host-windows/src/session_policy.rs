@@ -4,6 +4,57 @@ pub fn continue_accept_loop(user_stopped: bool) -> bool {
     !user_stopped
 }
 
+/// IddCx virtual monitors often drop Desktop Duplication mid-stream, which
+/// looks like a random disconnect. GDI capture of the selected region does
+/// not retarget the GPU output and keeps the physical panel alive.
+pub fn prefer_gdigrab_capture(is_virtual: bool, has_dxgi: bool) -> bool {
+    is_virtual || !has_dxgi
+}
+
+/// The PC panel must never be the target of a virtual-display mode change.
+pub fn is_safe_virtual_target(target_device: &str, primary_device: &str) -> bool {
+    !target_device.is_empty()
+        && !primary_device.is_empty()
+        && !target_device.eq_ignore_ascii_case(primary_device)
+}
+
+/// How to put the host panel back without fighting a healthy extend desktop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrimaryRestoreAction {
+    Skip,
+    /// Size/Hz drifted but the laptop is still primary — do not CDS_SET_PRIMARY.
+    TimingOnly,
+    /// Physical panel is missing or no longer primary (the CAD / black-lid case).
+    SetPrimary,
+}
+
+pub fn primary_restore_action(
+    current_device: Option<&str>,
+    current_is_primary: bool,
+    current_w: u32,
+    current_h: u32,
+    current_fps: u32,
+    snap_device: &str,
+    snap_w: u32,
+    snap_h: u32,
+    snap_fps: u32,
+) -> PrimaryRestoreAction {
+    match current_device {
+        None => PrimaryRestoreAction::SetPrimary,
+        Some(name) if !name.eq_ignore_ascii_case(snap_device) => PrimaryRestoreAction::SetPrimary,
+        Some(_) if !current_is_primary => PrimaryRestoreAction::SetPrimary,
+        Some(_) => {
+            let size_drift = current_w != snap_w || current_h != snap_h;
+            let hz_drift = snap_fps >= 30 && current_fps >= 30 && current_fps != snap_fps;
+            if size_drift || hz_drift {
+                PrimaryRestoreAction::TimingOnly
+            } else {
+                PrimaryRestoreAction::Skip
+            }
+        }
+    }
+}
+
 /// Base wait before a client's Nth reconnect attempt (`fail_index` 0 = first retry).
 /// The first slot is long enough that a reconnect does not stampede into host
 /// teardown / `adb reverse` bounce; accept itself stays live concurrently.
@@ -294,6 +345,21 @@ mod tests {
     }
 
     #[test]
+    fn virtual_capture_avoids_duplication() {
+        assert!(prefer_gdigrab_capture(true, true));
+        assert!(prefer_gdigrab_capture(true, false));
+        assert!(prefer_gdigrab_capture(false, false));
+        assert!(!prefer_gdigrab_capture(false, true));
+    }
+
+    #[test]
+    fn virtual_mode_change_never_targets_primary() {
+        assert!(is_safe_virtual_target(r"\\.\DISPLAY2", r"\\.\DISPLAY1"));
+        assert!(!is_safe_virtual_target(r"\\.\DISPLAY1", r"\\.\DISPLAY1"));
+        assert!(!is_safe_virtual_target("", r"\\.\DISPLAY1"));
+    }
+
+    #[test]
     fn first_reconnect_is_slower_than_teardown_stampede() {
         assert!(reconnect_backoff_ms(0) >= 600);
         assert!(reconnect_backoff_ms(0) < reconnect_backoff_ms(4));
@@ -482,6 +548,79 @@ mod tests {
     fn missing_screen_falls_back_to_res_cap() {
         let (w, h) = compute_encode_size(2560, 1440, 0, 0, 1920, 1080, 1.0, 3840, 2160);
         assert!(w <= 1920 && h <= 1080, "{w}×{h}");
+    }
+
+    #[test]
+    fn virtual_capture_prefers_gdigrab() {
+        assert!(prefer_gdigrab_capture(true, true));
+        assert!(prefer_gdigrab_capture(true, false));
+        assert!(prefer_gdigrab_capture(false, false));
+        assert!(!prefer_gdigrab_capture(false, true));
+    }
+
+    #[test]
+    fn never_retarget_the_primary_panel() {
+        assert!(!is_safe_virtual_target(r"\\.\DISPLAY1", r"\\.\DISPLAY1"));
+        assert!(is_safe_virtual_target(r"\\.\DISPLAY2", r"\\.\DISPLAY1"));
+        assert!(!is_safe_virtual_target("", r"\\.\DISPLAY1"));
+    }
+
+    #[test]
+    fn primary_restore_skips_when_unchanged() {
+        assert_eq!(
+            primary_restore_action(
+                Some(r"\\.\DISPLAY1"),
+                true,
+                2560,
+                1440,
+                165,
+                r"\\.\DISPLAY1",
+                2560,
+                1440,
+                165
+            ),
+            PrimaryRestoreAction::Skip
+        );
+    }
+
+    #[test]
+    fn primary_restore_timing_only_when_hz_drifted() {
+        assert_eq!(
+            primary_restore_action(
+                Some(r"\\.\DISPLAY1"),
+                true,
+                2560,
+                1440,
+                60,
+                r"\\.\DISPLAY1",
+                2560,
+                1440,
+                165
+            ),
+            PrimaryRestoreAction::TimingOnly
+        );
+    }
+
+    #[test]
+    fn primary_restore_set_primary_when_vdd_stole_it() {
+        assert_eq!(
+            primary_restore_action(
+                Some(r"\\.\DISPLAY1"),
+                false,
+                2560,
+                1440,
+                165,
+                r"\\.\DISPLAY1",
+                2560,
+                1440,
+                165
+            ),
+            PrimaryRestoreAction::SetPrimary
+        );
+        assert_eq!(
+            primary_restore_action(None, false, 0, 0, 0, r"\\.\DISPLAY1", 2560, 1440, 165),
+            PrimaryRestoreAction::SetPrimary
+        );
     }
 
     #[test]

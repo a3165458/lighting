@@ -1,7 +1,7 @@
 {
   "name": "lighting-host-ui",
   "private": true,
-  "version": "0.1.20",
+  "version": "0.1.21",
   "description": "Lighting secondary display — one-click Windows portable app",
   "author": "Lighting",
   "type": "module",
