@@ -193,30 +193,11 @@ async fn run_session_inner(
                 }
                 set_status(&status, "准备虚拟屏", "虚拟屏已就绪，开始等待平板…");
             }
-            lighting_host::share_flow::VirtualPrepareOutcome::FallbackMirror { reason } => {
-                tracing::warn!("extend falling back to mirror: {reason}");
-                req.share_mode = lighting_host::view::ShareMode::Mirror;
-                let _ = displays::apply_project_mode(lighting_host::view::ShareMode::Mirror);
-                let list = displays::list_displays().unwrap_or_default();
-                if let Some(idx) =
-                    displays::pick_display_index(&list, lighting_host::view::ShareMode::Mirror)
-                {
-                    req.display_index = idx;
-                }
-                set_status(
-                    &status,
-                    "启动中",
-                    format!(
-                        "独立第二屏不可用，已改用镜像主屏。{}",
-                        lighting_host::ui_text::human_last_error(&reason)
-                    ),
-                );
-            }
             lighting_host::share_flow::VirtualPrepareOutcome::Abort { reason } => {
                 anyhow::bail!(
                     "{}",
-                    lighting_host::share_flow::tablet_only_abort_message(
-                        &lighting_host::ui_text::human_last_error(&reason)
+                    lighting_host::share_flow::virtual_prepare_abort_message(
+                        &format!("{} [{reason}]", lighting_host::ui_text::human_last_error(&reason))
                     )
                 );
             }
@@ -227,9 +208,8 @@ async fn run_session_inner(
 
     set_status(&status, "启动", "正在枚举显示器");
     let displays = displays::list_displays()?;
-    if let Some(idx) = displays::pick_display_index(&displays, req.share_mode) {
-        req.display_index = idx;
-    }
+    req.display_index = displays::pick_display_index(&displays, req.share_mode)
+        .context("所选投屏模式没有可用显示器，请刷新列表")?;
     let display = displays
         .get(req.display_index)
         .cloned()
@@ -466,10 +446,10 @@ async fn handle_client(
         {
             Ok(Ok(updated)) => {
                 tracing::info!(
-                    "virtual display now {}×{} (dxgi {})",
+                    "virtual display now {}×{} (capture {:?})",
                     updated.width,
                     updated.height,
-                    updated.dxgi_index
+                    updated.dxgi
                 );
                 display = updated;
                 set_status(
@@ -528,12 +508,10 @@ async fn handle_client(
                     mode_guard.0 = Some(restore);
                 }
                 let device_name = display.name.clone();
-                let dxgi = display.dxgi_index;
                 if let Ok(list) = displays::list_displays() {
                     if let Some(updated) = list
                         .iter()
                         .find(|d| d.name == device_name)
-                        .or_else(|| list.iter().find(|d| d.dxgi_index == dxgi))
                         .cloned()
                     {
                         display = updated;
@@ -584,18 +562,10 @@ async fn handle_client(
         match tokio::task::spawn_blocking(displays::apply_tablet_only_output).await {
             Ok(Ok(())) => {
                 tablet_only.store(true, Ordering::SeqCst);
-                if let Ok(list) = displays::list_displays() {
-                    if let Some(idx) = displays::pick_display_index(&list, req.share_mode) {
-                        if let Some(updated) = list.get(idx).cloned() {
-                            display = updated;
-                        }
-                    } else if let Some(updated) = displays::pick_virtual(&list)
-                        .cloned()
-                        .or_else(|| list.first().cloned())
-                    {
-                        display = updated;
-                    }
-                }
+                let list = displays::list_displays()?;
+                display = list.into_iter()
+                    .find(|d| d.name == display.name)
+                    .context("切换仅平板后原扩展屏已断开")?;
                 set_status(
                     &status,
                     "仅平板",
@@ -917,7 +887,7 @@ fn start_live_encoder(
     let mut last_err: Option<anyhow::Error> = None;
     for enc in encoder::encoder_fallback_chain(&settings.codec) {
         let graphs = lighting_host::capture_graph::dda_capture_graphs(
-            display.dxgi_index,
+            display.dxgi,
             settings.fps,
             display.width,
             display.height,

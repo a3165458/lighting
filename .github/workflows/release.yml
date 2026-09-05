@@ -4,23 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version tag (e.g. v0.1.0)"
+        description: "Artifact version (e.g. v0.1.20); must match package versions"
         required: true
-        default: "v0.1.0"
-      prerelease:
-        description: "Mark as pre-release"
-        type: boolean
-        default: true
-  push:
-    tags:
-      - "v*"
+        type: string
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   release-windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,15 +22,29 @@ jobs:
       - name: Resolve version tag
         id: ver
         shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $tag = "${{ github.event.inputs.version }}"
-          } else {
-            $tag = "${{ github.ref_name }}"
+          $tag = $env:RELEASE_VERSION
+          if ($tag -notmatch '^v?\d+\.\d+\.\d+$') { throw "Expected version vMAJOR.MINOR.PATCH" }
+          $version = $tag.TrimStart('v')
+          $uiVersion = (Get-Content host-ui/package.json -Raw | ConvertFrom-Json).version
+          $hostVersion = (Select-String -Path host-windows/Cargo.toml -Pattern '^version = "([^"]+)"').Matches[0].Groups[1].Value
+          if ($uiVersion -ne $version -or $hostVersion -ne $version) {
+            throw "Version mismatch: input=$version UI=$uiVersion host=$hostVersion"
           }
-          if ($tag -notmatch '^v') { $tag = "v$tag" }
-          "tag=$tag" >> $env:GITHUB_OUTPUT
-          "name=$($tag.TrimStart('v'))" >> $env:GITHUB_OUTPUT
+          "tag=v$version" >> $env:GITHUB_OUTPUT
+          "name=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Parse provisioning scripts
+        shell: powershell
+        run: |
+          foreach ($file in Get-ChildItem scripts/vdd/*.ps1) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count) { throw ($errors | Out-String) }
+          }
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -54,34 +62,77 @@ jobs:
           [System.IO.File]::WriteAllText("$PWD/android/local.properties", "sdk.dir=$sdkPath`n")
           cd android
           .\gradlew.bat assembleDebug --no-daemon
+          if ($LASTEXITCODE -ne 0) { throw "Android build failed: $LASTEXITCODE" }
           New-Item -ItemType Directory -Force -Path ../host-ui/resources | Out-Null
           Copy-Item app/build/outputs/apk/debug/app-debug.apk ../host-ui/resources/Lighting.apk -Force
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: host-windows
 
-      - name: Simulate share policy
+      - name: Test Windows host
         working-directory: host-windows
-        run: cargo test --lib
+        run: cargo test --locked --target x86_64-pc-windows-msvc --lib --bins
 
       - name: Build lighting-host.exe
         working-directory: host-windows
-        run: cargo build --release
+        run: cargo build --locked --release --target x86_64-pc-windows-msvc
 
       - name: Stage host binary
         shell: pwsh
         run: |
-          Copy-Item host-windows/target/release/lighting-host.exe host-ui/resources/lighting-host.exe -Force
-          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/vdd/stage-vdd-bundle.ps1
-          pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/idd/stage-idd-bundle.ps1
-          Get-Item host-ui/resources/* | Format-Table Name, Length
-          Get-ChildItem host-ui/resources/vdd -ErrorAction SilentlyContinue | Format-Table Name, Length
-          Get-ChildItem host-ui/resources/idd -ErrorAction SilentlyContinue | Format-Table Name, Length
+          Copy-Item host-windows/target/x86_64-pc-windows-msvc/release/lighting-host.exe host-ui/resources/lighting-host.exe -Force
+          & scripts/vdd/stage-vdd-bundle.ps1
+          # Prove the bundled installer is runnable on x64, not the archive's first (ARM64) executable.
+          & host-ui/resources/vdd/nefconc.exe --help
+          if ($LASTEXITCODE -ne 0) { throw "Bundled x64 nefcon failed: $LASTEXITCODE" }
+
+      - name: Smoke install signed virtual display and verify idempotence
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $PWD 'smoke-evidence'
+          New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+          $bundle = (Resolve-Path host-ui/resources/vdd).Path
+          $scriptPath = (Resolve-Path scripts/vdd/provision.ps1).Path
+          $firstInstance = $null
+          foreach ($pass in 1, 2) {
+            $result = Join-Path $evidence "provision-$pass.result.txt"
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $scriptPath -BundleDir $bundle -ResultFile $result -Mode Full 2>&1 |
+              Tee-Object -FilePath (Join-Path $evidence "provision-$pass.log")
+            $code = $LASTEXITCODE
+            if (Test-Path $result) { Get-Content $result }
+            if ($code -ne 0) { throw "Real VDD provisioning failed on pass $pass (exit $code)" }
+            if ((Get-Content $result -Raw) -notmatch '^OK\|READY:') { throw "Provisioner did not report a healthy root device" }
+            $devices = @(Get-PnpDevice -PresentOnly | Where-Object { $_.HardwareID -contains 'Root\MttVDD' })
+            $devices | Select-Object InstanceId, Status, Class, HardwareID |
+              ConvertTo-Json -Depth 4 | Set-Content (Join-Path $evidence "devices-$pass.json")
+            if ($devices.Count -ne 1 -or $devices[0].Status -ne 'OK') {
+              throw "Expected exactly one healthy present MttVDD root device"
+            }
+            $problem = Get-PnpDeviceProperty -InstanceId $devices[0].InstanceId -KeyName DEVPKEY_Device_ProblemCode
+            if ($problem.Data -ne 0) { throw "MttVDD problem code: $($problem.Data)" }
+            if ($pass -eq 1) {
+              $firstInstance = $devices[0].InstanceId
+            } elseif ($devices[0].InstanceId -ne $firstInstance) {
+              throw "Second provisioning changed the root device instead of reusing it"
+            }
+          }
+
+      - name: Upload provisioning evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lighting-${{ steps.ver.outputs.name }}-vdd-smoke
+          path: smoke-evidence/*
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -94,7 +145,9 @@ jobs:
         working-directory: host-ui
         run: |
           npm ci
+          if ($LASTEXITCODE -ne 0) { throw "npm ci failed: $LASTEXITCODE" }
           npm run electron:build:win
+          if ($LASTEXITCODE -ne 0) { throw "Electron packaging failed: $LASTEXITCODE" }
         env:
           # Optional Authenticode signing (see docs/WINDOWS-SMARTSCREEN.md).
           # Secrets: WINDOWS_CSC_LINK = base64(.pfx), WINDOWS_CSC_KEY_PASSWORD = pfx password.
@@ -107,24 +160,34 @@ jobs:
 
       - name: Stage release assets (ASCII names for GitHub upload)
         shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.ver.outputs.name }}
         run: |
           New-Item -ItemType Directory -Force -Path release-assets | Out-Null
-          Copy-Item host-ui/release/*便携版.exe release-assets/Lighting-${{ steps.ver.outputs.name }}-portable.exe
-          Copy-Item host-ui/release/*安装包.exe release-assets/Lighting-${{ steps.ver.outputs.name }}-setup.exe
+          Copy-Item host-ui/release/*便携版.exe "release-assets/Lighting-$env:RELEASE_VERSION-portable.exe"
+          Copy-Item host-ui/release/*安装包.exe "release-assets/Lighting-$env:RELEASE_VERSION-setup.exe"
           Copy-Item host-ui/resources/Lighting.apk release-assets/Lighting.apk
-          Get-ChildItem release-assets | Format-Table Name, Length
+          Copy-Item smoke-evidence -Destination release-assets/vdd-smoke -Recurse
+          # Validate PE32+ / AMD64 headers, including the actual Rust host executable.
+          $executables = @(Get-ChildItem release-assets/*.exe) + @(Get-Item host-ui/resources/lighting-host.exe)
+          foreach ($exe in $executables) {
+            $bytes = [IO.File]::ReadAllBytes($exe.FullName)
+            if ($bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) { throw "$exe is not a Windows executable" }
+            $pe = [BitConverter]::ToInt32($bytes, 0x3c)
+            if ([BitConverter]::ToUInt32($bytes, $pe) -ne 0x4550) { throw "$exe has no PE signature" }
+            # NSIS/portable launcher stubs may be x86; only the native host must be AMD64.
+            if ($exe.Name -eq 'lighting-host.exe' -and [BitConverter]::ToUInt16($bytes, $pe + 4) -ne 0x8664) {
+              throw "lighting-host.exe is not AMD64"
+            }
+          }
+          Get-ChildItem release-assets -File | Sort-Object Name | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Set-Content release-assets/SHA256SUMS.txt -Encoding ascii
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+      - name: Upload verified release candidates
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ steps.ver.outputs.tag }}
-          name: Lighting副屏 ${{ steps.ver.outputs.name }}
-          draft: false
-          prerelease: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.prerelease == 'true' || false }}
-          generate_release_notes: true
-          files: |
-            release-assets/Lighting-${{ steps.ver.outputs.name }}-portable.exe
-            release-assets/Lighting-${{ steps.ver.outputs.name }}-setup.exe
-            release-assets/Lighting.apk
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: Lighting-${{ steps.ver.outputs.name }}-windows-x64
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 14

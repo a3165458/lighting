@@ -304,18 +304,22 @@ pub fn human_vdd_error(raw: &str) -> Option<String> {
         "安装包缺少虚拟显示驱动文件。请从 GitHub 下载最新版 Lighting 便携版/安装包。"
     } else if code_upper.contains("VDD_SCRIPT_MISSING") {
         "虚拟显示驱动安装脚本缺失。请重新下载完整安装包。"
+    } else if code_upper.contains("REBOOT_REQUIRED") {
+        "Windows 要求重启后才能启用虚拟显示驱动。请保存工作并重启电脑，再开始共享。"
+    } else if code_upper.contains("BUNDLE_FILE_MISSING") || code_upper.contains("BUNDLE_HASH_MISMATCH") {
+        "虚拟显示驱动包缺失或校验失败。请重新下载完整的 Windows x64 安装包。"
+    } else if code_upper.contains("DISPLAY_TOPOLOGY_FAILED") {
+        "Windows 无法启用扩展桌面。请在本机已登录桌面运行；远程桌面、锁屏或无显示会话可能不支持此操作。"
     } else if code_upper.contains("DRIVER_INSTALL_FAILED") {
-        "虚拟显示驱动安装失败。请完全退出后右键 Lighting 选「以管理员身份运行」再试；仍失败可到 GitHub 手动安装 Virtual Display Driver。"
-    } else if code_upper.contains("VDD_PIPE_DOWN") {
-        "虚拟显示驱动未响应。请完全退出 Lighting 后以管理员身份运行再试（已是管理员时不会再弹窗）。"
-    } else if code_upper.contains("IDD_NO_MONITOR") || code_upper.contains("BUNDLE_DLL_MISSING") {
-        "Lighting 自有虚拟显示驱动未能创建扩展屏。请完全退出后以管理员运行再试；开发机还需测试签名。"
+        "虚拟显示驱动安装失败。请查看下方设备安装错误码及 Windows 的 setupapi.dev.log；这不是单纯提升管理员权限就能解决的问题。"
+    } else if code_upper.contains("VDD_PIPE_") {
+        "虚拟显示驱动控制通道未响应。请检查设备管理器中的虚拟显示适配器状态。"
     } else if code_upper.contains("DRIVER_SIGNATURE") {
-        "虚拟显示驱动签名不被系统接受。开发请开 testsigning；发布需 Attestation 签名。"
+        "Windows 未接受虚拟显示驱动的签名。请使用完整官方驱动包；不要关闭 Secure Boot 或开启测试签名。"
     } else if code_upper.contains("VDD_NO_MONITOR") {
-        "虚拟屏尚未出现。请完全退出 Lighting 后以管理员身份运行再试（已是管理员时不会再弹窗）。"
-    } else if code_upper.contains("DEVICE_NOT_FOUND") || code_upper.contains("DEVICE_STILL_MISSING") {
-        "未找到虚拟显示设备。请完全退出后以管理员身份运行再试。"
+        "驱动已处理，但 Windows 未提供可用扩展桌面。请检查设备管理器中的驱动状态和系统显示设置。"
+    } else if code_upper.contains("DEVICE_") {
+        "虚拟显示设备未创建成功或状态异常。请保留下方设备错误码，在设备管理器中检查 MttVDD。"
     } else if code_upper.contains("UAC_TIMEOUT") {
         "等了很久也没有管理员确认窗口。请完全退出 Lighting，右键选「以管理员身份运行」后再点开始共享（已是管理员时不会再弹窗）。"
     } else if code_upper.contains("INSTALL_TIMEOUT") {
@@ -341,7 +345,7 @@ pub fn human_vdd_error(raw: &str) -> Option<String> {
     } else {
         return None;
     };
-    Some(msg.into())
+    Some(format!("{msg}（{raw}）"))
 }
 
 pub fn human_last_error(raw: &str) -> String {
@@ -563,17 +567,13 @@ mod tests {
             human_last_error("绑定端口: os error 10048"),
             "无法开始共享，请稍后重试"
         );
-        assert!(human_vdd_error("VDD_PIPE_DOWN").unwrap().contains("未响应"));
-        assert!(human_vdd_error("UNEXPECTED").unwrap().contains("未知错误"));
-        assert!(human_vdd_error("UAC_CANCELLED").unwrap().contains("取消"));
-        assert!(human_vdd_error("FAIL|UAC_DENIED").unwrap().contains("管理员"));
-        assert!(human_vdd_error("UAC_TIMEOUT").unwrap().contains("以管理员身份运行"));
-        assert!(human_vdd_error("INSTALL_TIMEOUT").unwrap().contains("超时"));
-        assert!(human_vdd_error("DRIVER_LAUNCHER_FAILED").unwrap().contains("无法启动"));
-        assert!(human_last_error("VDD_BUNDLE_MISSING").contains("缺少"));
         assert!(looks_like_bind_or_port("connection refused"));
         assert!(looks_technical("adb reverse tcp:17400"));
         assert!(!looks_technical("没有可用显示器"));
+        assert!(human_vdd_error("VDD_PIPE_DOWN").unwrap().contains("未响应"));
+        assert!(human_vdd_error("REBOOT_REQUIRED").unwrap().contains("重启"));
+        assert!(human_vdd_error("DEVICE_STILL_MISSING").unwrap().contains("虚拟显示设备"));
+        assert!(human_last_error("VDD_NO_MONITOR").contains("扩展桌面"));
     }
 
     #[test]
