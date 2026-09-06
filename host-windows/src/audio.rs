@@ -67,7 +67,7 @@ fn capture_loop(tx: SyncSender<AudioPacket>, stop: Arc<AtomicBool>, t0: Instant)
             .Initialize(
                 AUDCLNT_SHAREMODE_SHARED,
                 LOOPBACK | AUTOCONVERT | SRC_DEFAULT,
-                500_000,
+                lighting_host::session_policy::wasapi_buffer_hns(),
                 0,
                 &fmt,
                 None,

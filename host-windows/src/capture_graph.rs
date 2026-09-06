@@ -190,7 +190,7 @@ mod tests {
         let graphs = dda_capture_graphs(Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0 }), 60, 2560, 1440, 1920, 1080, "h264_nvenc");
         assert!(graphs.len() >= 3);
         assert!(graphs[0].contains("scale_cuda"));
-        assert!(graphs[0].contains("extra_hw_frames=3"));
+        assert!(graphs[0].contains("extra_hw_frames=2"));
         assert!(graphs.last().unwrap().contains("hwdownload"));
         // Same bitrate path — graphs must not embed bitrate/fps quality knobs.
         for g in &graphs {
