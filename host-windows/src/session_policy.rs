@@ -201,6 +201,15 @@ pub fn encoder_refs() -> u32 {
     1
 }
 
+/// libx265 still look-aheads unless these are explicit. `-tune zerolatency`
+/// is not enough on some builds (rc-lookahead stays ~20 → a GOP of glass wait).
+pub fn x265_params(gop: u32) -> String {
+    let keyint = gop.max(1);
+    format!(
+        "bframes=0:ref=1:no-open-gop:keyint={keyint}:min-keyint={keyint}:rc-lookahead=0:sync-lookahead=0:frame-threads=1:no-scenecut:repeat-headers=1"
+    )
+}
+
 /// WASAPI shared-mode loopback buffer, 100-ns units. 50 ms was audible lag.
 pub fn wasapi_buffer_hns() -> i64 {
     200_000
@@ -770,6 +779,9 @@ mod tests {
         assert_eq!(nvenc_rc_attempts(), vec!["cbr_ld_hq", "cbr"]);
         assert_eq!(amf_async_depth(), 1);
         assert_eq!(encoder_refs(), 1);
+        assert!(x265_params(120).contains("rc-lookahead=0"));
+        assert!(x265_params(120).contains("bframes=0"));
+        assert!(x265_params(120).contains("keyint=120"));
         assert_eq!(nvenc_surface_attempts(), vec![1, 2]);
         assert!(!nvenc_spatial_aq());
         assert_eq!(wasapi_buffer_hns(), 200_000);
