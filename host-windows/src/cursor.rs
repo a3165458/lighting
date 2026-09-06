@@ -53,7 +53,9 @@ pub fn spawn_sampler(
                     notify.notify_one();
                     // GlideX: while the pointer is moving, sample the next
                     // pose immediately. Sleeping 1 ms here sat every update
-                    // on a timer tick next to a 120 Hz panel.
+                    // on a timer tick next to a 120 Hz panel. Yield so a
+                    // 100% GetCursorInfo spin cannot starve ffmpeg.
+                    std::thread::yield_now();
                     continue;
                 }
                 std::thread::sleep(Duration::from_millis(

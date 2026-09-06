@@ -69,7 +69,9 @@ object LitProtocol {
         obj.put("device", "${caps.manufacturer} ${caps.model}".trim())
         obj.put("screenWidth", w)
         obj.put("screenHeight", h)
-        obj.put("maxFps", maxFps.coerceAtMost(caps.decoderMaxFps).coerceIn(24, 120))
+        // Panel peak Hz, not decoderMaxFps. Clamping to a 60 fps codec cap
+        // used to tell the host the pad is 60 Hz even after lockPeakRefresh.
+        obj.put("maxFps", maxFps.coerceIn(24, 120))
         val arr = JSONArray()
         caps.codecs.forEach { arr.put(it) }
         obj.put("codecs", arr)

@@ -178,18 +178,19 @@ class VideoDecoder {
     private fun decoderCandidates(mime: String, width: Int, height: Int, caps: DeviceCaps): List<String> {
         val names = LinkedHashSet<String>()
         val list = MediaCodecList(MediaCodecList.ALL_CODECS)
-        val hardware = ArrayList<String>()
-        val software = ArrayList<String>()
+        val hardware = ArrayList<MediaCodecInfo>()
+        val software = ArrayList<MediaCodecInfo>()
         for (info in list.codecInfos) {
             if (info.isEncoder) continue
             if (info.supportedTypes.none { it.equals(mime, true) }) continue
             if (clearlyTooSmall(info, mime, width, height)) continue
-            val name = info.name
-            if (DeviceCaps.isSoftwareName(info, name)) software.add(name) else hardware.add(name)
+            if (DeviceCaps.isSoftwareName(info, info.name)) software.add(info) else hardware.add(info)
         }
-        hardware.sortBy { DeviceCaps.decoderRank(it, caps.soc) }
-        names.addAll(hardware)
-        names.addAll(software)
+        // Moonlight: FEATURE_LowLatency / *.low_latency first. C2 without the
+        // feature is often listed above OMX and then holds a decoded frame.
+        hardware.sortBy { DeviceCaps.decoderRank(it.name, caps.soc) + lowLatencyScore(it, mime) }
+        names.addAll(hardware.map { it.name })
+        names.addAll(software.map { it.name })
         if (mime == MediaFormat.MIMETYPE_VIDEO_AVC) {
             names.add("c2.android.avc.decoder")
             names.add("OMX.google.h264.decoder")
@@ -199,6 +200,23 @@ class VideoDecoder {
             names.add("OMX.google.hevc.decoder")
         }
         return names.toList()
+    }
+
+    private fun lowLatencyScore(info: MediaCodecInfo, mime: String): Int {
+        var score = 0
+        val n = info.name.lowercase()
+        if (n.contains("low_latency") || n.contains("low-latency")) score -= 20
+        if (Build.VERSION.SDK_INT >= 30) {
+            try {
+                if (info.getCapabilitiesForType(mime)
+                        .isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency)
+                ) {
+                    score -= 15
+                }
+            } catch (_: Throwable) {
+            }
+        }
+        return score
     }
 
     private fun formatVariants(
@@ -213,10 +231,10 @@ class VideoDecoder {
         val software = n.contains("google") || n.contains("c2.android") || n.contains("software")
         // Prefer low-latency configure first on SoCs that tolerate it.
         if (caps.lowLatencySafe && !software) {
-            out.add(buildFormat(width, height, csd, lowLatency = true, operatingRate = true, fps = 120))
-            out.add(buildFormat(width, height, csd, lowLatency = true, operatingRate = false, fps = 120))
+            out.add(buildFormat(width, height, csd, codecName, lowLatency = true, operatingRate = true))
+            out.add(buildFormat(width, height, csd, codecName, lowLatency = true, operatingRate = false))
         }
-        out.add(buildFormat(width, height, csd, lowLatency = false, operatingRate = false, fps = caps.decoderMaxFps))
+        out.add(buildFormat(width, height, csd, codecName, lowLatency = false, operatingRate = false))
         return out
     }
 
@@ -224,39 +242,75 @@ class VideoDecoder {
         width: Int,
         height: Int,
         csd: ByteArray?,
+        codecName: String,
         lowLatency: Boolean,
         operatingRate: Boolean,
-        fps: Int,
     ): MediaFormat {
         val format = MediaFormat.createVideoFormat(mime, width, height)
         format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 8 * 1024 * 1024)
+        try {
+            // Unset KEY_FRAME_RATE made some SoCs assume 30 fps and hold frames.
+            format.setInteger(MediaFormat.KEY_FRAME_RATE, 120)
+        } catch (_: Throwable) {
+        }
         if (operatingRate) {
             try {
-                // 0 = realtime priority for MediaCodec.
                 format.setInteger(MediaFormat.KEY_PRIORITY, 0)
-                // Ahead of realtime. Pinning to 60 made some SoCs hold a frame.
-                format.setInteger(MediaFormat.KEY_OPERATING_RATE, fps.coerceIn(120, 240))
+                // Moonlight: Short.MAX_VALUE on Qualcomm. 240 still let some
+                // SoCs pace like a 60 Hz movie.
+                format.setInteger(MediaFormat.KEY_OPERATING_RATE, 32767)
             } catch (_: Throwable) {
             }
         }
         if (lowLatency) {
-            try {
-                if (Build.VERSION.SDK_INT >= 30) {
-                    format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
-                }
-                format.setInteger(MediaFormat.KEY_PRIORITY, 0)
-                format.setInteger("latency", 0)
-                format.setInteger("vendor.qti-ext-dec-low-latency.enable", 1)
-                format.setInteger("vendor.low-latency.enable", 1)
-                format.setInteger("vendor.mtk.vdec.low.latency", 1)
-                format.setInteger("vendor.rtc-ext-dec-low-latency.enable", 1)
-            } catch (_: Throwable) {
-            }
+            applyLowLatencyOptions(format, codecName)
         }
         if (csd != null && csd.isNotEmpty()) {
             applyCsd(format, csd)
         }
         return format
+    }
+
+    /**
+     * Moonlight MediaCodecHelper.setDecoderLowLatencyOptions. Vendor keys are
+     * prefix-specific: a QTI key on MTK can fail configure() and drop us onto
+     * the high-latency fallback.
+     */
+    private fun applyLowLatencyOptions(format: MediaFormat, codecName: String) {
+        try {
+            format.setInteger("low-latency", 1)
+            if (Build.VERSION.SDK_INT >= 30) {
+                format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+            }
+            format.setInteger(MediaFormat.KEY_PRIORITY, 0)
+            format.setInteger("latency", 0)
+            // MediaTek / Fire TV: ACodec "vdec-lowlatency", not the vendor.mtk.* alias.
+            format.setInteger("vdec-lowlatency", 1)
+        } catch (_: Throwable) {
+        }
+        val n = codecName.lowercase()
+        try {
+            when {
+                n.startsWith("omx.qcom") || n.startsWith("c2.qti") || n.contains(".qcom.") -> {
+                    format.setInteger("vendor.qti-ext-dec-picture-order.enable", 1)
+                    format.setInteger("vendor.qti-ext-dec-low-latency.enable", 1)
+                }
+                n.startsWith("omx.hisi") || n.startsWith("c2.hisi") || n.contains("kirin") -> {
+                    format.setInteger("vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-req", 1)
+                    format.setInteger("vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-rdy", -1)
+                }
+                n.startsWith("omx.exynos") || n.startsWith("c2.exynos") || n.contains(".sec.") -> {
+                    format.setInteger("vendor.rtc-ext-dec-low-latency.enable", 1)
+                }
+                n.startsWith("omx.amlogic") || n.startsWith("c2.amlogic") -> {
+                    format.setInteger("vendor.low-latency.enable", 1)
+                }
+                n.startsWith("omx.mtk") || n.startsWith("c2.mtk") || n.contains(".mtk.") -> {
+                    format.setInteger("vendor.mtk.vdec.low.latency", 1)
+                }
+            }
+        } catch (_: Throwable) {
+        }
     }
 
     private fun enqueue(
