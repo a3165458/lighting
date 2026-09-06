@@ -126,6 +126,7 @@ impl<'a> Bits<'a> {
     }
 }
 
+#[derive(Clone)]
 struct Writer {
     bytes: Vec<u8>,
     acc: u8,
@@ -297,6 +298,167 @@ fn copy_rest_without_trailing(src: &mut Bits<'_>, dst: &mut Writer) -> Option<()
     Some(())
 }
 
+
+fn copy_st_ref_pic_set(src: &mut Bits<'_>, dst: &mut Writer, idx: u32) -> Option<()> {
+    if idx != 0 {
+        let inter = src.u(1)?;
+        dst.u(1, inter);
+        if inter == 1 {
+            return None;
+        }
+    }
+    let neg = dst.copy_ue(src)?;
+    let pos = dst.copy_ue(src)?;
+    if neg > 16 || pos > 16 {
+        return None;
+    }
+    for _ in 0..neg {
+        dst.copy_ue(src)?;
+        dst.copy_u(src, 1)?;
+    }
+    for _ in 0..pos {
+        dst.copy_ue(src)?;
+        dst.copy_u(src, 1)?;
+    }
+    Some(())
+}
+
+fn copy_vui_drop_timing(src: &mut Bits<'_>, dst: &mut Writer) -> Option<()> {
+    let ar = src.u(1)?;
+    dst.u(1, ar);
+    if ar == 1 {
+        let idc = src.u(8)?;
+        dst.u(8, idc);
+        if idc == 255 {
+            dst.copy_u(src, 16)?;
+            dst.copy_u(src, 16)?;
+        }
+    }
+    let overscan = src.u(1)?;
+    dst.u(1, overscan);
+    if overscan == 1 {
+        dst.copy_u(src, 1)?;
+    }
+    let vs = src.u(1)?;
+    dst.u(1, vs);
+    if vs == 1 {
+        dst.copy_u(src, 3)?;
+        dst.copy_u(src, 1)?;
+        let colour = src.u(1)?;
+        dst.u(1, colour);
+        if colour == 1 {
+            dst.copy_u(src, 8)?;
+            dst.copy_u(src, 8)?;
+            dst.copy_u(src, 8)?;
+        }
+    }
+    let chroma = src.u(1)?;
+    dst.u(1, chroma);
+    if chroma == 1 {
+        dst.copy_ue(src)?;
+        dst.copy_ue(src)?;
+    }
+    dst.copy_u(src, 1)?;
+    dst.copy_u(src, 1)?;
+    dst.copy_u(src, 1)?;
+    let def_win = src.u(1)?;
+    dst.u(1, def_win);
+    if def_win == 1 {
+        for _ in 0..4 {
+            dst.copy_ue(src)?;
+        }
+    }
+    let timing = src.u(1)?;
+    // Same as H.264: NVENC inherits ddagrab's 8000 Hz / 25 fps timebase.
+    // Android then paces like a movie. Drop vui_timing_info.
+    dst.u(1, 0);
+    if timing == 1 {
+        src.u(32)?;
+        src.u(32)?;
+        let poc = src.u(1)?;
+        if poc == 1 {
+            src.ue()?;
+        }
+        let hrd = src.u(1)?;
+        if hrd == 1 {
+            return None;
+        }
+    }
+    let restrict = src.u(1)?;
+    dst.u(1, restrict);
+    if restrict == 1 {
+        dst.copy_u(src, 1)?;
+        dst.copy_u(src, 1)?;
+        dst.copy_u(src, 1)?;
+        dst.copy_ue(src)?;
+        dst.copy_ue(src)?;
+        dst.copy_ue(src)?;
+        dst.copy_ue(src)?;
+        dst.copy_ue(src)?;
+    }
+    Some(())
+}
+
+fn copy_sps_tail_drop_timing(
+    src: &mut Bits<'_>,
+    dst: &mut Writer,
+    poc_lsb_bits: u32,
+) -> Option<()> {
+    dst.copy_ue(src)?;
+    dst.copy_ue(src)?;
+    dst.copy_ue(src)?;
+    dst.copy_ue(src)?;
+    dst.copy_ue(src)?;
+    dst.copy_ue(src)?;
+    let scaling = src.u(1)?;
+    dst.u(1, scaling);
+    if scaling == 1 {
+        let present = src.u(1)?;
+        dst.u(1, present);
+        if present == 1 {
+            return None;
+        }
+    }
+    dst.copy_u(src, 1)?;
+    dst.copy_u(src, 1)?;
+    let pcm = src.u(1)?;
+    dst.u(1, pcm);
+    if pcm == 1 {
+        dst.copy_u(src, 4)?;
+        dst.copy_u(src, 4)?;
+        dst.copy_ue(src)?;
+        dst.copy_ue(src)?;
+        dst.copy_u(src, 1)?;
+    }
+    let num_st = dst.copy_ue(src)?;
+    if num_st > 64 {
+        return None;
+    }
+    for i in 0..num_st {
+        copy_st_ref_pic_set(src, dst, i)?;
+    }
+    let lt = src.u(1)?;
+    dst.u(1, lt);
+    if lt == 1 {
+        let n = dst.copy_ue(src)?;
+        if n > 32 || poc_lsb_bits == 0 || poc_lsb_bits > 16 {
+            return None;
+        }
+        for _ in 0..n {
+            dst.copy_u(src, poc_lsb_bits)?;
+            dst.copy_u(src, 1)?;
+        }
+    }
+    dst.copy_u(src, 1)?;
+    dst.copy_u(src, 1)?;
+    let vui = src.u(1)?;
+    dst.u(1, vui);
+    if vui == 1 {
+        copy_vui_drop_timing(src, dst)?;
+    }
+    copy_rest_without_trailing(src, dst)
+}
+
 fn rewrite_sps_rbsp(rbsp: &[u8]) -> Option<Vec<u8>> {
     if rbsp.len() < 4 {
         return None;
@@ -324,11 +486,18 @@ fn rewrite_sps_rbsp(rbsp: &[u8]) -> Option<Vec<u8>> {
     }
     dst.copy_ue(&mut src)?;
     dst.copy_ue(&mut src)?;
-    dst.copy_ue(&mut src)?;
+    let log2_poc_lsb_minus4 = dst.copy_ue(&mut src)?;
     let ordering = src.u(1)?;
     dst.u(1, ordering);
     rewrite_dpb_loop(&mut src, &mut dst, max_sub_layers, ordering == 1)?;
-    copy_rest_without_trailing(&mut src, &mut dst)?;
+    let tail_bit = src.bit;
+    let tail_dst = dst.clone();
+    if copy_sps_tail_drop_timing(&mut src, &mut dst, log2_poc_lsb_minus4.saturating_add(4)).is_none()
+    {
+        src.bit = tail_bit;
+        dst = tail_dst;
+        copy_rest_without_trailing(&mut src, &mut dst)?;
+    }
     Some(dst.finish())
 }
 
@@ -593,9 +762,13 @@ mod tests {
         w.u(1, 0); // overscan
         w.u(1, 0); // video_signal
         w.u(1, 0); // chroma_loc
+        w.u(1, 0); // neutral_chroma
+        w.u(1, 0); // field_seq
+        w.u(1, 0); // frame_field_info
+        w.u(1, 0); // default_display_window
         w.u(1, 1); // timing
         w.u(32, 1);
-        w.u(32, 120);
+        w.u(32, 60);
         w.u(1, 0); // poc_proportional
         w.u(1, 0); // hrd
         w.u(1, 0); // bitstream_restriction
@@ -618,5 +791,15 @@ mod tests {
         assert_eq!(parse_dpb(&out), Some((1, 0, 0)));
         let again = rewrite_low_latency(out.clone());
         assert_eq!(parse_dpb(&again), Some((1, 0, 0)));
+    }
+
+    #[test]
+    fn drops_hevc_movie_timing_so_decoder_does_not_pace() {
+        let src = nvenc_like_sps(16, 2);
+        let out = rewrite_low_latency(src.clone());
+        assert_ne!(out, src);
+        assert_eq!(parse_dpb(&out), Some((1, 0, 0)));
+        assert!(out.len() < src.len(), "timing_info should be gone");
+        assert_eq!(rewrite_low_latency(out.clone()), out);
     }
 }
