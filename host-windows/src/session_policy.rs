@@ -380,6 +380,15 @@ pub fn encoder_refs() -> u32 {
     1
 }
 
+/// ffmpeg generic `-slices`. NVENC already passes 1. QSV default
+/// `NumSlice=0` lets MSDK split a 2K picture into several VCL NALs;
+/// annexb then flushes on the second VCL and the tablet paints a torn
+/// AU until the rest arrives (one refresh of glass). AMF
+/// `SLICES_PER_FRAME` follows `avctx->slices`.
+pub fn encoder_slices() -> u32 {
+    1
+}
+
 /// ffmpeg `h264_nvenc`/`hevc_nvenc` `-dpb_size`. Default 0 is "hardware
 /// auto" and writes `maxNumRefFrames=0`, which NVENC fills from the level
 /// (4–16) even when `-refs 1`. That reconstructed-frame pool is a frame of
@@ -1066,6 +1075,7 @@ mod tests {
         assert!(qsv_vcm());
         assert!(!qsv_recovery_point_sei());
         assert_eq!(encoder_refs(), 1);
+        assert_eq!(encoder_slices(), 1);
         assert_eq!(nvenc_dpb_size(), 1);
         assert!(!nvenc_extra_sei());
         assert!(!nvenc_a53cc());

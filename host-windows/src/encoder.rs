@@ -644,6 +644,11 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             } else {
                 "0".into()
             },
+            // NVENC already passes -slices 1. QSV NumSlice=0 lets MSDK
+            // emit several VCL NALs per picture; annexb flushes on the
+            // second VCL and the tablet paints a torn AU (one refresh).
+            "-slices".into(),
+            lighting_host::session_policy::encoder_slices().to_string(),
         ];
         // hevc_qsv rejects H.264-only private options and ffmpeg then
         // falls through to libx265 at 45 fps. HEVC DPB is rewritten in
@@ -774,6 +779,10 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             lighting_host::session_policy::amf_async_depth().to_string(),
             "-vbaq".into(),
             "0".into(),
+            // Same as NVENC/QSV: AMF SLICES_PER_FRAME follows avctx->slices
+            // (0 = driver default, often >1 at 2K).
+            "-slices".into(),
+            lighting_host::session_policy::encoder_slices().to_string(),
         ];
         // AUD lets annexb cut the AU without waiting for Quiet or the
         // next VCL (NVENC/QSV already pass -aud 1). h264_amf and
