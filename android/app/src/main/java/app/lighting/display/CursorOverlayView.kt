@@ -354,14 +354,17 @@ class CursorOverlayView @JvmOverloads constructor(
         }
         val tx = pose.surfaceLeft + pose.x * scaleX - hotX * scaleX
         val ty = pose.surfaceTop + pose.y * scaleY - hotY * scaleY
-        // Punch owns lastTx on API 29+. A stale applyPose used to write
-        // translationX from an older pose after submit had already punched
-        // a newer one — SurfaceView.updateSurface snapped the pointer a
-        // refresh behind the laptop. Move-only + unchanged size: sync View
-        // to the punched coords. Show / hide / resize / shape still assign.
+        // Punch owns lastTx on API 29+. update() carries the current
+        // bitmap on every move (`bitmap ?: cur?.bitmap`), so pose.bitmap
+        // is almost never null after the first shape — a stale applyPose
+        // then rewrote translationX from an older pose after submit had
+        // already punched a newer one. SurfaceView.updateSurface snapped
+        // the pointer a refresh behind the laptop. Unchanged size/shape:
+        // sync View to the punched coords. Show / hide / resize / shape
+        // still assign from the pose.
         if (Build.VERSION.SDK_INT >= 29 &&
             !sizeChanged &&
-            pose.bitmap == null &&
+            !shapeChanged &&
             showing &&
             !lastTx.isNaN() &&
             !lastTy.isNaN()
