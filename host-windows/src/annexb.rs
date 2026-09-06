@@ -302,7 +302,9 @@ where
     R: Read + Send + 'static,
     F: Fn(&R) -> Option<usize> + Send + 'static,
 {
-    let (raw_tx, raw_rx) = mpsc::sync_channel::<RawMsg>(8);
+    let (raw_tx, raw_rx) = mpsc::sync_channel::<RawMsg>(
+        crate::session_policy::annexb_raw_queue_capacity().max(1),
+    );
     let reader = thread::Builder::new()
         .name("lighting-annexb-read".into())
         .spawn(move || {
