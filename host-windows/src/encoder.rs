@@ -665,9 +665,42 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             ]);
         }
         if lighting_host::session_policy::qsv_hevc_private_options(encoder) {
+            // ffmpeg qsvenc_hevc.c: these are HEVC-valid. Stripping them
+            // with the H.264-only set left pic_timing_sei=1 (movie SEI)
+            // and RDO/MBBRC at MSDK default — extra GPU time + a C2 hold.
             qsv.extend([
                 "-gpb".into(),
                 if lighting_host::session_policy::qsv_gpb() {
+                    "1".into()
+                } else {
+                    "0".into()
+                },
+                "-low_delay_brc".into(),
+                if lighting_host::session_policy::qsv_low_delay_brc() {
+                    "1".into()
+                } else {
+                    "0".into()
+                },
+                "-mbbrc".into(),
+                if lighting_host::session_policy::qsv_mbbrc() {
+                    "1".into()
+                } else {
+                    "0".into()
+                },
+                "-rdo".into(),
+                if lighting_host::session_policy::qsv_rdo() {
+                    "1".into()
+                } else {
+                    "0".into()
+                },
+                "-adaptive_i".into(),
+                if lighting_host::session_policy::qsv_adaptive_i() {
+                    "1".into()
+                } else {
+                    "0".into()
+                },
+                "-pic_timing_sei".into(),
+                if lighting_host::session_policy::qsv_pic_timing_sei() {
                     "1".into()
                 } else {
                     "0".into()

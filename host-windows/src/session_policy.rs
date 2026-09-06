@@ -269,11 +269,12 @@ pub fn qsv_forced_idr() -> bool {
     true
 }
 
-/// H.264 QSV private options (`max_dec_frame_buffering`, `look_ahead`,
-/// `p_strategy`, `pic_timing_sei`, `mbbrc`, `rdo`, `adaptive_i`,
-/// `low_delay_brc`). `hevc_qsv` rejects them and ffmpeg then falls
+/// H.264-only QSV private options (`max_dec_frame_buffering`, `look_ahead`,
+/// `p_strategy`). `hevc_qsv` rejects the first two and ffmpeg then falls
 /// through to libx265 (45 fps software — a GOP of glass). HEVC DPB is
-/// already capped in `hevc_sps::rewrite_low_latency`.
+/// already capped in `hevc_sps::rewrite_low_latency`. HEVC-valid latency
+/// flags (`rdo`, `mbbrc`, `adaptive_i`, `low_delay_brc`, `pic_timing_sei`)
+/// go through `qsv_hevc_private_options`.
 pub fn qsv_h264_private_options(encoder: &str) -> bool {
     encoder.contains("qsv") && encoder.contains("h264")
 }
@@ -286,6 +287,21 @@ pub fn qsv_gpb() -> bool {
     false
 }
 
+/// HEVC QSV LowDelayBRC. Default -1 leaves a 1-frame RC hold; Sunshine
+/// ULL turns it on. Valid on hevc_qsv (`QSV_OPTION_LOW_DELAY_BRC`).
+pub fn qsv_low_delay_brc() -> bool {
+    true
+}
+
+/// HEVC QSV MBBRC. Default -1 is extra per-MB work; Sunshine ULL off.
+pub fn qsv_mbbrc() -> bool {
+    false
+}
+
+/// hevc_qsv accepts `gpb` / `pic_timing_sei` / `rdo` / `mbbrc` /
+/// `adaptive_i` / `low_delay_brc` (see ffmpeg `qsvenc_hevc.c`). Default
+/// `pic_timing_sei=1` inserts movie-timing SEI every picture; Qualcomm
+/// C2 then paces like a movie even after the SPS VUI rewrite.
 pub fn qsv_hevc_private_options(encoder: &str) -> bool {
     encoder.contains("qsv") && encoder.contains("hevc")
 }
@@ -967,6 +983,8 @@ mod tests {
         assert!(!qsv_h264_private_options("hevc_qsv"));
         assert!(!qsv_h264_private_options("h264_nvenc"));
         assert!(!qsv_gpb());
+        assert!(qsv_low_delay_brc());
+        assert!(!qsv_mbbrc());
         assert!(qsv_hevc_private_options("hevc_qsv"));
         assert!(!qsv_hevc_private_options("h264_qsv"));
         assert!(!qsv_hevc_private_options("hevc_nvenc"));
