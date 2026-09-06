@@ -2,6 +2,7 @@
 
 mod adb;
 mod audio;
+mod cursor;
 mod displays;
 mod encoder;
 mod input;

@@ -41,13 +41,16 @@ pub fn dda_capture_graphs(
     dst_h: u32,
     encoder: &str,
 ) -> Vec<String> {
-    dda_capture_graphs_for(dxgi, fps, src_w, src_h, dst_w, dst_h, encoder, false)
+    dda_capture_graphs_for(dxgi, fps, src_w, src_h, dst_w, dst_h, encoder, true)
 }
 
 /// FFmpeg `ddagrab` has no `allow_tearing` option; unknown keys make the
 /// filter fail and we used to burn 3s per graph before falling back.
-pub fn dda_source_filter(output_idx: u32, fps: u32, _is_virtual: bool) -> String {
-    format!("ddagrab=output_idx={output_idx}:framerate={fps}:draw_mouse=1")
+/// `draw_mouse=0` when the tablet paints a local overlay so the pointer is not
+/// baked into the 50–100 ms video path.
+pub fn dda_source_filter(output_idx: u32, fps: u32, draw_mouse: bool) -> String {
+    let mouse = if draw_mouse { 1 } else { 0 };
+    format!("ddagrab=output_idx={output_idx}:framerate={fps}:draw_mouse={mouse}")
 }
 
 pub fn dda_capture_graphs_for(
@@ -58,14 +61,14 @@ pub fn dda_capture_graphs_for(
     dst_w: u32,
     dst_h: u32,
     encoder: &str,
-    is_virtual: bool,
+    draw_mouse: bool,
 ) -> Vec<String> {
     // Indirect/virtual displays can be visible to GDI but absent from DXGI.
     // Never reinterpret their position in the monitor list as output zero.
     let Some(dxgi) = dxgi else {
         return Vec::new();
     };
-    let dda = dda_source_filter(dxgi.output_index, fps, is_virtual);
+    let dda = dda_source_filter(dxgi.output_index, fps, draw_mouse);
     let scale = needs_scale(src_w, src_h, dst_w, dst_h);
     dda_encoder_graphs(&dda, scale, dst_w, dst_h, encoder)
 }
@@ -114,7 +117,14 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
 }
 
 /// GDI uses signed virtual-desktop coordinates, including screens left/above primary.
-pub fn gdigrab_input_args(x: i32, y: i32, width: u32, height: u32, fps: u32) -> [String; 14] {
+pub fn gdigrab_input_args(
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    fps: u32,
+    draw_mouse: bool,
+) -> [String; 14] {
     [
         "-f".into(),
         "gdigrab".into(),
@@ -127,7 +137,7 @@ pub fn gdigrab_input_args(x: i32, y: i32, width: u32, height: u32, fps: u32) -> 
         "-video_size".into(),
         format!("{width}x{height}"),
         "-draw_mouse".into(),
-        "1".into(),
+        if draw_mouse { "1".into() } else { "0".into() },
         "-i".into(),
         "desktop".into(),
     ]
@@ -206,6 +216,8 @@ mod tests {
     fn virtual_dda_uses_real_ddagrab_options() {
         let filter = dda_source_filter(1, 60, true);
         assert!(filter.contains("output_idx=1"));
+        assert!(filter.contains("draw_mouse=1"));
+        assert!(dda_source_filter(1, 60, false).contains("draw_mouse=0"));
         assert!(!filter.contains("allow_tearing"));
         let graphs = dda_capture_graphs_for(
             Some(DxgiCapture { adapter_index: 0, output_index: 1, vendor_id: 0 }),
@@ -219,7 +231,7 @@ mod tests {
     fn gdi_only_virtual_monitor_never_tries_primary_duplication() {
         assert!(dda_capture_graphs(None, 60, 1280, 720, 1280, 720, "h264_nvenc").is_empty());
         assert_eq!(
-            gdigrab_input_args(-1280, -720, 1280, 720, 60),
+            gdigrab_input_args(-1280, -720, 1280, 720, 60, true),
             [
                 "-f", "gdigrab", "-framerate", "60", "-offset_x", "-1280",
                 "-offset_y", "-720", "-video_size", "1280x720", "-draw_mouse",

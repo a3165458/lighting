@@ -23,7 +23,7 @@ pub fn inject_touch(monitor: &DisplayInfo, ev: TouchEvent) {
 
 fn inject_pointer(monitor: &DisplayInfo, ev: TouchEvent) {
     let (px, py) = map_to_screen(monitor, ev.x, ev.y);
-    tracing::info!(
+    tracing::debug!(
         "touch action={} screen=({},{}) size={}x{} origin=({},{})",
         ev.action,
         px,
@@ -97,7 +97,7 @@ fn place_cursor(px: i32, py: i32) {
                 );
                 let _ = SetCursorPos(px, py);
             } else {
-                tracing::info!("cursor now at ({},{})", now.x, now.y);
+                tracing::debug!("cursor now at ({},{})", now.x, now.y);
             }
         }
     }
@@ -137,7 +137,7 @@ fn send_wheel(horizontal: bool, delta: i32) {
     if delta == 0 {
         return;
     }
-    tracing::info!("touch wheel horizontal={horizontal} delta={delta}");
+    tracing::debug!("touch wheel horizontal={horizontal} delta={delta}");
     let flags = if horizontal {
         MOUSEEVENTF_HWHEEL
     } else {
