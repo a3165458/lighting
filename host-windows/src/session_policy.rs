@@ -264,6 +264,20 @@ pub fn tcp_control_buffer_bytes() -> usize {
     16 * 1024
 }
 
+/// One LIT1 TCP write. Header then payload as two write_all() on a
+/// TCP_NODELAY USB socket is two packets and an extra reverse RTT.
+pub fn lit1_encode(ty: u8, flags: u8, payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(12 + payload.len());
+    out.extend_from_slice(b"LIT1");
+    out.push(ty);
+    out.push(flags);
+    out.push(0);
+    out.push(0);
+    out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    out.extend_from_slice(payload);
+    out
+}
+
 /// ffmpeg `ddagrab` `dup_frames`. Duplicating up to the timer adds a wait that
 /// a real monitor does not have. Unique desktop frames only.
 pub fn ddagrab_duplicate_frames() -> bool {
@@ -811,6 +825,13 @@ mod tests {
         assert_eq!(dda_poll_hz(30), 8000);
         assert_eq!(tcp_send_buffer_bytes(), 24 * 1024);
         assert!(tcp_control_buffer_bytes() < tcp_send_buffer_bytes());
+        let frame = lit1_encode(3, 1, &[9, 8, 7]);
+        assert_eq!(&frame[..4], b"LIT1");
+        assert_eq!(frame[4], 3);
+        assert_eq!(frame[5], 1);
+        assert_eq!(&frame[8..12], &3u32.to_be_bytes());
+        assert_eq!(&frame[12..], &[9, 8, 7]);
+        assert_eq!(lit1_encode(5, 0, &[]).len(), 12);
     }
 
     #[test]
