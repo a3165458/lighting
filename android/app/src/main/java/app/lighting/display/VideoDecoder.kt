@@ -102,10 +102,10 @@ class VideoDecoder {
         var lagSum = 0L
         while (running.get()) {
             val pkt = try {
-                queue.poll(2, TimeUnit.MILLISECONDS)
+                queue.take()
             } catch (_: InterruptedException) {
                 break
-            } ?: continue
+            }
             val decoder = codec ?: continue
             if (!configured) continue
             if (pkt.codecConfig) {
@@ -215,6 +215,7 @@ class VideoDecoder {
             try {
                 if (Build.VERSION.SDK_INT >= 30) {
                     format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+                format.setInteger(MediaFormat.KEY_PRIORITY, 0)
                 }
                 format.setInteger("latency", 0)
                 format.setInteger("vendor.qti-ext-dec-low-latency.enable", 1)

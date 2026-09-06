@@ -136,8 +136,7 @@ pub fn start_encoder(
         }
     });
 
-    // Keep at most ~2 encoded AUs queued; annexb drops P-frames when full
-    // so USB backpressure cannot turn into hundreds of ms of glass latency.
+    // One encoded AU: a deeper queue is glass latency, not a USB cushion.
     let (tx, rx) = mpsc::sync_channel(lighting_host::session_policy::encoded_queue_capacity());
     let hevc = is_hevc(&settings.codec);
     thread::spawn(move || {
@@ -229,6 +228,8 @@ fn output_mux_args(encoder: &str) -> Vec<String> {
         "-muxdelay".into(),
         "0".into(),
         "-muxpreload".into(),
+        "0".into(),
+        "-max_delay".into(),
         "0".into(),
         "-fps_mode".into(),
         "passthrough".into(),
@@ -343,6 +344,8 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "p1".into(),
             "-tune".into(),
             "ull".into(),
+            "-surfaces".into(),
+            lighting_host::session_policy::nvenc_surfaces().to_string(),
             "-rc".into(),
             "cbr".into(),
             "-b:v".into(),
@@ -464,7 +467,7 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             level,
             "-x264-params".into(),
             format!(
-                "repeat-headers=1:scenecut=0:sliced-threads=0:sync-lookahead=0:rc-lookahead=0:level={}",
+                "repeat-headers=1:scenecut=0:sliced-threads=1:sync-lookahead=0:rc-lookahead=0:level={}",
                 avc_level(settings.width, settings.height, settings.fps)
             )
             .into(),

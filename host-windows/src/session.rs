@@ -214,7 +214,7 @@ fn spawn_cursor_control(
                         break;
                     }
                 }
-                _ = tokio::time::sleep(Duration::from_millis(2)) => {
+                _ = tokio::time::sleep(Duration::from_millis(1)) => {
                     if flush_cursor(&mut writer, &slot).await.is_err() {
                         break;
                     }

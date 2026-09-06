@@ -67,9 +67,13 @@ class CursorOverlayView @JvmOverloads constructor(
         posX = x.toFloat()
         posY = y.toFloat()
         showing = true
-        post {
-            if (visibility != VISIBLE) visibility = VISIBLE
-            invalidate()
+        if (visibility != VISIBLE) {
+            post {
+                if (visibility != VISIBLE) visibility = VISIBLE
+                invalidate()
+            }
+        } else {
+            postInvalidateOnAnimation()
         }
     }
 
