@@ -4,6 +4,8 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.os.Handler
+import android.os.Looper
 import android.util.AttributeSet
 import android.view.View
 import android.widget.FrameLayout
@@ -43,6 +45,7 @@ class CursorOverlayView @JvmOverloads constructor(
 
     private val pending = AtomicReference<Pose?>()
     private val scheduled = AtomicBoolean(false)
+    private val ui = Handler(Looper.getMainLooper())
     private val applyOnce: Runnable = Runnable { drainPose() }
 
     private fun drainPose() {
@@ -50,7 +53,7 @@ class CursorOverlayView @JvmOverloads constructor(
         val pose = pending.getAndSet(null) ?: return
         applyPose(pose)
         if (pending.get() != null && scheduled.compareAndSet(false, true)) {
-            postAtFrontOfQueue(applyOnce)
+            ui.postAtFrontOfQueue(applyOnce)
         }
     }
 
@@ -150,7 +153,7 @@ class CursorOverlayView @JvmOverloads constructor(
             prev.bitmap.recycle()
         }
         if (scheduled.compareAndSet(false, true)) {
-            postAtFrontOfQueue(applyOnce)
+            ui.postAtFrontOfQueue(applyOnce)
         }
     }
 
