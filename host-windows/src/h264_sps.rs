@@ -344,11 +344,14 @@ fn copy_vui_force_restriction(src: &mut Bits<'_>, dst: &mut Writer) -> Option<()
         dst.copy_ue(src)?;
     }
     let timing = src.u(1)?;
-    dst.u(1, timing);
+    // NVENC/QSV inherit ddagrab's 8000 Hz timebase (or 25/30 fps default).
+    // Android then paces like a movie even with KEY_LOW_LATENCY. Drop
+    // timing_info; the decoder format already sets KEY_FRAME_RATE 120.
+    dst.u(1, 0);
     if timing == 1 {
-        dst.copy_u(src, 32)?;
-        dst.copy_u(src, 32)?;
-        dst.copy_u(src, 1)?;
+        src.u(32)?;
+        src.u(32)?;
+        src.u(1)?;
     }
     let nal_hrd = src.u(1)?;
     dst.u(1, nal_hrd);
@@ -663,9 +666,56 @@ mod tests {
         assert_eq!(parse_dpb(&out), Some((1, Some((0, 1)))));
     }
 
+    fn baseline_sps_movie_timing(refs: u32) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.u(8, 66);
+        w.u(8, 0);
+        w.u(8, 42);
+        w.ue(0);
+        w.ue(0);
+        w.ue(2);
+        w.ue(refs);
+        w.u(1, 0);
+        w.ue(119);
+        w.ue(67);
+        w.u(1, 1);
+        w.u(1, 1);
+        w.u(1, 1);
+        w.ue(0);
+        w.ue(0);
+        w.ue(0);
+        w.ue(4);
+        w.u(1, 1);
+        w.u(1, 0);
+        w.u(1, 0);
+        w.u(1, 0);
+        w.u(1, 0);
+        w.u(1, 1);
+        w.u(32, 1);
+        w.u(32, 60);
+        w.u(1, 1);
+        w.u(1, 0);
+        w.u(1, 0);
+        w.u(1, 0);
+        w.u(1, 1);
+        write_restriction_block(&mut w);
+        nal_from_rbsp(0x67, &w.finish())
+    }
+
     #[test]
     fn garbage_sps_is_unchanged() {
         let bad = vec![0, 0, 0, 1, 0x67, 0xff];
         assert_eq!(rewrite_low_latency(bad.clone()), bad);
+    }
+
+    #[test]
+    fn drops_movie_timing_so_decoder_does_not_pace() {
+        let src = baseline_sps_movie_timing(16);
+        assert_eq!(parse_dpb(&src), Some((16, Some((0, 1)))));
+        let out = rewrite_low_latency(src.clone());
+        assert_ne!(out, src);
+        assert_eq!(parse_dpb(&out), Some((1, Some((0, 1)))));
+        assert_eq!(out, rewrite_low_latency(baseline_sps(16, false)));
+        assert_eq!(rewrite_low_latency(out.clone()), out);
     }
 }
