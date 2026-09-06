@@ -129,6 +129,13 @@ pub fn capture_thread_queue_size() -> u32 {
     1
 }
 
+/// ffmpeg default `-filter_complex_threads` is nproc and the graph then
+/// queues extra GPU frames (one hop per worker). GlideX/Sunshine native
+/// capture has no such pool. Keep a single filter thread.
+pub fn ffmpeg_filter_threads() -> u32 {
+    1
+}
+
 /// GlideX / SuperDisplay / Moonlight: pointer and HID never share the video
 /// TCP stream. A second LIT1 connection on the same port with this Hello.role
 /// is the control plane. Video AUs cannot HOL-block the pointer.
@@ -779,6 +786,7 @@ mod tests {
     #[test]
     fn capture_queue_is_single_frame() {
         assert_eq!(capture_thread_queue_size(), 1);
+        assert_eq!(ffmpeg_filter_threads(), 1);
         assert_eq!(cursor_sample_interval_ms(), 1);
         assert_eq!(hw_extra_frames(), 1);
         assert_eq!(hw_extra_frames_fallback(), 2);

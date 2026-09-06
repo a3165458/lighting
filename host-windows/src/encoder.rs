@@ -261,6 +261,10 @@ fn build_args(
         "0".into(),
         "-thread_queue_size".into(),
         lighting_host::session_policy::capture_thread_queue_size().to_string(),
+        "-filter_threads".into(),
+        lighting_host::session_policy::ffmpeg_filter_threads().to_string(),
+        "-filter_complex_threads".into(),
+        lighting_host::session_policy::ffmpeg_filter_threads().to_string(),
         "-avioflags".into(),
         "direct".into(),
     ];
@@ -328,6 +332,10 @@ pub fn start_encoder_gdigrab(
         "0".into(),
         "-thread_queue_size".into(),
         lighting_host::session_policy::capture_thread_queue_size().to_string(),
+        "-filter_threads".into(),
+        lighting_host::session_policy::ffmpeg_filter_threads().to_string(),
+        "-filter_complex_threads".into(),
+        lighting_host::session_policy::ffmpeg_filter_threads().to_string(),
         "-avioflags".into(),
         "direct".into(),
     ];
