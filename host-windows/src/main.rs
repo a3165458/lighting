@@ -47,6 +47,43 @@ fn enable_process_priority() {
     }
 }
 
+/// Windows 11 EcoQoS / timer-resolution ignore kicks in when the game owns
+/// the virtual display and this window is in the background. 1 ms cursor
+/// sleeps and ffmpeg's pipe reads then sit on a 15.6 ms grid next to the
+/// laptop panel. Opt out of both: keep P-cores and honor timeBeginPeriod.
+fn disable_power_throttling() {
+    use windows::Win32::System::Threading::{
+        GetCurrentProcess, SetProcessInformation, ProcessPowerThrottling,
+        PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+        PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION, PROCESS_POWER_THROTTLING_STATE,
+    };
+    unsafe {
+        let process = GetCurrentProcess();
+        let mut state = PROCESS_POWER_THROTTLING_STATE {
+            Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+                | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+            StateMask: 0,
+        };
+        if SetProcessInformation(
+            process,
+            ProcessPowerThrottling,
+            &state as *const _ as *const core::ffi::c_void,
+            std::mem::size_of_val(&state) as u32,
+        )
+        .is_err()
+        {
+            state.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+            let _ = SetProcessInformation(
+                process,
+                ProcessPowerThrottling,
+                &state as *const _ as *const core::ffi::c_void,
+                std::mem::size_of_val(&state) as u32,
+            );
+        }
+    }
+}
+
 /// Sunshine: DWM on MMCSS so the IddCx virtual panel keeps 120 Hz while a
 /// game loads the GPU. Without this the laptop (independent flip) stays
 /// snappy and the tablet, which only sees DWM's copy, sits a refresh behind.
@@ -88,6 +125,7 @@ fn wants_ipc_only() -> bool {
 
 fn main() -> eframe::Result<()> {
     enable_dpi_awareness();
+    disable_power_throttling();
     enable_timer_resolution();
     enable_process_priority();
     enable_dwm_mmcss();
