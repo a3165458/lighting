@@ -41,7 +41,22 @@ struct HostInner {
 
 impl HostService {
     pub fn new() -> Self {
-        let rt = Arc::new(tokio::runtime::Runtime::new().expect("tokio"));
+        let rt = Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_name("lighting-tokio")
+                .on_thread_start(|| unsafe {
+                    // Video TCP writes run on these workers. ffmpeg / annexb /
+                    // pointer are already HIGHEST; a NORMAL worker lets egui
+                    // sit on a ready AU in the 1-deep encoded queue.
+                    let _ = windows::Win32::System::Threading::SetThreadPriority(
+                        windows::Win32::System::Threading::GetCurrentThread(),
+                        windows::Win32::System::Threading::THREAD_PRIORITY_HIGHEST,
+                    );
+                })
+                .build()
+                .expect("tokio"),
+        );
         let displays = displays::list_displays().unwrap_or_default();
         let settings = Settings {
             selected_display: displays.iter().position(|d| !d.primary).unwrap_or(0),
