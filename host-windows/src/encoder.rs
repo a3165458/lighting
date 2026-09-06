@@ -593,7 +593,7 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "0".into(),
         ]
     } else if encoder.contains("qsv") {
-        vec![
+        let mut qsv = vec![
             "-preset".into(),
             "veryfast".into(),
             "-b:v".into(),
@@ -608,8 +608,6 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             gop,
             "-refs".into(),
             lighting_host::session_policy::encoder_refs().to_string(),
-            "-max_dec_frame_buffering".into(),
-            lighting_host::session_policy::qsv_max_dec_frame_buffering().to_string(),
             "-forced_idr".into(),
             if lighting_host::session_policy::qsv_forced_idr() {
                 "1".into()
@@ -618,11 +616,7 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             },
             "-profile:v".into(),
             settings.profile.clone(),
-            "-look_ahead".into(),
-            "0".into(),
             "-async_depth".into(),
-            "1".into(),
-            "-low_delay_brc".into(),
             "1".into(),
             "-low_power".into(),
             if lighting_host::session_policy::qsv_low_power() {
@@ -632,31 +626,45 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             },
             "-extbrc".into(),
             "0".into(),
-            "-mbbrc".into(),
-            "0".into(),
-            "-rdo".into(),
-            if lighting_host::session_policy::qsv_rdo() {
-                "1".into()
-            } else {
-                "0".into()
-            },
-            "-adaptive_i".into(),
-            if lighting_host::session_policy::qsv_adaptive_i() {
-                "1".into()
-            } else {
-                "0".into()
-            },
             "-adaptive_b".into(),
             "0".into(),
-            "-p_strategy".into(),
-            lighting_host::session_policy::qsv_p_strategy().to_string(),
-            "-pic_timing_sei".into(),
-            if lighting_host::session_policy::qsv_pic_timing_sei() {
-                "1".into()
-            } else {
-                "0".into()
-            },
-        ]
+        ];
+        // hevc_qsv rejects H.264-only private options and ffmpeg then
+        // falls through to libx265 at 45 fps. HEVC DPB is rewritten in
+        // annexb instead.
+        if lighting_host::session_policy::qsv_h264_private_options(encoder) {
+            qsv.extend([
+                "-max_dec_frame_buffering".into(),
+                lighting_host::session_policy::qsv_max_dec_frame_buffering().to_string(),
+                "-look_ahead".into(),
+                "0".into(),
+                "-low_delay_brc".into(),
+                "1".into(),
+                "-mbbrc".into(),
+                "0".into(),
+                "-rdo".into(),
+                if lighting_host::session_policy::qsv_rdo() {
+                    "1".into()
+                } else {
+                    "0".into()
+                },
+                "-adaptive_i".into(),
+                if lighting_host::session_policy::qsv_adaptive_i() {
+                    "1".into()
+                } else {
+                    "0".into()
+                },
+                "-p_strategy".into(),
+                lighting_host::session_policy::qsv_p_strategy().to_string(),
+                "-pic_timing_sei".into(),
+                if lighting_host::session_policy::qsv_pic_timing_sei() {
+                    "1".into()
+                } else {
+                    "0".into()
+                },
+            ]);
+        }
+        qsv
     } else if encoder.contains("amf") {
         vec![
             "-quality".into(),
