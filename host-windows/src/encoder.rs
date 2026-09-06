@@ -705,6 +705,8 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
                 } else {
                     "0".into()
                 },
+                "-p_strategy".into(),
+                lighting_host::session_policy::qsv_p_strategy().to_string(),
             ]);
         }
         qsv
