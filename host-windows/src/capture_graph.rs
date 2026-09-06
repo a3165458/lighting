@@ -80,13 +80,7 @@ pub fn dda_capture_graphs_for(
 }
 
 fn hw_frame_pool_sizes() -> Vec<u32> {
-    let a = crate::session_policy::hw_extra_frames();
-    let b = crate::session_policy::hw_extra_frames_fallback();
-    if a == b {
-        vec![a]
-    } else {
-        vec![a, b]
-    }
+    crate::session_policy::hw_extra_frame_attempts()
 }
 
 fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &str) -> Vec<String> {
@@ -95,10 +89,10 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
     if encoder.contains("nvenc") {
         // GlideX / Sunshine: ddagrab is already D3D11. scale_d3d11 converts
         // BGRA→NV12 on the same device and NVENC consumes D3D11 frames.
-        // Try extra_hw_frames=1 first. An unkeyed scale_d3d11 still succeeds
-        // on new ffmpeg and then uses the filter default pool (often 16
-        // pictures). Unknown extra_hw_frames on old ffmpeg fails this graph
-        // (~3s); the unkeyed graph below is that fallback.
+        // Try extra_hw_frames=0 first (no extra filter queue). An unkeyed
+        // scale_d3d11 still succeeds on new ffmpeg and then uses the filter
+        // default pool (often 16 pictures). Unknown extra_hw_frames on old
+        // ffmpeg fails this graph (~3s); the unkeyed graph below is last.
         for extra in &extras {
             graphs.push(format!(
                 "{dda},scale_d3d11=width={dst_w}:height={dst_h}:format=nv12:extra_hw_frames={extra}"
@@ -130,7 +124,7 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
     if encoder.contains("qsv") {
         // ddagrab is D3D11. hwmap first avoids a sysmem upload (~1–2 ms).
         // Same trap as NVENC: unkeyed hwmap still succeeds and keeps the
-        // default 16-frame pool. Try extra_hw_frames=1 first.
+        // default 16-frame pool. Try extra_hw_frames=0 first.
         for extra in &extras {
             graphs.push(format!(
                 "{dda},hwmap=derive_device=qsv:extra_hw_frames={extra},scale_qsv=w={dst_w}:h={dst_h}:format=nv12:extra_hw_frames={extra}"
@@ -248,11 +242,12 @@ mod tests {
         assert!(graphs.len() >= 4);
         assert!(graphs[0].contains("scale_d3d11"));
         assert!(graphs[0].contains("format=nv12"));
-        assert!(graphs[0].contains("extra_hw_frames=1"));
+        assert!(graphs[0].contains("extra_hw_frames=0"));
         assert!(!graphs[0].contains("hwupload_cuda"));
         assert!(graphs.iter().any(|g| g.contains("scale_d3d11") && !g.contains("extra_hw_frames")));
-        assert!(graphs.iter().any(|g| g.contains("hwupload_cuda") && g.contains("scale_cuda") && g.contains("extra_hw_frames=1")));
-        assert!(graphs.iter().any(|g| g.contains("hwmap=derive_device=cuda:mode=direct:extra_hw_frames=1")));
+        assert!(graphs.iter().any(|g| g.contains("hwupload_cuda") && g.contains("scale_cuda") && g.contains("extra_hw_frames=0")));
+        assert!(graphs.iter().any(|g| g.contains("hwmap=derive_device=cuda:mode=direct:extra_hw_frames=0")));
+        assert!(graphs.iter().any(|g| g.contains("extra_hw_frames=1")));
         assert!(graphs.iter().any(|g| g.contains("hwmap=derive_device=cuda:mode=direct,") && !g.contains("extra_hw_frames")));
         assert!(graphs.iter().any(|g| g.contains("extra_hw_frames=2")));
         assert!(graphs.last().unwrap().contains("hwdownload"));
@@ -269,8 +264,8 @@ mod tests {
             Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x8086 }),
             60, 1920, 1080, 1920, 1080, "h264_qsv",
         );
-        assert!(graphs[0].contains("hwmap=derive_device=qsv:extra_hw_frames=1"));
-        assert!(graphs[0].contains("scale_qsv=w=1920:h=1080:format=nv12:extra_hw_frames=1"));
+        assert!(graphs[0].contains("hwmap=derive_device=qsv:extra_hw_frames=0"));
+        assert!(graphs[0].contains("scale_qsv=w=1920:h=1080:format=nv12:extra_hw_frames=0"));
         assert!(!graphs[0].contains("hwupload"));
         assert!(graphs.iter().any(|g| g.contains("hwmap=derive_device=qsv,") && !g.contains("extra_hw_frames")));
         assert!(graphs.iter().any(|g| g.contains("hwupload")));
@@ -282,7 +277,7 @@ mod tests {
             Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x1002 }),
             60, 1920, 1080, 1920, 1080, "h264_amf",
         );
-        assert!(graphs[0].contains("hwmap=derive_device=d3d11:extra_hw_frames=1"));
+        assert!(graphs[0].contains("hwmap=derive_device=d3d11:extra_hw_frames=0"));
         assert!(!graphs[0].contains("hwupload"));
         assert!(!graphs[0].contains("hwdownload"));
         assert!(graphs.iter().any(|g| g.contains("hwmap=derive_device=d3d11") && !g.contains("extra_hw_frames")));
