@@ -45,14 +45,20 @@ impl HostService {
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .thread_name("lighting-tokio")
-                .on_thread_start(|| unsafe {
-                    // Video TCP writes run on these workers. ffmpeg / annexb /
-                    // pointer are already HIGHEST; a NORMAL worker lets egui
-                    // sit on a ready AU in the 1-deep encoded queue.
-                    let _ = windows::Win32::System::Threading::SetThreadPriority(
-                        windows::Win32::System::Threading::GetCurrentThread(),
-                        windows::Win32::System::Threading::THREAD_PRIORITY_HIGHEST,
-                    );
+                .on_thread_start(|| {
+                    unsafe {
+                        // Video TCP writes run on these workers. ffmpeg / annexb /
+                        // pointer are already HIGHEST; a NORMAL worker lets egui
+                        // sit on a ready AU in the 1-deep encoded queue.
+                        let _ = windows::Win32::System::Threading::SetThreadPriority(
+                            windows::Win32::System::Threading::GetCurrentThread(),
+                            windows::Win32::System::Threading::THREAD_PRIORITY_HIGHEST,
+                        );
+                    }
+                    // Same 15.6 ms trap as the pipe/cursor threads: HIGHEST
+                    // still sits on the default quanta when a game owns the
+                    // virtual panel. MMCSS is the 1 ms boost.
+                    lighting_host::annexb::enter_mmcss();
                 })
                 .build()
                 .expect("tokio"),
