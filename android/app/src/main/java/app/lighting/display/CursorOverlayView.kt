@@ -138,14 +138,24 @@ class CursorOverlayView @JvmOverloads constructor(
         try {
             val sc = surfaceControl
             if (!sc.isValid) return
-            SurfaceControl.Transaction()
+            // Same OVERRIDE_CHILDREN as the decoder SurfaceView: PROPAGATE
+            // lets a child BLAST layer latch at 60 Hz and the pointer sits
+            // one refresh behind the laptop.
+            val tx = SurfaceControl.Transaction()
                 .setFrameRate(
                     sc,
                     hz,
                     Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
                     Surface.CHANGE_FRAME_RATE_ALWAYS,
                 )
-                .apply()
+            try {
+                tx.setFrameRateSelectionStrategy(
+                    sc,
+                    SurfaceControl.FRAME_RATE_SELECTION_STRATEGY_OVERRIDE_CHILDREN,
+                )
+            } catch (_: Throwable) {
+            }
+            tx.apply()
         } catch (_: Throwable) {
         }
     }
@@ -279,6 +289,13 @@ class CursorOverlayView @JvmOverloads constructor(
                     Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
                     Surface.CHANGE_FRAME_RATE_ALWAYS,
                 )
+                try {
+                    tx.setFrameRateSelectionStrategy(
+                        sc,
+                        SurfaceControl.FRAME_RATE_SELECTION_STRATEGY_OVERRIDE_CHILDREN,
+                    )
+                } catch (_: Throwable) {
+                }
             }
             tx.apply()
             lastTx = x
