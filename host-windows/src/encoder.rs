@@ -628,6 +628,8 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "0".into(),
             "-adaptive_b".into(),
             "0".into(),
+            "-scenario".into(),
+            lighting_host::session_policy::qsv_scenario().into(),
         ];
         // hevc_qsv rejects H.264-only private options and ffmpeg then
         // falls through to libx265 at 45 fps. HEVC DPB is rewritten in

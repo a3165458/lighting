@@ -305,6 +305,14 @@ pub fn qsv_hevc_private_options(encoder: &str) -> bool {
     encoder.contains("qsv") && encoder.contains("hevc")
 }
 
+/// QSV `scenario`. Default `unknown` lets MSDK pick archive/quality
+/// buffering (extra GPU pictures in flight). Sunshine / Moonlight use
+/// `gamestreaming` so the encoder does not hold a refresh for lookahead
+/// BRC. Valid on h264_qsv and hevc_qsv (`QSV_OPTION_SCENARIO`).
+pub fn qsv_scenario() -> &'static str {
+    "gamestreaming"
+}
+
 /// Encoder DPB / `num_ref_frames`. NVENC default follows the level (4–16);
 /// Android then holds decoded pictures. Moonlight decoder-errata: 1.
 pub fn encoder_refs() -> u32 {
@@ -987,6 +995,7 @@ mod tests {
         assert!(qsv_hevc_private_options("hevc_qsv"));
         assert!(!qsv_hevc_private_options("h264_qsv"));
         assert!(!qsv_hevc_private_options("hevc_nvenc"));
+        assert_eq!(qsv_scenario(), "gamestreaming");
         assert_eq!(encoder_refs(), 1);
         assert_eq!(nvenc_dpb_size(), 1);
         assert!(!nvenc_extra_sei());
