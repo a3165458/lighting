@@ -128,7 +128,7 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
         // default 16-frame pool. Try extra_hw_frames=1 first.
         for extra in &extras {
             graphs.push(format!(
-                "{dda},hwmap=derive_device=qsv:extra_hw_frames={extra},scale_qsv=w={dst_w}:h={dst_h}:format=nv12"
+                "{dda},hwmap=derive_device=qsv:extra_hw_frames={extra},scale_qsv=w={dst_w}:h={dst_h}:format=nv12:extra_hw_frames={extra}"
             ));
         }
         graphs.push(format!(
@@ -136,7 +136,7 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
         ));
         for extra in &extras {
             graphs.push(format!(
-                "{dda},hwupload=extra_hw_frames={extra},hwmap=derive_device=qsv,scale_qsv=w={dst_w}:h={dst_h}:format=nv12"
+                "{dda},hwupload=extra_hw_frames={extra},hwmap=derive_device=qsv,scale_qsv=w={dst_w}:h={dst_h}:format=nv12:extra_hw_frames={extra}"
             ));
         }
     }
@@ -263,6 +263,7 @@ mod tests {
             60, 1920, 1080, 1920, 1080, "h264_qsv",
         );
         assert!(graphs[0].contains("hwmap=derive_device=qsv:extra_hw_frames=1"));
+        assert!(graphs[0].contains("scale_qsv=w=1920:h=1080:format=nv12:extra_hw_frames=1"));
         assert!(!graphs[0].contains("hwupload"));
         assert!(graphs.iter().any(|g| g.contains("hwmap=derive_device=qsv,") && !g.contains("extra_hw_frames")));
         assert!(graphs.iter().any(|g| g.contains("hwupload")));
