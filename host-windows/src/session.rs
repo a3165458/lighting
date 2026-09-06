@@ -847,15 +847,13 @@ async fn handle_client(
 
     let mut last_ping = std::time::Instant::now();
     while !stop.load(Ordering::Relaxed) {
-        if let Ok(mut slot) = cursor_slot.lock() {
-            if let Some(payload) = slot.take() {
-                drop(slot);
-                if protocol::write_message(&mut writer, protocol::MSG_CURSOR, 0, &payload)
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
+        let cursor_payload = cursor_slot.lock().ok().and_then(|mut slot| slot.take());
+        if let Some(payload) = cursor_payload {
+            if protocol::write_message(&mut writer, protocol::MSG_CURSOR, 0, &payload)
+                .await
+                .is_err()
+            {
+                break;
             }
         }
         while let Ok(pkt) = audio_rx.try_recv() {
@@ -1259,6 +1257,7 @@ mod tests {
             soc: "qcom".into(),
             gsi: true,
             brand: "lineage".into(),
+            cursor_overlay: false,
             avc_limit: Some(CodecLimit {
                 width: 1920,
                 height: 1088,

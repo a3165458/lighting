@@ -161,7 +161,7 @@ unsafe fn grab_shape(hcursor: windows::Win32::UI::WindowsAndMessaging::HCURSOR) 
     }
     let hdc = CreateCompatibleDC(hdc_screen);
     let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
-    let mut header = BITMAPINFO {
+    let header = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
             biWidth: w as i32,
