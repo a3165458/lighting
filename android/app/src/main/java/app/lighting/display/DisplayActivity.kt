@@ -692,14 +692,25 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         try {
             val sc = surface.surfaceControl
             if (!sc.isValid) return
-            SurfaceControl.Transaction()
+            // PROPAGATE (default) lets MediaCodec's child BufferQueue
+            // keep a 60 Hz latch even after the SurfaceView is pinned.
+            // OVERRIDE_CHILDREN is what Moonlight uses so the picture
+            // follows this layer, not the codec surface.
+            val tx = SurfaceControl.Transaction()
                 .setFrameRate(
                     sc,
                     hz,
                     Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
                     Surface.CHANGE_FRAME_RATE_ALWAYS,
                 )
-                .apply()
+            try {
+                tx.setFrameRateSelectionStrategy(
+                    sc,
+                    SurfaceControl.FRAME_RATE_SELECTION_STRATEGY_OVERRIDE_CHILDREN,
+                )
+            } catch (_: Throwable) {
+            }
+            tx.apply()
         } catch (_: Throwable) {
         }
     }
