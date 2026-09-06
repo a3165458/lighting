@@ -239,7 +239,8 @@ class VideoDecoder {
         // Moonlight setDecoderLowLatencyOptions(tryNumber): most-to-least
         // risky. Dumping every vendor key plus max-output-buffers on try 0
         // made FEATURE_LowLatency configure() fail, then we used the
-        // high-latency format (a vsync or more of hold).
+        // high-latency format (a vsync or more of hold). Try 0 now sets
+        // max-output-buffers=2 without vendor keys; try 1 is FEATURE+KEY.
         if (caps.lowLatencySafe && !software) {
             for (tryNumber in 0..5) {
                 out.add(buildFormat(width, height, csd, codecName, tryNumber))
@@ -298,9 +299,11 @@ class VideoDecoder {
      * Try 0 keeps vendor keys off (they made FEATURE_LowLatency configure()
      * fail). Official Android keys still go on try 0: without operating-rate
      * some Qualcomm C2 decoders accept KEY_LOW_LATENCY then pace at the SPS
-     * timing like a movie. Try 1 is FEATURE+KEY without operating-rate.
-     * Try 2 is KEY_LOW_LATENCY alone: C2 that reject the feature- prefix
-     * still get low-latency instead of holding a decoded picture.
+     * timing like a movie. max-output-buffers=2 (Moonlight) is try 0 only:
+     * default 4–8 held pictures is a vsync even with FEATURE. Try 1 is
+     * FEATURE+KEY without that key. Try 2 is KEY_LOW_LATENCY alone: C2 that
+     * reject the feature- prefix still get low-latency instead of holding
+     * a decoded picture.
      */
     private fun applyLowLatencyOptions(format: MediaFormat, codecName: String, tryNumber: Int) {
         val official = decoderHasFeatureLowLatency(codecName)
@@ -326,6 +329,9 @@ class VideoDecoder {
                 if (tryNumber < 1 && Build.VERSION.SDK_INT >= 23) {
                     format.setInteger(MediaFormat.KEY_OPERATING_RATE, 32767)
                     format.setInteger(MediaFormat.KEY_PRIORITY, 0)
+                    // 1 output buffer deadlocks the decoder (no ping-pong).
+                    // Default is often 4–8; Moonlight uses 2.
+                    format.setInteger("max-output-buffers", 2)
                 }
                 // Official low-latency codecs reject extra vendor keys.
                 if (official) return
