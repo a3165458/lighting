@@ -4,21 +4,28 @@ use std::io::Read;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 use crate::displays::DisplayInfo;
 use lighting_host::annexb;
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use windows::Win32::Foundation::{
-    HANDLE, HANDLE_FLAGS, HANDLE_FLAG_INHERIT, SetHandleInformation,
+    CloseHandle, FALSE, HANDLE, HANDLE_FLAGS, HANDLE_FLAG_INHERIT, SetHandleInformation,
 };
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::System::Pipes::{CreatePipe, PeekNamedPipe};
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+};
 use windows::Win32::System::Threading::{
-    GetCurrentThread, SetPriorityClass, SetProcessInformation, SetThreadPriority,
+    GetCurrentThread, OpenThread, SetPriorityClass, SetProcessInformation, SetThreadPriority,
     HIGH_PRIORITY_CLASS, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
     PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
     PROCESS_POWER_THROTTLING_STATE, ProcessPowerThrottling, THREAD_PRIORITY_HIGHEST,
+    THREAD_QUERY_INFORMATION, THREAD_SET_INFORMATION,
 };
 
 pub use lighting_host::annexb::EncodedPacket;
@@ -45,10 +52,14 @@ pub struct EncodeSettings {
 pub struct EncoderSession {
     child: Option<Child>,
     pub rx: tokio::sync::mpsc::Receiver<EncodedPacket>,
+    boost_stop: Option<Arc<AtomicBool>>,
 }
 
 impl EncoderSession {
     pub fn stop(&mut self) {
+        if let Some(flag) = self.boost_stop.take() {
+            flag.store(true, Ordering::Relaxed);
+        }
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
@@ -57,6 +68,9 @@ impl EncoderSession {
 
     /// Kill ffmpeg without blocking the accept loop on `wait()`.
     pub fn stop_in_background(mut self) {
+        if let Some(flag) = self.boost_stop.take() {
+            flag.store(true, Ordering::Relaxed);
+        }
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = std::thread::Builder::new()
@@ -129,13 +143,14 @@ pub fn start_encoder(
         .stdin(Stdio::null())
         .stdout(Stdio::from(write))
         .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW);
+        .creation_flags(CREATE_NO_WINDOW | HIGH_PRIORITY_CLASS.0);
 
     let mut child = cmd.spawn().context("spawn ffmpeg")?;
     raise_process_priority(&child);
     let stderr = child.stderr.take().context("ffmpeg stderr")?;
 
     thread::spawn(move || {
+        raise_thread_priority();
         let mut r = BufReader::new(stderr);
         let mut buf = String::new();
         if r.read_to_string(&mut buf).is_ok() && !buf.trim().is_empty() {
@@ -151,6 +166,7 @@ pub fn start_encoder(
     Ok(EncoderSession {
         child: Some(child),
         rx,
+        boost_stop: spawn_ffmpeg_thread_boost(child.id()),
     })
 }
 
@@ -228,6 +244,67 @@ fn raise_process_priority(child: &std::process::Child) {
         let _ = SetPriorityClass(handle, HIGH_PRIORITY_CLASS);
         disable_power_throttling(handle);
         crate::displays::raise_gpu_scheduling(handle);
+    }
+}
+
+/// Sunshine capture is CRITICAL in-process. ffmpeg's ddagrab/NVENC threads
+/// are spawned at NORMAL inside HIGH_PRIORITY_CLASS; a game on MMCSS then
+/// parks a ready DXGI frame on a 15.6 ms quanta. MMCSS is current-thread
+/// only, so walk the child's threads and pin HIGHEST (max in HIGH class).
+fn spawn_ffmpeg_thread_boost(pid: u32) -> Option<Arc<AtomicBool>> {
+    if !lighting_host::session_policy::boost_ffmpeg_child_threads() {
+        return None;
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    let _ = thread::Builder::new()
+        .name("lighting-ffmpeg-boost".into())
+        .spawn(move || {
+            raise_thread_priority();
+            let mut last = 0u32;
+            while !stop.load(Ordering::Relaxed) {
+                let n = raise_child_threads(pid);
+                if n > 0 && n != last {
+                    tracing::info!("ffmpeg threads HIGHEST n={n}");
+                    last = n;
+                }
+                thread::sleep(Duration::from_millis(250));
+            }
+        });
+    Some(flag)
+}
+
+fn raise_child_threads(pid: u32) -> u32 {
+    unsafe {
+        let snap = match CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) {
+            Ok(h) => h,
+            Err(_) => return 0,
+        };
+        let mut te = THREADENTRY32 {
+            dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+            ..Default::default()
+        };
+        let mut n = 0u32;
+        if Thread32First(snap, &mut te).is_ok() {
+            loop {
+                if te.th32OwnerProcessID == pid {
+                    if let Ok(th) = OpenThread(
+                        THREAD_SET_INFORMATION | THREAD_QUERY_INFORMATION,
+                        FALSE,
+                        te.th32ThreadID,
+                    ) {
+                        let _ = SetThreadPriority(th, THREAD_PRIORITY_HIGHEST);
+                        let _ = CloseHandle(th);
+                        n += 1;
+                    }
+                }
+                if Thread32Next(snap, &mut te).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snap);
+        n
     }
 }
 
@@ -405,11 +482,12 @@ pub fn start_encoder_gdigrab(
         .stdin(Stdio::null())
         .stdout(Stdio::from(write))
         .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW);
+        .creation_flags(CREATE_NO_WINDOW | HIGH_PRIORITY_CLASS.0);
     let mut child = cmd.spawn().context("spawn ffmpeg gdigrab")?;
     raise_process_priority(&child);
     let stderr = child.stderr.take().context("ffmpeg stderr")?;
     thread::spawn(move || {
+        raise_thread_priority();
         let mut r = BufReader::new(stderr);
         let mut buf = String::new();
         if r.read_to_string(&mut buf).is_ok() && !buf.trim().is_empty() {
@@ -421,6 +499,7 @@ pub fn start_encoder_gdigrab(
     Ok(EncoderSession {
         child: Some(child),
         rx,
+        boost_stop: spawn_ffmpeg_thread_boost(child.id()),
     })
 }
 

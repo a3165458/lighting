@@ -388,6 +388,15 @@ pub fn mmcss_capture_threads() -> bool {
     true
 }
 
+/// ffmpeg.exe ddagrab/NVENC threads stay THREAD_PRIORITY_NORMAL inside
+/// HIGH_PRIORITY_CLASS. Sunshine's in-process capture is CRITICAL; a
+/// foreground game on MMCSS then wins the 15.6 ms quanta against those
+/// NORMAL workers. Re-apply HIGHEST on the child's threads (MMCSS cannot
+/// attach across processes).
+pub fn boost_ffmpeg_child_threads() -> bool {
+    true
+}
+
 /// Anonymous `CreatePipe` default is 4 KB. A 25 Mbps P-frame is ~26 KB, so
 /// ffmpeg stdout used to land as many short `Read`s and PeekNamedPipe went
 /// quiet between them. 256 KB still hid ~10 pictures at 120 Hz after the
@@ -883,6 +892,7 @@ mod tests {
         assert_eq!(cursor_sample_interval_ms(), 1);
         assert!(gpu_scheduling_priority_high());
         assert!(mmcss_capture_threads());
+        assert!(boost_ffmpeg_child_threads());
         assert_eq!(hw_extra_frames(), 1);
         assert_eq!(hw_extra_frames_fallback(), 2);
         assert_eq!(nvenc_surfaces(), 1);
