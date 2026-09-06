@@ -1099,40 +1099,29 @@ async fn handle_client(
         };
         match pkt {
             Some(pkt) => {
-                let mut sent = match write_video_packet(&mut writer, t0, &pkt).await {
-                    Ok(bytes) => bytes,
-                    Err(err) => {
-                        tracing::warn!("send video failed: {err:#}");
-                        break;
-                    }
-                };
-                // Encoded queue is 1 deep. Flush extra pictures before PCM so
-                // an 8 KB audio write cannot stall ffmpeg on the USB RTT.
-                let mut video_ok = true;
+                // One TCP write for the picture plus PCM. Separate write_all
+                // on a TCP_NODELAY USB socket was a second reverse RTT after
+                // the AU, while the next frame sat in the 1-deep queue.
+                let mut out = encode_video_packet(t0, &pkt);
                 while let Ok(more) = session.rx.try_recv() {
-                    match write_video_packet(&mut writer, t0, &more).await {
-                        Ok(bytes) => sent += bytes,
-                        Err(err) => {
-                            tracing::warn!("send video failed: {err:#}");
-                            video_ok = false;
-                            break;
-                        }
-                    }
-                }
-                if !video_ok {
-                    break;
+                    out.extend_from_slice(&encode_video_packet(t0, &more));
                 }
                 if session_policy::audio_packets_per_video_frame() > 0 {
                     if let Some(ap) = take_latest_audio(&audio_rx) {
                         let audio_payload = protocol::with_pts(ap.pts_us, &ap.pcm);
-                        if protocol::write_message(&mut writer, protocol::MSG_AUDIO, 0, &audio_payload)
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                        sent += audio_payload.len() + HEADER_BYTES;
+                        out.extend_from_slice(&session_policy::lit1_encode(
+                            protocol::MSG_AUDIO,
+                            0,
+                            &audio_payload,
+                        ));
                     }
+                }
+                let sent = out.len();
+                if writer.write_all(&out).await.is_err() {
+                    break;
+                }
+                if writer.flush().await.is_err() {
+                    break;
                 }
                 if let Ok(mut s) = status.lock() {
                     s.frames += 1;
@@ -1217,6 +1206,11 @@ fn video_flags(pkt: &EncodedPacket) -> u8 {
         flags |= FLAG_CODEC_CONFIG;
     }
     flags
+}
+
+fn encode_video_packet(t0: std::time::Instant, pkt: &EncodedPacket) -> Vec<u8> {
+    let payload = protocol::with_pts(t0.elapsed().as_micros() as u64, &pkt.data);
+    session_policy::lit1_encode(protocol::MSG_VIDEO, video_flags(pkt), &payload)
 }
 
 /// Returns the bytes put on the wire so the 已传输 counter stays honest.
