@@ -80,22 +80,30 @@ pub fn dda_capture_graphs_for(
 
 fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &str) -> Vec<String> {
     let mut graphs = Vec::new();
+    let extra = crate::session_policy::hw_extra_frames();
     if encoder.contains("nvenc") {
+        // hwupload_cuda first so we cap the CUDA pool. hwmap looks zero-copy
+        // but ffmpeg's derived pool is often 16 frames (~250 ms).
         if scale {
             graphs.push(format!(
-                "{dda},hwmap=derive_device=cuda:mode=direct,scale_cuda={dst_w}:{dst_h}:format=nv12"
+                "{dda},hwupload_cuda=extra_hw_frames={extra},scale_cuda={dst_w}:{dst_h}:format=nv12"
             ));
             graphs.push(format!(
-                "{dda},hwupload_cuda,scale_cuda={dst_w}:{dst_h}:format=nv12"
+                "{dda},hwmap=derive_device=cuda:mode=direct,scale_cuda={dst_w}:{dst_h}:format=nv12"
             ));
         } else {
             graphs.push(format!(
+                "{dda},hwupload_cuda=extra_hw_frames={extra},scale_cuda=format=nv12"
+            ));
+            graphs.push(format!(
                 "{dda},hwmap=derive_device=cuda:mode=direct,scale_cuda={dst_w}:{dst_h}:format=nv12"
             ));
-            graphs.push(format!("{dda},hwupload_cuda,scale_cuda=format=nv12"));
         }
     }
     if encoder.contains("qsv") {
+        graphs.push(format!(
+            "{dda},hwupload=extra_hw_frames={extra},hwmap=derive_device=qsv,scale_qsv=w={dst_w}:h={dst_h}:format=nv12"
+        ));
         graphs.push(format!(
             "{dda},hwmap=derive_device=qsv,scale_qsv=w={dst_w}:h={dst_h}:format=nv12"
         ));
@@ -103,11 +111,11 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
     if encoder.contains("amf") {
         if scale {
             graphs.push(format!(
-                "{dda},hwupload=extra_hw_frames=1,scale_d3d11={dst_w}:{dst_h}:format=nv12"
+                "{dda},hwupload=extra_hw_frames={extra},scale_d3d11={dst_w}:{dst_h}:format=nv12"
             ));
         } else {
             graphs.push(format!(
-                "{dda},hwupload=extra_hw_frames=1,format=d3d11,hwdownload,format=nv12"
+                "{dda},hwupload=extra_hw_frames={extra},format=d3d11,hwdownload,format=nv12"
             ));
         }
     }
@@ -182,6 +190,7 @@ mod tests {
         let graphs = dda_capture_graphs(Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0 }), 60, 2560, 1440, 1920, 1080, "h264_nvenc");
         assert!(graphs.len() >= 3);
         assert!(graphs[0].contains("scale_cuda"));
+        assert!(graphs[0].contains("extra_hw_frames=3"));
         assert!(graphs.last().unwrap().contains("hwdownload"));
         // Same bitrate path — graphs must not embed bitrate/fps quality knobs.
         for g in &graphs {

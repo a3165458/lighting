@@ -72,7 +72,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
             statusBar.visibility = View.GONE
         }
     }
-    private val outbound = ArrayBlockingQueue<ByteArray>(128)
+    private val outbound = ArrayBlockingQueue<ByteArray>(2)
     @Volatile private var senderRunning = false
     private var sender: Thread? = null
     private val touch = TouchMapper { action, x, y ->
