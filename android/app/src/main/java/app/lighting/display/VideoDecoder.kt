@@ -259,8 +259,9 @@ class VideoDecoder {
         // risky. Dumping every vendor key plus max-output-buffers on try 0
         // made FEATURE_LowLatency configure() fail, then we used the
         // high-latency format (a vsync or more of hold). max-output-buffers=2
-        // rides with KEY_LOW_LATENCY (try 0–2), not FEATURE or operating-rate:
-        // C2 that reject FEATURE still held 4–8 pictures on the KEY-only try.
+        // and KEY_PRIORITY=0 ride with KEY_LOW_LATENCY (try 0–2), not
+        // FEATURE or operating-rate: C2 that reject 32767 still paced a
+        // vsync on the FEATURE+KEY try.
         if (caps.lowLatencySafe && !software) {
             for (tryNumber in 0..5) {
                 out.add(buildFormat(width, height, csd, codecName, tryNumber))
@@ -319,10 +320,11 @@ class VideoDecoder {
      * Try 0 keeps vendor keys off (they made FEATURE_LowLatency configure()
      * fail). Official Android keys still go on try 0: without operating-rate
      * some Qualcomm C2 decoders accept KEY_LOW_LATENCY then pace at the SPS
-     * timing like a movie. max-output-buffers=2 (Moonlight) is try 0–2:
-     * default 4–8 held pictures is a vsync even with FEATURE, and tying
-     * the cap to FEATURE lost it when the feature- prefix was rejected.
-     * Try 2 is KEY_LOW_LATENCY alone plus the small pool.
+     * timing like a movie. max-output-buffers=2 and KEY_PRIORITY=0
+     * (Moonlight realtime) are try 0–2: tying priority to operating-rate
+     * lost it when 32767 was rejected, then official FEATURE codecs
+     * returned before the vendor fallback and still waited a vsync.
+     * Try 2 is KEY_LOW_LATENCY alone plus the small pool and priority.
      */
     private fun applyLowLatencyOptions(format: MediaFormat, codecName: String, tryNumber: Int) {
         val official = decoderHasFeatureLowLatency(codecName)
@@ -347,6 +349,11 @@ class VideoDecoder {
                 }
                 if (tryNumber < 1 && Build.VERSION.SDK_INT >= 23) {
                     format.setInteger(MediaFormat.KEY_OPERATING_RATE, 32767)
+                }
+                if (tryNumber < 3 && Build.VERSION.SDK_INT >= 23) {
+                    // 0 = realtime / ahead of vsync. Bound to 32767 it
+                    // vanished when C2 rejected operating-rate, then
+                    // official FEATURE codecs returned and paced a vsync.
                     format.setInteger(MediaFormat.KEY_PRIORITY, 0)
                 }
                 if (tryNumber < 3) {
