@@ -124,6 +124,13 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
     }
     if encoder.contains("qsv") {
         // ddagrab is D3D11. hwmap first avoids a sysmem upload (~1–2 ms).
+        // Same trap as NVENC: unkeyed hwmap still succeeds and keeps the
+        // default 16-frame pool. Try extra_hw_frames=1 first.
+        for extra in &extras {
+            graphs.push(format!(
+                "{dda},hwmap=derive_device=qsv:extra_hw_frames={extra},scale_qsv=w={dst_w}:h={dst_h}:format=nv12"
+            ));
+        }
         graphs.push(format!(
             "{dda},hwmap=derive_device=qsv,scale_qsv=w={dst_w}:h={dst_h}:format=nv12"
         ));
@@ -150,6 +157,11 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
             }
         } else {
             // Stay on D3D11. hwmap first; hwupload of an identity frame is a copy.
+            for extra in &extras {
+                graphs.push(format!(
+                    "{dda},hwmap=derive_device=d3d11:extra_hw_frames={extra}"
+                ));
+            }
             graphs.push(format!("{dda},hwmap=derive_device=d3d11"));
             graphs.push(format!("{dda},format=d3d11"));
             for extra in &extras {
@@ -250,8 +262,9 @@ mod tests {
             Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x8086 }),
             60, 1920, 1080, 1920, 1080, "h264_qsv",
         );
-        assert!(graphs[0].contains("hwmap=derive_device=qsv"));
+        assert!(graphs[0].contains("hwmap=derive_device=qsv:extra_hw_frames=1"));
         assert!(!graphs[0].contains("hwupload"));
+        assert!(graphs.iter().any(|g| g.contains("hwmap=derive_device=qsv,") && !g.contains("extra_hw_frames")));
         assert!(graphs.iter().any(|g| g.contains("hwupload")));
     }
 
@@ -261,9 +274,10 @@ mod tests {
             Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x1002 }),
             60, 1920, 1080, 1920, 1080, "h264_amf",
         );
-        assert!(graphs[0].contains("hwmap=derive_device=d3d11"));
+        assert!(graphs[0].contains("hwmap=derive_device=d3d11:extra_hw_frames=1"));
         assert!(!graphs[0].contains("hwupload"));
         assert!(!graphs[0].contains("hwdownload"));
+        assert!(graphs.iter().any(|g| g.contains("hwmap=derive_device=d3d11") && !g.contains("extra_hw_frames")));
         assert!(graphs.iter().any(|g| g.contains("format=d3d11")));
     }
 
