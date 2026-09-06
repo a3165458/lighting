@@ -240,8 +240,8 @@ class VideoDecoder {
         // risky. Dumping every vendor key plus max-output-buffers on try 0
         // made FEATURE_LowLatency configure() fail, then we used the
         // high-latency format (a vsync or more of hold). max-output-buffers=2
-        // is on try 0 and try 1 (FEATURE+KEY), not tied to operating-rate:
-        // Qualcomm C2 often rejects 32767 then held 4–8 pictures on try 1.
+        // rides with KEY_LOW_LATENCY (try 0–2), not FEATURE or operating-rate:
+        // C2 that reject FEATURE still held 4–8 pictures on the KEY-only try.
         if (caps.lowLatencySafe && !software) {
             for (tryNumber in 0..5) {
                 out.add(buildFormat(width, height, csd, codecName, tryNumber))
@@ -300,11 +300,10 @@ class VideoDecoder {
      * Try 0 keeps vendor keys off (they made FEATURE_LowLatency configure()
      * fail). Official Android keys still go on try 0: without operating-rate
      * some Qualcomm C2 decoders accept KEY_LOW_LATENCY then pace at the SPS
-     * timing like a movie. max-output-buffers=2 (Moonlight) is try 0 and
-     * try 1: default 4–8 held pictures is a vsync even with FEATURE, and
-     * tying the cap to operating-rate lost it when 32767 was rejected.
-     * Try 2 is KEY_LOW_LATENCY alone: C2 that reject the feature- prefix
-     * still get low-latency instead of holding a decoded picture.
+     * timing like a movie. max-output-buffers=2 (Moonlight) is try 0–2:
+     * default 4–8 held pictures is a vsync even with FEATURE, and tying
+     * the cap to FEATURE lost it when the feature- prefix was rejected.
+     * Try 2 is KEY_LOW_LATENCY alone plus the small pool.
      */
     private fun applyLowLatencyOptions(format: MediaFormat, codecName: String, tryNumber: Int) {
         val official = decoderHasFeatureLowLatency(codecName)
@@ -331,10 +330,10 @@ class VideoDecoder {
                     format.setInteger(MediaFormat.KEY_OPERATING_RATE, 32767)
                     format.setInteger(MediaFormat.KEY_PRIORITY, 0)
                 }
-                if (tryNumber < 2) {
+                if (tryNumber < 3) {
                     // 1 output buffer deadlocks the decoder (no ping-pong).
-                    // Default is often 4–8; Moonlight uses 2. Try 1 is
-                    // FEATURE+KEY without operating-rate so a 32767 reject
+                    // Default is often 4–8; Moonlight uses 2. Try 2 is
+                    // KEY without FEATURE, so a feature- prefix reject
                     // still gets the small pool.
                     format.setInteger("max-output-buffers", 2)
                 }
