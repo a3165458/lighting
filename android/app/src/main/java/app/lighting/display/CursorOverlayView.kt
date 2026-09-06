@@ -258,9 +258,16 @@ class CursorOverlayView @JvmOverloads constructor(
         if (prev?.bitmap != null && prev.bitmap !== pose.bitmap) {
             prev.bitmap.recycle()
         }
-        // Move the overlay plane now; still coalesce a UI apply so
-        // translationX matches and RenderThread cannot snap back.
-        applySurfacePosition(pose)
+        // Punch the overlay plane now. A Looper apply still lets
+        // RenderThread commit translationX on the next vsync and
+        // SurfaceView.updateSurface snaps the punch back — one
+        // refresh of pointer lag vs GlideX. Move-only poses that
+        // already punched skip the UI path. Show/hide/resize/shape
+        // still post so translationX catches up before a layout.
+        val punched = applySurfacePosition(pose)
+        if (punched && pose.visible && pose.bitmap == null) {
+            return
+        }
         if (scheduled.compareAndSet(false, true)) {
             ui.postAtFrontOfQueue(applyOnce)
         }
