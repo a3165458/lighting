@@ -256,6 +256,19 @@ pub fn qsv_pic_timing_sei() -> bool {
     false
 }
 
+/// QSV `max_dec_frame_buffering`. Unset follows the level (4–16) even
+/// with `-refs 1`, so Android holds a DPB of reconstructed pictures —
+/// one refresh of glass. Sunshine ULL writes 1 (same as NVENC dpb_size).
+pub fn qsv_max_dec_frame_buffering() -> u32 {
+    1
+}
+
+/// QSV `forced_idr`. Without it, `-g` I-frames can be non-IDR and the
+/// tablet's skipUntilKey never recovers a torn GOP.
+pub fn qsv_forced_idr() -> bool {
+    true
+}
+
 /// Encoder DPB / `num_ref_frames`. NVENC default follows the level (4–16);
 /// Android then holds decoded pictures. Moonlight decoder-errata: 1.
 pub fn encoder_refs() -> u32 {
@@ -927,6 +940,8 @@ mod tests {
         assert!(!qsv_adaptive_i());
         assert_eq!(qsv_p_strategy(), 1);
         assert!(!qsv_pic_timing_sei());
+        assert_eq!(qsv_max_dec_frame_buffering(), 1);
+        assert!(qsv_forced_idr());
         assert_eq!(encoder_refs(), 1);
         assert_eq!(nvenc_dpb_size(), 1);
         assert!(!nvenc_extra_sei());

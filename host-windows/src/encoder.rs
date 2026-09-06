@@ -608,6 +608,14 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             gop,
             "-refs".into(),
             lighting_host::session_policy::encoder_refs().to_string(),
+            "-max_dec_frame_buffering".into(),
+            lighting_host::session_policy::qsv_max_dec_frame_buffering().to_string(),
+            "-forced_idr".into(),
+            if lighting_host::session_policy::qsv_forced_idr() {
+                "1".into()
+            } else {
+                "0".into()
+            },
             "-profile:v".into(),
             settings.profile.clone(),
             "-look_ahead".into(),
