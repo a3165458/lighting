@@ -922,6 +922,7 @@ async fn handle_client(
         },
         draw_mouse: !hello.cursor_overlay,
         nvenc_surfaces: lighting_host::session_policy::nvenc_surfaces(),
+        nvenc_rc: lighting_host::session_policy::nvenc_rc().into(),
     };
 
     let cursor_slot: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>> =
@@ -1280,10 +1281,20 @@ async fn start_live_encoder(
         } else {
             vec![settings.nvenc_surfaces.max(1)]
         };
+        let rc_tries: Vec<String> = if enc.contains("nvenc") {
+            lighting_host::session_policy::nvenc_rc_attempts()
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect()
+        } else {
+            vec![settings.nvenc_rc.clone()]
+        };
         for graph in graphs {
             for surfaces in &surface_tries {
+                for rc in &rc_tries {
                 let mut attempt = settings.clone();
                 attempt.nvenc_surfaces = *surfaces;
+                attempt.nvenc_rc = rc.clone();
                 let mut session = match encoder::start_encoder(ffmpeg, display, &attempt, enc, &graph) {
                     Ok(s) => s,
                     Err(err) => {
@@ -1296,16 +1307,17 @@ async fn start_live_encoder(
                     Ok(bootstrap) => {
                         let virtual_output = display.is_virtual;
                         tracing::info!(
-                            "using encoder {enc} graph={graph} surfaces={surfaces} (dda virtual={virtual_output})"
+                            "using encoder {enc} graph={graph} surfaces={surfaces} rc={rc} (dda virtual={virtual_output})"
                         );
                         return Ok((session, bootstrap, CaptureKind::Dda));
                     }
                     Err(err) => {
                         tracing::warn!(
-                            "{enc} graph died before codec-config + IDR ({graph} surfaces={surfaces}): {err:#}"
+                            "{enc} graph died before codec-config + IDR ({graph} surfaces={surfaces} rc={rc}): {err:#}"
                         );
                         last_err = Some(err);
                     }
+                }
                 }
             }
         }
@@ -1330,9 +1342,19 @@ async fn restart_encoder_with_bootstrap(
         } else {
             vec![settings.nvenc_surfaces.max(1)]
         };
+        let rc_tries: Vec<String> = if enc.contains("nvenc") {
+            lighting_host::session_policy::nvenc_rc_attempts()
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect()
+        } else {
+            vec![settings.nvenc_rc.clone()]
+        };
         for surfaces in surface_tries {
+            for rc in &rc_tries {
             let mut attempt = settings.clone();
             attempt.nvenc_surfaces = surfaces;
+            attempt.nvenc_rc = rc.clone();
             let mut session = match encoder::start_encoder_gdigrab(ffmpeg, display, &attempt, enc) {
                 Ok(s) => s,
                 Err(err) => {
@@ -1343,13 +1365,14 @@ async fn restart_encoder_with_bootstrap(
             };
             match annexb::recv_bootstrap_async(&mut session.rx, Duration::from_secs(3), hevc).await {
                 Ok(bootstrap) => {
-                    tracing::info!("gdigrab bootstrap ok with {enc} surfaces={surfaces}");
+                    tracing::info!("gdigrab bootstrap ok with {enc} surfaces={surfaces} rc={rc}");
                     return Ok((session, bootstrap));
                 }
                 Err(err) => {
-                    tracing::warn!("{enc} closed before codec-config + IDR (surfaces={surfaces}): {err:#}");
+                    tracing::warn!("{enc} closed before codec-config + IDR (surfaces={surfaces} rc={rc}): {err:#}");
                     last_err = Some(err);
                 }
+            }
             }
         }
     }

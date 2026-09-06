@@ -10,6 +10,7 @@ import android.view.Surface
 import java.nio.ByteBuffer
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.LockSupport
 
 class VideoDecoder {
     private var codec: MediaCodec? = null
@@ -171,9 +172,12 @@ class VideoDecoder {
         while (running.get()) {
             val decoder = codec ?: break
             try {
-                // 16 ms sat every picture on the next vsync. 200 µs is a
-                // MediaCodec poll, not a vsync wait.
-                drain(decoder, 200)
+                // 0 = present as soon as the codec has a picture. A 200 us
+                // dequeue timeout sat every frame on a poll even after the
+                // AU was already decoded. Park 50 us only when idle.
+                if (!drain(decoder, 0)) {
+                    LockSupport.parkNanos(50_000)
+                }
             } catch (_: IllegalStateException) {
                 break
             }
@@ -405,7 +409,7 @@ class VideoDecoder {
         return true
     }
 
-    private fun drain(decoder: MediaCodec, waitUs: Long) {
+    private fun drain(decoder: MediaCodec, waitUs: Long): Boolean {
         val info = MediaCodec.BufferInfo()
         var latest = -1
         var wait = waitUs
@@ -434,7 +438,9 @@ class VideoDecoder {
             // 0 ns = present immediately. `true` reuses the input PTS and
             // some SoCs then wait a vsync as if this were a movie.
             decoder.releaseOutputBuffer(latest, 0L)
+            return true
         }
+        return false
     }
 
     fun release() {

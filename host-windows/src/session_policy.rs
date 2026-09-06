@@ -176,6 +176,20 @@ pub fn nvenc_rc() -> &'static str {
     "cbr_ld_hq"
 }
 
+pub fn nvenc_rc_fallback() -> &'static str {
+    "cbr"
+}
+
+pub fn nvenc_rc_attempts() -> Vec<&'static str> {
+    let a = nvenc_rc();
+    let b = nvenc_rc_fallback();
+    if a == b {
+        vec![a]
+    } else {
+        vec![a, b]
+    }
+}
+
 /// WASAPI shared-mode loopback buffer, 100-ns units. 50 ms was audible lag.
 pub fn wasapi_buffer_hns() -> i64 {
     200_000
@@ -742,6 +756,7 @@ mod tests {
         assert_eq!(nvenc_surfaces_fallback(), 2);
         assert_eq!(nvenc_rc(), "cbr_ld_hq");
         assert_ne!(nvenc_rc(), "cbr");
+        assert_eq!(nvenc_rc_attempts(), vec!["cbr_ld_hq", "cbr"]);
         assert_eq!(nvenc_surface_attempts(), vec![1, 2]);
         assert!(!nvenc_spatial_aq());
         assert_eq!(wasapi_buffer_hns(), 200_000);
