@@ -265,16 +265,12 @@ class VideoDecoder {
         val n = codecName.lowercase()
         val software = n.contains("google") || n.contains("c2.android") || n.contains("software")
         // Moonlight setDecoderLowLatencyOptions(tryNumber): most-to-least
-        // risky. Dumping every vendor key plus max-output-buffers on try 0
-        // made FEATURE_LowLatency configure() fail, then we used the
-        // high-latency format (a vsync or more of hold). max-output-buffers=2
-        // and KEY_PRIORITY=0 ride with KEY_LOW_LATENCY (try 0–2), not
-        // FEATURE or operating-rate: C2 that reject 32767 still paced a
-        // vsync on the FEATURE+KEY try.
-        // Moonlight always tries official KEY_LOW_LATENCY. GSI used to skip
-        // every try and sit on the high-latency format (one vsync of hold).
-        // Vendor keys still crash some GSI / Treble images — those stay
-        // behind lowLatencySafe (try 3–5).
+        // risky. Try 0 is official + matching SoC vendor key. Dumping every
+        // vendor key on try 0 used to fail FEATURE_LowLatency configure().
+        // Try 1–2 stay FEATURE-only so that reject still configures.
+        // max-output-buffers=2 and KEY_PRIORITY=0 ride with KEY_LOW_LATENCY
+        // (try 0–2). GSI / Treble crash on vendor keys — those stay behind
+        // lowLatencySafe (try 3–5).
         if (!software) {
             val lastTry = if (caps.lowLatencySafe) 5 else 2
             for (tryNumber in 0..lastTry) {
@@ -317,29 +313,15 @@ class VideoDecoder {
         return format
     }
 
-    private fun decoderHasFeatureLowLatency(codecName: String): Boolean {
-        if (Build.VERSION.SDK_INT < 30) return false
-        return try {
-            val info = MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos
-                .firstOrNull { it.name.equals(codecName, true) }
-                ?: return false
-            info.getCapabilitiesForType(mime)
-                .isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency)
-        } catch (_: Throwable) {
-            false
-        }
-    }
-
     /**
      * Moonlight MediaCodecHelper.setDecoderLowLatencyOptions(tryNumber).
-     * Try 0 keeps vendor keys off (they made FEATURE_LowLatency configure()
-     * fail). Official Android keys still go on try 0: without operating-rate
-     * some Qualcomm C2 decoders accept KEY_LOW_LATENCY then pace at the SPS
-     * timing like a movie. max-output-buffers=2 and KEY_PRIORITY=0
-     * (Moonlight realtime) are try 0–2: tying priority to operating-rate
-     * lost it when 32767 was rejected, then official FEATURE codecs
-     * returned before the vendor fallback and still waited a vsync.
-     * Try 2 is KEY_LOW_LATENCY alone plus the small pool and priority.
+     * Try 0 is official keys plus the matching SoC vendor key (Moonlight).
+     * Qualcomm C2 advertises FEATURE_LowLatency, so a FEATURE-only try 0
+     * used to succeed and never reach qti-ext-dec-low-latency — then the
+     * decoder paced at SPS like a movie (a vsync of hold). Try 1–2 stay
+     * FEATURE-only so a vendor reject still configures. max-output-buffers=2
+     * and KEY_PRIORITY=0 (Moonlight realtime) are try 0–2. Try 2 is
+     * KEY_LOW_LATENCY alone plus the small pool and priority.
      */
     private fun applyLowLatencyOptions(
         format: MediaFormat,
@@ -347,7 +329,6 @@ class VideoDecoder {
         tryNumber: Int,
         allowVendor: Boolean,
     ) {
-        val official = decoderHasFeatureLowLatency(codecName)
         val n = codecName.lowercase()
         val qcom = n.startsWith("omx.qcom") || n.startsWith("c2.qti") || n.contains(".qcom.")
         try {
@@ -383,10 +364,13 @@ class VideoDecoder {
                     // still gets the small pool.
                     format.setInteger("max-output-buffers", 2)
                 }
-                // Official FEATURE codecs reject vendor keys. GSI / Treble
-                // images crash on them even without FEATURE — keep the
-                // Android keys and stop here (Moonlight still sets these).
-                if (official || !allowVendor) return
+                // GSI / Treble crash on a dump of every vendor key. Matching
+                // SoC keys still belong on try 0: Qualcomm C2 advertises
+                // FEATURE_LowLatency, accepts KEY_LOW_LATENCY, then paces
+                // at SPS like a movie unless qti-ext-dec-low-latency is on
+                // the format that succeeded. Moonlight sets the SoC key on
+                // try 0. Try 1–2 stay FEATURE-only so a reject falls back.
+                if (tryNumber >= 1 || !allowVendor) return
             }
             if (tryNumber < 2 &&
                 (!android.os.Build.MANUFACTURER.equals("xiaomi", true) ||
