@@ -401,7 +401,7 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "-multipass".into(),
             "disabled".into(),
             "-rc".into(),
-            "cbr".into(),
+            lighting_host::session_policy::nvenc_rc().into(),
             "-b:v".into(),
             br.clone(),
             "-maxrate".into(),
