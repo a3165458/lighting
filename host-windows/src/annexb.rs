@@ -446,10 +446,10 @@ fn ingest_nal(
     tx: &dyn PacketSink,
     drop_until_key: &mut bool,
 ) {
-    let nal = if !hevc {
-        crate::h264_sps::rewrite_low_latency(nal)
+    let nal = if hevc {
+        crate::hevc_sps::rewrite_low_latency(nal)
     } else {
-        nal
+        crate::h264_sps::rewrite_low_latency(nal)
     };
     let role = nal_role(&nal, hevc);
     if role == NalRole::ParameterSet {

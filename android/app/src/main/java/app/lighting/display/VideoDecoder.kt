@@ -265,6 +265,14 @@ class VideoDecoder {
             format.setInteger(MediaFormat.KEY_FRAME_RATE, 120)
         } catch (_: Throwable) {
         }
+        if (Build.VERSION.SDK_INT >= 31) {
+            try {
+                // Encoder is IPPP / no B-frames. Default reorder depth is 2
+                // pictures (~16–32 ms) even when the SPS already says 0.
+                format.setInteger(MediaFormat.KEY_OUTPUT_REORDER_DEPTH, 0)
+            } catch (_: Throwable) {
+            }
+        }
         if (tryNumber >= 0) {
             applyLowLatencyOptions(format, codecName, tryNumber)
         }
