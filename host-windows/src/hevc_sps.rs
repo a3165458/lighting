@@ -234,9 +234,9 @@ fn copy_ptl(src: &mut Bits<'_>, dst: &mut Writer, max_sub_layers: u32) -> Option
     }
     copy_ptl_common(src, dst)?;
     let level = src.u(8)?;
-    // HEVC 5.1 = 153. Level 4.0/4.1 (120/123) cannot do 1080p120;
-    // 2K tablets pick HEVC and then pace at 30/60.
-    dst.u(8, level.max(153));
+    // HEVC 5.2 = 156. 5.1 MaxLumaSr is 267e6 (1080p120); 2560x1440x120
+    // is 442e6 and 2K tablets pick HEVC. Floor at 5.2.
+    dst.u(8, level.max(156));
     let max_minus1 = max_sub_layers - 1;
     let mut profile_present = [false; 8];
     let mut level_present = [false; 8];
@@ -257,7 +257,7 @@ fn copy_ptl(src: &mut Bits<'_>, dst: &mut Writer, max_sub_layers: u32) -> Option
         }
         if level_present[i as usize] {
             let lvl = src.u(8)?;
-            dst.u(8, lvl.max(153));
+            dst.u(8, lvl.max(156));
         }
     }
     Some(())
@@ -753,13 +753,13 @@ mod tests {
     }
 
     #[test]
-    fn floors_hevc_level_to_5_1_so_120fps_is_not_tagged_30() {
+    fn floors_hevc_level_to_5_2_so_2k120_is_not_tagged_60() {
         let src = main_sps(5, 2);
         assert_eq!(sps_general_level(&src), Some(120));
         let out = rewrite_low_latency(src);
-        assert_eq!(sps_general_level(&out), Some(153));
+        assert_eq!(sps_general_level(&out), Some(156));
         assert_eq!(parse_dpb(&out), Some((1, 0, 0)));
-        assert_eq!(sps_general_level(&rewrite_low_latency(out.clone())), Some(153));
+        assert_eq!(sps_general_level(&rewrite_low_latency(out.clone())), Some(156));
     }
 
     #[test]
