@@ -10,7 +10,6 @@ import android.view.Surface
 import java.nio.ByteBuffer
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.locks.LockSupport
 
 class VideoDecoder {
     private var codec: MediaCodec? = null
@@ -172,12 +171,11 @@ class VideoDecoder {
         while (running.get()) {
             val decoder = codec ?: break
             try {
-                // 0 = present as soon as the codec has a picture. A 200 us
-                // dequeue timeout sat every frame on a poll even after the
-                // AU was already decoded. Park 50 us only when idle.
-                if (!drain(decoder, 0)) {
-                    LockSupport.parkNanos(50_000)
-                }
+                // Block inside MediaCodec until a picture exists. parkNanos
+                // is not woken by the codec and becomes a 1–4 ms scheduler
+                // slice on a loaded pad; Moonlight waits on dequeue instead.
+                // Timeout (not -1) so release() can stop this thread.
+                drain(decoder, 8_000L)
             } catch (_: IllegalStateException) {
                 break
             }
