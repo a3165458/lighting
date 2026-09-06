@@ -298,16 +298,16 @@ class VideoDecoder {
      * Try 0 keeps vendor keys off (they made FEATURE_LowLatency configure()
      * fail). Official Android keys still go on try 0: without operating-rate
      * some Qualcomm C2 decoders accept KEY_LOW_LATENCY then pace at the SPS
-     * timing like a movie. Try 1 is KEY_LOW_LATENCY alone, in case
-     * operating-rate made try 0 configure() fail and we would otherwise
-     * fall through to the high-latency format.
+     * timing like a movie. Try 1 is FEATURE+KEY without operating-rate.
+     * Try 2 is KEY_LOW_LATENCY alone: C2 that reject the feature- prefix
+     * still get low-latency instead of holding a decoded picture.
      */
     private fun applyLowLatencyOptions(format: MediaFormat, codecName: String, tryNumber: Int) {
         val official = decoderHasFeatureLowLatency(codecName)
         val n = codecName.lowercase()
         val qcom = n.startsWith("omx.qcom") || n.startsWith("c2.qti") || n.contains(".qcom.")
         try {
-            if (tryNumber < 2) {
+            if (tryNumber < 3) {
                 format.setInteger("low-latency", 1)
                 if (Build.VERSION.SDK_INT >= 30) {
                     format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
@@ -315,10 +315,13 @@ class VideoDecoder {
                     // writes "feature-low-latency". C2 codecs that advertise
                     // the feature still hold a decoded picture unless the
                     // feature- prefix is on; Moonlight/GlideX set both.
-                    format.setFeatureEnabled(
-                        MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency,
-                        true,
-                    )
+                    // Try 2 omits FEATURE so a reject does not skip KEY.
+                    if (tryNumber < 2) {
+                        format.setFeatureEnabled(
+                            MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency,
+                            true,
+                        )
+                    }
                 }
                 if (tryNumber < 1 && Build.VERSION.SDK_INT >= 23) {
                     format.setInteger(MediaFormat.KEY_OPERATING_RATE, 32767)
