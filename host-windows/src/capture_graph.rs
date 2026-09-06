@@ -9,6 +9,8 @@
 pub struct DxgiCapture {
     pub adapter_index: u32,
     pub output_index: u32,
+    /// DXGI VendorId: NVIDIA 0x10DE, Intel 0x8086, AMD 0x1002.
+    pub vendor_id: u32,
 }
 
 impl DxgiCapture {
@@ -42,14 +44,10 @@ pub fn dda_capture_graphs(
     dda_capture_graphs_for(dxgi, fps, src_w, src_h, dst_w, dst_h, encoder, false)
 }
 
-/// `allow_tearing` on IddCx outputs avoids waiting for a vsync the virtual
-/// adapter may never signal, which otherwise caps games at ~15 fps.
-pub fn dda_source_filter(output_idx: u32, fps: u32, is_virtual: bool) -> String {
-    if is_virtual {
-        format!("ddagrab=output_idx={output_idx}:framerate={fps}:draw_mouse=1:allow_tearing=1")
-    } else {
-        format!("ddagrab=output_idx={output_idx}:framerate={fps}:draw_mouse=1")
-    }
+/// FFmpeg `ddagrab` has no `allow_tearing` option; unknown keys make the
+/// filter fail and we used to burn 3s per graph before falling back.
+pub fn dda_source_filter(output_idx: u32, fps: u32, _is_virtual: bool) -> String {
+    format!("ddagrab=output_idx={output_idx}:framerate={fps}:draw_mouse=1")
 }
 
 pub fn dda_capture_graphs_for(
@@ -67,19 +65,9 @@ pub fn dda_capture_graphs_for(
     let Some(dxgi) = dxgi else {
         return Vec::new();
     };
-    let mut sources = vec![dda_source_filter(dxgi.output_index, fps, is_virtual)];
-    if is_virtual {
-        let without_tearing = dda_source_filter(dxgi.output_index, fps, false);
-        if without_tearing != sources[0] {
-            sources.push(without_tearing);
-        }
-    }
+    let dda = dda_source_filter(dxgi.output_index, fps, is_virtual);
     let scale = needs_scale(src_w, src_h, dst_w, dst_h);
-    let mut graphs = Vec::new();
-    for dda in &sources {
-        graphs.extend(dda_encoder_graphs(dda, scale, dst_w, dst_h, encoder));
-    }
-    graphs
+    dda_encoder_graphs(&dda, scale, dst_w, dst_h, encoder)
 }
 
 fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &str) -> Vec<String> {
@@ -160,7 +148,7 @@ mod tests {
 
     #[test]
     fn identity_skips_cpu_scale() {
-        let graphs = dda_capture_graphs(Some(DxgiCapture { adapter_index: 0, output_index: 0 }), 60, 1920, 1080, 1920, 1080, "libx264");
+        let graphs = dda_capture_graphs(Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0 }), 60, 1920, 1080, 1920, 1080, "libx264");
         assert_eq!(graphs.len(), 1);
         assert!(!graphs[0].contains("scale="));
         assert!(graphs[0].contains("yuv420p"));
@@ -168,7 +156,7 @@ mod tests {
 
     #[test]
     fn cpu_scale_uses_bilinear_not_fast() {
-        let graphs = dda_capture_graphs(Some(DxgiCapture { adapter_index: 0, output_index: 1 }), 60, 2560, 1440, 1920, 1080, "libx264");
+        let graphs = dda_capture_graphs(Some(DxgiCapture { adapter_index: 0, output_index: 1, vendor_id: 0 }), 60, 2560, 1440, 1920, 1080, "libx264");
         let cpu = graphs.last().unwrap();
         assert!(cpu.contains("flags=bilinear"));
         assert!(!cpu.contains("fast_bilinear"));
@@ -176,7 +164,7 @@ mod tests {
 
     #[test]
     fn nvenc_prefers_cuda_before_cpu() {
-        let graphs = dda_capture_graphs(Some(DxgiCapture { adapter_index: 0, output_index: 0 }), 60, 2560, 1440, 1920, 1080, "h264_nvenc");
+        let graphs = dda_capture_graphs(Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0 }), 60, 2560, 1440, 1920, 1080, "h264_nvenc");
         assert!(graphs.len() >= 3);
         assert!(graphs[0].contains("scale_cuda"));
         assert!(graphs.last().unwrap().contains("hwdownload"));
@@ -204,6 +192,7 @@ mod tests {
         let capture = DxgiCapture {
             adapter_index: 1,
             output_index: 3,
+            vendor_id: 0x10DE,
         };
         assert_eq!(
             capture.device_args(),
@@ -214,17 +203,15 @@ mod tests {
     }
 
     #[test]
-    fn virtual_dda_allows_tearing() {
+    fn virtual_dda_uses_real_ddagrab_options() {
         let filter = dda_source_filter(1, 60, true);
         assert!(filter.contains("output_idx=1"));
-        assert!(filter.contains("allow_tearing=1"));
-        assert!(!dda_source_filter(0, 60, false).contains("allow_tearing"));
+        assert!(!filter.contains("allow_tearing"));
         let graphs = dda_capture_graphs_for(
-            Some(DxgiCapture { adapter_index: 0, output_index: 1 }),
+            Some(DxgiCapture { adapter_index: 0, output_index: 1, vendor_id: 0 }),
             60, 1920, 1080, 1920, 1080, "h264_nvenc", true,
         );
-        assert!(graphs.iter().any(|g| g.contains("allow_tearing=1")));
-        assert!(graphs.iter().any(|g| !g.contains("allow_tearing")));
+        assert!(graphs.iter().all(|g| !g.contains("allow_tearing")));
         assert!(graphs.iter().all(|g| g.contains("output_idx=1")));
     }
 

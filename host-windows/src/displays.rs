@@ -622,6 +622,15 @@ fn prepare_vdd_settings(width: u32, height: u32, fps: u32) -> Result<()> {
         }
     }
 
+    let gpu = discrete_gpu_friendly_name()
+        .unwrap_or_else(|| lighting_host::session_policy::pick_vdd_gpu_name(&[]));
+    if let Some(start) = xml.find("<friendlyname>") {
+        if let Some(rel_end) = xml[start..].find("</friendlyname>") {
+            let end = start + rel_end + "</friendlyname>".len();
+            xml.replace_range(start..end, &format!("<friendlyname>{gpu}</friendlyname>"));
+        }
+    }
+
     std::fs::write(&path, &xml).with_context(|| format!("写入 {} 失败", path.display()))?;
     if path != fallback {
         if let Some(parent) = fallback.parent() {
@@ -1346,6 +1355,31 @@ if ($r -ne 0) {{ throw "ChangeDisplaySettingsEx failed: $r" }}
 }
 
 
+pub fn discrete_gpu_friendly_name() -> Option<String> {
+    let adapters = list_dxgi_adapters().unwrap_or_default();
+    let name = lighting_host::session_policy::pick_vdd_gpu_name(&adapters);
+    (name != "Best GPU (Auto)").then_some(name)
+}
+
+fn list_dxgi_adapters() -> Result<Vec<(u32, String)>> {
+    unsafe {
+        let factory: IDXGIFactory1 = CreateDXGIFactory1().context("CreateDXGIFactory1")?;
+        let mut out = Vec::new();
+        let mut adapter_idx = 0u32;
+        loop {
+            let adapter = match factory.EnumAdapters1(adapter_idx) {
+                Ok(a) => a,
+                Err(_) => break,
+            };
+            if let Ok(desc) = adapter.GetDesc1() {
+                out.push((desc.VendorId, wchar_to_string(&desc.Description)));
+            }
+            adapter_idx += 1;
+        }
+        Ok(out)
+    }
+}
+
 fn list_via_dxgi() -> Result<Vec<(String, DxgiCapture)>> {
     unsafe {
         let factory: IDXGIFactory1 = CreateDXGIFactory1().context("CreateDXGIFactory1")?;
@@ -1356,6 +1390,7 @@ fn list_via_dxgi() -> Result<Vec<(String, DxgiCapture)>> {
                 Ok(a) => a,
                 Err(_) => break,
             };
+            let vendor_id = adapter.GetDesc1().map(|d| d.VendorId).unwrap_or(0);
             let mut output_idx = 0u32;
             loop {
                 let output = match adapter.EnumOutputs(output_idx) {
@@ -1376,6 +1411,7 @@ fn list_via_dxgi() -> Result<Vec<(String, DxgiCapture)>> {
                     DxgiCapture {
                         adapter_index: adapter_idx,
                         output_index: output_idx,
+                        vendor_id,
                     },
                 ));
                 output_idx += 1;
