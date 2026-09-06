@@ -47,6 +47,8 @@ pub struct EncodeSettings {
     pub nvenc_surfaces: u32,
     /// NVENC `-rc`. `cbr_ld_hq` first; `cbr` if that ffmpeg rejects it.
     pub nvenc_rc: String,
+    /// AMF `-rc`. `vbr_latency` first; `cbr` if that ffmpeg rejects it.
+    pub amf_rc: String,
 }
 
 pub struct EncoderSession {
@@ -741,7 +743,11 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "-quality".into(),
             "speed".into(),
             "-rc".into(),
-            "cbr".into(),
+            if settings.amf_rc.is_empty() {
+                lighting_host::session_policy::amf_rc().into()
+            } else {
+                settings.amf_rc.clone()
+            },
             "-b:v".into(),
             br,
             "-maxrate".into(),

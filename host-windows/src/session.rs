@@ -957,6 +957,7 @@ async fn handle_client(
         draw_mouse: !hello.cursor_overlay,
         nvenc_surfaces: lighting_host::session_policy::nvenc_surfaces(),
         nvenc_rc: lighting_host::session_policy::nvenc_rc().into(),
+        amf_rc: lighting_host::session_policy::amf_rc().into(),
     };
 
     let cursor_slot: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>> =
@@ -1314,8 +1315,13 @@ async fn start_live_encoder(
                 .into_iter()
                 .map(|s| s.to_string())
                 .collect()
+        } else if enc.contains("amf") {
+            lighting_host::session_policy::amf_rc_attempts()
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect()
         } else {
-            vec![settings.nvenc_rc.clone()]
+            vec![String::new()]
         };
         for graph in graphs {
             for surfaces in &surface_tries {
@@ -1323,6 +1329,9 @@ async fn start_live_encoder(
                 let mut attempt = settings.clone();
                 attempt.nvenc_surfaces = *surfaces;
                 attempt.nvenc_rc = rc.clone();
+                if enc.contains("amf") && !rc.is_empty() {
+                    attempt.amf_rc = rc.clone();
+                }
                 let mut session = match encoder::start_encoder(ffmpeg, display, &attempt, enc, &graph) {
                     Ok(s) => s,
                     Err(err) => {
@@ -1375,14 +1384,22 @@ async fn restart_encoder_with_bootstrap(
                 .into_iter()
                 .map(|s| s.to_string())
                 .collect()
+        } else if enc.contains("amf") {
+            lighting_host::session_policy::amf_rc_attempts()
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect()
         } else {
-            vec![settings.nvenc_rc.clone()]
+            vec![String::new()]
         };
         for surfaces in surface_tries {
             for rc in &rc_tries {
             let mut attempt = settings.clone();
             attempt.nvenc_surfaces = surfaces;
             attempt.nvenc_rc = rc.clone();
+            if enc.contains("amf") && !rc.is_empty() {
+                attempt.amf_rc = rc.clone();
+            }
             let mut session = match encoder::start_encoder_gdigrab(ffmpeg, display, &attempt, enc) {
                 Ok(s) => s,
                 Err(err) => {

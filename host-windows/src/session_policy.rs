@@ -221,6 +221,26 @@ pub fn amf_async_depth() -> u32 {
     1
 }
 
+/// Sunshine ULL: AMF `vbr_latency`. Plain `cbr` can keep a 1-frame RC
+/// delay even with `-usage ultralowlatency` / `-latency 1`.
+pub fn amf_rc() -> &'static str {
+    "vbr_latency"
+}
+
+pub fn amf_rc_fallback() -> &'static str {
+    "cbr"
+}
+
+pub fn amf_rc_attempts() -> Vec<&'static str> {
+    let a = amf_rc();
+    let b = amf_rc_fallback();
+    if a == b {
+        vec![a]
+    } else {
+        vec![a, b]
+    }
+}
+
 /// QSV VDENC. Without `-low_power 1`, h264_qsv can keep a GPU frame in
 /// flight even with `async_depth=1` (Sunshine ULL uses VDENC).
 pub fn qsv_low_power() -> bool {
@@ -1010,6 +1030,9 @@ mod tests {
         assert_ne!(nvenc_rc(), "cbr");
         assert_eq!(nvenc_rc_attempts(), vec!["cbr_ld_hq", "cbr"]);
         assert_eq!(amf_async_depth(), 1);
+        assert_eq!(amf_rc(), "vbr_latency");
+        assert_ne!(amf_rc(), "cbr");
+        assert_eq!(amf_rc_attempts(), vec!["vbr_latency", "cbr"]);
         assert!(qsv_low_power());
         assert!(!qsv_rdo());
         assert!(!qsv_adaptive_i());
