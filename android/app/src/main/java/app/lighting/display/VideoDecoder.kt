@@ -261,13 +261,31 @@ class VideoDecoder {
 
     private fun drain(decoder: MediaCodec) {
         val info = MediaCodec.BufferInfo()
+        var latest = -1
         while (true) {
             val idx = decoder.dequeueOutputBuffer(info, 0)
-            if (idx >= 0) {
-                decoder.releaseOutputBuffer(idx, true)
-            } else {
+            if (idx == MediaCodec.INFO_TRY_AGAIN_LATER) {
                 break
             }
+            if (idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED ||
+                idx == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED
+            ) {
+                continue
+            }
+            if (idx < 0) break
+            if ((info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+                decoder.releaseOutputBuffer(idx, false)
+                continue
+            }
+            if (latest >= 0) {
+                decoder.releaseOutputBuffer(latest, false)
+            }
+            latest = idx
+        }
+        if (latest >= 0) {
+            // 0 ns = present immediately. `true` reuses the input PTS and
+            // some SoCs then wait a vsync as if this were a movie.
+            decoder.releaseOutputBuffer(latest, 0L)
         }
     }
 

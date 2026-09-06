@@ -376,9 +376,14 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "1".into(),
             "-b_ref_mode".into(),
             "0".into(),
-            // Spatial AQ improves detail at the same bitrate with negligible latency cost.
+            // Sunshine disables Spatial AQ for ULL: CUDA complexity scan can
+            // add a frame of host encode time.
             "-spatial-aq".into(),
-            "1".into(),
+            if lighting_host::session_policy::nvenc_spatial_aq() {
+                "1".into()
+            } else {
+                "0".into()
+            },
             "-temporal-aq".into(),
             "0".into(),
         ]
