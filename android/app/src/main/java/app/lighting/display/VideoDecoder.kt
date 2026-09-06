@@ -211,9 +211,15 @@ class VideoDecoder {
             } catch (_: Throwable) {
             }
         }
-        if (lowLatency && Build.VERSION.SDK_INT >= 30) {
+        if (lowLatency) {
             try {
-                format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+                if (Build.VERSION.SDK_INT >= 30) {
+                    format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+                }
+                format.setInteger("latency", 0)
+                format.setInteger("vendor.qti-ext-dec-low-latency.enable", 1)
+                format.setInteger("vendor.low-latency.enable", 1)
+                format.setInteger("vendor.mtk.vdec.low.latency", 1)
             } catch (_: Throwable) {
             }
         }

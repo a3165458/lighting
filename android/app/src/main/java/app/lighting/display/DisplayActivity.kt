@@ -20,7 +20,6 @@ import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.FrameLayout
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.nio.ByteBuffer
@@ -48,10 +47,12 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private lateinit var statusBar: PassThroughBar
     private lateinit var touchLayer: View
     private lateinit var reconnectLayer: View
-    private lateinit var cursorOverlay: ImageView
+    private lateinit var cursorOverlay: CursorOverlayView
     private var cursorBitmap: Bitmap? = null
     private var cursorHotX = 0
     private var cursorHotY = 0
+    @Volatile private var controlLit: LitSocket? = null
+    private var controlReader: Thread? = null
     private var worker: Thread? = null
     @Volatile private var running = false
     @Volatile private var sessionGen = 0
@@ -320,6 +321,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
             maxFps = refresh,
         )
         sock.write(LitProtocol.MSG_HELLO, 0, hello)
+        openControlPlane(host, port, gen)
         val cfgMsg = sock.read()
         if (cfgMsg.type != LitProtocol.MSG_CONFIG) {
             throw IllegalStateException("expected config, got ${cfgMsg.type}")
@@ -400,11 +402,14 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         decoder.release()
         audio?.release()
         audio = null
-        runOnUiThread {
-            if (!isFinishing && !isDestroyed) {
-                cursorOverlay.visibility = View.GONE
-            }
+        cursorOverlay.hidePointer()
+        try {
+            controlLit?.close()
+        } catch (_: Exception) {
         }
+        controlLit = null
+        controlReader?.interrupt()
+        controlReader = null
         try {
             lit?.close()
         } catch (_: Exception) {
@@ -487,46 +492,64 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         return bmp
     }
 
+    private fun openControlPlane(host: String, port: Int, gen: Int) {
+        try {
+            val sock = LitSocket(host, port, 800)
+            sock.write(LitProtocol.MSG_HELLO, 0, LitProtocol.controlHelloJson())
+            controlLit = sock
+            controlReader = thread(name = "lighting-cursor") {
+                try {
+                    while (running && sessionGen == gen) {
+                        val msg = sock.read()
+                        if (msg.type == LitProtocol.MSG_CURSOR) {
+                            applyCursor(parseCursor(msg.payload))
+                        }
+                    }
+                } catch (t: Throwable) {
+                    if (running && sessionGen == gen) {
+                        Log.w("Lighting", "control plane dropped", t)
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            Log.w("Lighting", "control plane unavailable; cursor stays on video socket", t)
+            controlLit = null
+        }
+    }
+
     private fun applyCursor(update: CursorUpdate?) {
         if (update == null) return
-        runOnUiThread {
-            if (isFinishing || isDestroyed) return@runOnUiThread
-            if (!update.visible) {
-                cursorOverlay.visibility = View.GONE
-                return@runOnUiThread
-            }
-            val shape = update.bgra
-            if (shape != null && update.width > 0 && update.height > 0) {
-                val bmp = Bitmap.createBitmap(update.width, update.height, Bitmap.Config.ARGB_8888)
-                bmp.copyPixelsFromBuffer(ByteBuffer.wrap(shape))
-                cursorBitmap?.recycle()
-                cursorBitmap = bmp
-                cursorHotX = update.hotspotX
-                cursorHotY = update.hotspotY
-                cursorOverlay.setImageBitmap(bmp)
-            }
-            val bmp: Bitmap = cursorBitmap ?: defaultCursorBitmap().also {
-                cursorBitmap = it
-                cursorHotX = 1
-                cursorHotY = 1
-                cursorOverlay.setImageBitmap(it)
-            }
-            val sw = surface.width.coerceAtLeast(1)
-            val sh = surface.height.coerceAtLeast(1)
-            val srcW = streamW.coerceAtLeast(1)
-            val srcH = streamH.coerceAtLeast(1)
-            val scaleX = sw.toFloat() / srcW
-            val scaleY = sh.toFloat() / srcH
-            val lp = (cursorOverlay.layoutParams as FrameLayout.LayoutParams).apply {
-                width = (bmp.width * scaleX).toInt().coerceAtLeast(1)
-                height = (bmp.height * scaleY).toInt().coerceAtLeast(1)
-                gravity = Gravity.TOP or Gravity.START
-            }
-            cursorOverlay.layoutParams = lp
-            cursorOverlay.translationX = surface.left + update.x * scaleX - cursorHotX * scaleX
-            cursorOverlay.translationY = surface.top + update.y * scaleY - cursorHotY * scaleY
-            cursorOverlay.visibility = View.VISIBLE
+        if (isFinishing || isDestroyed) return
+        if (!update.visible) {
+            cursorOverlay.hidePointer()
+            return
         }
+        val shape = update.bgra
+        if (shape != null && update.width > 0 && update.height > 0) {
+            val bmp = Bitmap.createBitmap(update.width, update.height, Bitmap.Config.ARGB_8888)
+            bmp.copyPixelsFromBuffer(ByteBuffer.wrap(shape))
+            cursorBitmap?.recycle()
+            cursorBitmap = bmp
+            cursorHotX = update.hotspotX
+            cursorHotY = update.hotspotY
+            cursorOverlay.setShape(bmp, cursorHotX, cursorHotY)
+        } else if (cursorBitmap == null) {
+            val bmp = defaultCursorBitmap()
+            cursorBitmap = bmp
+            cursorHotX = 1
+            cursorHotY = 1
+            cursorOverlay.setShape(bmp, cursorHotX, cursorHotY)
+        }
+        cursorOverlay.showAt(
+            update.x,
+            update.y,
+            streamW.coerceAtLeast(1),
+            streamH.coerceAtLeast(1),
+            surface.left,
+            surface.top,
+            surface.width.coerceAtLeast(1),
+            surface.height.coerceAtLeast(1),
+        )
     }
 
     private fun letterboxSurface(width: Int, height: Int) {

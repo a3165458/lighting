@@ -204,6 +204,10 @@ fn output_mux_args(encoder: &str) -> Vec<String> {
         "h264"
     };
     vec![
+        "-muxdelay".into(),
+        "0".into(),
+        "-muxpreload".into(),
+        "0".into(),
         "-bsf:v".into(),
         "dump_extra".into(),
         "-f".into(),
@@ -362,6 +366,8 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "-look_ahead".into(),
             "0".into(),
             "-async_depth".into(),
+            "1".into(),
+            "-low_delay_brc".into(),
             "1".into(),
         ]
     } else if encoder.contains("amf") {

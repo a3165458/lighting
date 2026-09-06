@@ -25,6 +25,7 @@ pub fn spawn_sampler(
     display: DisplayInfo,
     slot: Arc<Mutex<Option<Vec<u8>>>>,
     stop: Arc<AtomicBool>,
+    notify: Arc<tokio::sync::Notify>,
 ) {
     let _ = std::thread::Builder::new()
         .name("lighting-cursor".into())
@@ -35,7 +36,9 @@ pub fn spawn_sampler(
             let mut last_y = i16::MIN;
             while !stop.load(Ordering::Relaxed) {
                 let Some(sample) = sample(&display, &mut last_handle) else {
-                    std::thread::sleep(Duration::from_millis(8));
+                    std::thread::sleep(Duration::from_millis(
+                        lighting_host::session_policy::cursor_sample_interval_ms(),
+                    ));
                     continue;
                 };
                 let moved = sample.x != last_x || sample.y != last_y || sample.visible != last_vis;
@@ -47,8 +50,11 @@ pub fn spawn_sampler(
                     if let Ok(mut slot) = slot.lock() {
                         *slot = Some(encode_cursor(&sample));
                     }
+                    notify.notify_one();
                 }
-                std::thread::sleep(Duration::from_millis(8));
+                std::thread::sleep(Duration::from_millis(
+                    lighting_host::session_policy::cursor_sample_interval_ms(),
+                ));
             }
         });
 }

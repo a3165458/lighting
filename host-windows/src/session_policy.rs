@@ -115,9 +115,22 @@ pub fn encoded_queue_capacity() -> usize {
     2
 }
 
-/// ffmpeg `-thread_queue_size`. 8 captured frames is ~130 ms of glass delay.
+/// ffmpeg `-thread_queue_size`. One queued capture is ~16 ms at 60 Hz;
+/// two was still a visible glass delay next to a real monitor.
 pub fn capture_thread_queue_size() -> u32 {
-    2
+    1
+}
+
+/// GlideX / SuperDisplay / Moonlight: pointer and HID never share the video
+/// TCP stream. A second LIT1 connection on the same port with this Hello.role
+/// is the control plane. Video AUs cannot HOL-block the pointer.
+pub fn hello_is_control_plane(role: &str) -> bool {
+    role.eq_ignore_ascii_case("control")
+}
+
+/// How often the host samples the OS pointer for the tablet overlay.
+pub fn cursor_sample_interval_ms() -> u64 {
+    4
 }
 
 /// Never drop a P-frame from a live GOP: the decoder would show 1 fps until the
@@ -179,10 +192,10 @@ pub fn smooth_latency_ms(prev: u32, sample: u32) -> u32 {
     }
 }
 
-/// ~2-frame VBV so the encoder does not hold a 60–80 ms buffer of mouse motion.
+/// ~1-frame VBV so rate control does not hold a 30–80 ms buffer of motion.
 pub fn vbv_bufsize_kb(bitrate_kbps: u32, fps: u32) -> u32 {
     let fps = fps.max(24);
-    ((bitrate_kbps * 2) / fps).clamp(800, bitrate_kbps.max(800))
+    (bitrate_kbps / fps).clamp(400, bitrate_kbps.max(400))
 }
 
 /// I/O / pipe failures from a dropped tablet must not tear down the share.
@@ -473,13 +486,26 @@ mod tests {
     }
 
     #[test]
-    fn vbv_targets_about_four_frames() {
-        // 25 Mbps @ 60fps → ~1666 kb for 4 frames
-        assert_eq!(vbv_bufsize_kb(25_000, 60), 833);
-        assert!(vbv_bufsize_kb(8_000, 120) >= 800);
+    fn vbv_targets_about_one_frame() {
+        // 25 Mbps @ 60fps → ~416 kb for 1 frame
+        assert_eq!(vbv_bufsize_kb(25_000, 60), 416);
+        assert!(vbv_bufsize_kb(8_000, 120) >= 400);
         assert!(vbv_bufsize_kb(40_000, 30) <= 40_000);
-        // Old formula used bitrate/2; keep the new budget far below that.
         assert!(vbv_bufsize_kb(25_000, 60) < 25_000 / 2);
+    }
+
+    #[test]
+    fn control_hello_is_not_a_video_session() {
+        assert!(hello_is_control_plane("control"));
+        assert!(hello_is_control_plane("Control"));
+        assert!(!hello_is_control_plane(""));
+        assert!(!hello_is_control_plane("stream"));
+    }
+
+    #[test]
+    fn capture_queue_is_single_frame() {
+        assert_eq!(capture_thread_queue_size(), 1);
+        assert_eq!(cursor_sample_interval_ms(), 4);
     }
 
     #[test]
@@ -796,7 +822,7 @@ Current AC Power Setting Index: 0x00000003
     fn encoded_backpressure_does_not_tear_gop() {
         assert!(!drop_encoded_p_on_backpressure());
         assert_eq!(encoded_queue_capacity(), 2);
-        assert_eq!(capture_thread_queue_size(), 2);
+        assert_eq!(capture_thread_queue_size(), 1);
     }
 
     #[test]
