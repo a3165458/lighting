@@ -1,7 +1,14 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use std::io::Read;
 use std::sync::mpsc::{self, Receiver};
+use std::thread;
 use std::time::{Duration, Instant};
+
+/// After ffmpeg `-flush_packets 1` the pipe goes quiet until the next picture.
+/// Waiting for that next start code is one refresh of glass delay. Waiting 0
+/// on a short `Read` is worse: Windows pipes return partial AUs. Idle ~2 ms
+/// is longer than a write burst and far shorter than 1/60 s.
+const IDLE_FLUSH: Duration = Duration::from_millis(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedPacket {
@@ -188,11 +195,28 @@ fn starts_parameter_set_group(nal: &[u8], hevc: bool) -> bool {
 }
 
 pub fn pump_annexb(
-    mut stdout: impl Read,
+    mut stdout: impl Read + Send + 'static,
     tx: mpsc::SyncSender<EncodedPacket>,
     hevc: bool,
 ) -> Result<()> {
-    let mut buf = vec![0u8; 64 * 1024];
+    let (raw_tx, raw_rx) = mpsc::sync_channel::<Vec<u8>>(8);
+    let reader = thread::Builder::new()
+        .name("lighting-annexb-read".into())
+        .spawn(move || {
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                match stdout.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if raw_tx.send(buf[..n].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        })
+        .context("annexb reader thread")?;
+
     let mut acc = Vec::with_capacity(256 * 1024);
     let mut au = Vec::new();
     let mut au_has_vcl = false;
@@ -202,11 +226,26 @@ pub fn pump_annexb(
     let mut drop_until_key = false;
 
     loop {
-        let n = stdout.read(&mut buf)?;
-        if n == 0 {
-            if start_code_len(&acc) > 0 {
-                ingest_nal(
-                    std::mem::take(&mut acc),
+        match raw_rx.recv_timeout(IDLE_FLUSH) {
+            Ok(chunk) => {
+                acc.extend_from_slice(&chunk);
+                for nal in split_annexb(&mut acc) {
+                    ingest_nal(
+                        nal,
+                        hevc,
+                        &mut au,
+                        &mut au_has_vcl,
+                        &mut au_key,
+                        &mut sps_pps,
+                        &mut sent_cfg,
+                        &tx,
+                        &mut drop_until_key,
+                    );
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                finish_flushed_au(
+                    &mut acc,
                     hevc,
                     &mut au,
                     &mut au_has_vcl,
@@ -217,48 +256,33 @@ pub fn pump_annexb(
                     &mut drop_until_key,
                 );
             }
-            flush_au(
-                &mut au,
-                &mut au_has_vcl,
-                &mut au_key,
-                &sps_pps,
-                &tx,
-                &mut drop_until_key,
-            );
-            break;
-        }
-        acc.extend_from_slice(&buf[..n]);
-        for nal in split_annexb(&mut acc) {
-            ingest_nal(
-                nal,
-                hevc,
-                &mut au,
-                &mut au_has_vcl,
-                &mut au_key,
-                &mut sps_pps,
-                &mut sent_cfg,
-                &tx,
-                &mut drop_until_key,
-            );
-        }
-        // ffmpeg `-flush_packets 1` writes one AU then waits. split_annexb
-        // keeps the last NAL until the next start code, which would hold the
-        // picture until the following AU (~16 ms at 60 Hz). A short read
-        // means the writer flushed: the leftover NAL is complete.
-        if n < buf.len() {
-            finish_flushed_au(
-                &mut acc,
-                hevc,
-                &mut au,
-                &mut au_has_vcl,
-                &mut au_key,
-                &mut sps_pps,
-                &mut sent_cfg,
-                &tx,
-                &mut drop_until_key,
-            );
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if start_code_len(&acc) > 0 {
+                    ingest_nal(
+                        std::mem::take(&mut acc),
+                        hevc,
+                        &mut au,
+                        &mut au_has_vcl,
+                        &mut au_key,
+                        &mut sps_pps,
+                        &mut sent_cfg,
+                        &tx,
+                        &mut drop_until_key,
+                    );
+                }
+                flush_au(
+                    &mut au,
+                    &mut au_has_vcl,
+                    &mut au_key,
+                    &sps_pps,
+                    &tx,
+                    &mut drop_until_key,
+                );
+                break;
+            }
         }
     }
+    let _ = reader.join();
     Ok(())
 }
 
@@ -604,6 +628,65 @@ mod tests {
         let second = rx
             .recv_timeout(Duration::from_millis(400))
             .expect("IDR should emit on the flushed AU, not wait for the next frame");
+        assert!(second.keyframe);
+        unblock.store(true, Ordering::SeqCst);
+        pump.join().unwrap().unwrap();
+    }
+
+    /// Windows pipes often return 4–8 KB even mid-AU. Flushing on the first
+    /// short read truncated the slice. Idle-flush must wait until the writer
+    /// has gone quiet after the last byte.
+    #[test]
+    fn chunked_au_assembles_before_idle_flush() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use std::thread;
+        use std::time::Duration;
+
+        struct ChunkThenBlock {
+            data: Vec<u8>,
+            off: usize,
+            chunk: usize,
+            unblock: Arc<AtomicBool>,
+        }
+        impl std::io::Read for ChunkThenBlock {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.off >= self.data.len() {
+                    while !self.unblock.load(Ordering::SeqCst) {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    return Ok(0);
+                }
+                let n = self
+                    .chunk
+                    .min(self.data.len() - self.off)
+                    .min(buf.len());
+                buf[..n].copy_from_slice(&self.data[self.off..self.off + n]);
+                self.off += n;
+                Ok(n)
+            }
+        }
+
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&nal(0x67, &[0x42]));
+        stream.extend_from_slice(&nal(0x68, &[0xCE]));
+        stream.extend_from_slice(&nal(0x65, &[0xAA]));
+        let unblock = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::sync_channel(8);
+        let reader = ChunkThenBlock {
+            data: stream,
+            off: 0,
+            chunk: 8,
+            unblock: unblock.clone(),
+        };
+        let pump = thread::spawn(move || pump_annexb(reader, tx, false));
+        let first = rx
+            .recv_timeout(Duration::from_millis(400))
+            .expect("codec-config after the chunked AU goes idle");
+        assert!(first.codec_config);
+        let second = rx
+            .recv_timeout(Duration::from_millis(400))
+            .expect("IDR after the chunked AU goes idle");
         assert!(second.keyframe);
         unblock.store(true, Ordering::SeqCst);
         pump.join().unwrap().unwrap();

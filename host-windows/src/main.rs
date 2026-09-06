@@ -28,6 +28,13 @@ fn enable_dpi_awareness() {
     }
 }
 
+/// Sunshine / GlideX: 1 ms timer so 1 ms cursor / HID sleeps are not 15.6 ms.
+fn enable_timer_resolution() {
+    unsafe {
+        let _ = windows::Win32::Media::timeBeginPeriod(1);
+    }
+}
+
 fn log_writer() -> BoxMakeWriter {
     let path = std::env::current_exe()
         .ok()
@@ -60,6 +67,7 @@ fn wants_ipc_only() -> bool {
 
 fn main() -> eframe::Result<()> {
     enable_dpi_awareness();
+    enable_timer_resolution();
     init_tracing();
 
     let service = HostService::new();
