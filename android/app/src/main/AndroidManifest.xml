@@ -7,12 +7,17 @@
 
     <application
         android:allowBackup="true"
+        android:appCategory="game"
         android:icon="@android:drawable/ic_menu_view"
+        android:isGame="true"
         android:label="@string/app_name"
         android:roundIcon="@android:drawable/ic_menu_view"
         android:supportsRtl="true"
         android:theme="@style/Theme.Lighting"
         android:usesCleartextTraffic="true">
+        <meta-data
+            android:name="android.game_mode_config"
+            android:resource="@xml/game_mode_config" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

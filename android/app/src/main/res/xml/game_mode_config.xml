@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Moonlight: do not opt into Android Game Mode PERFORMANCE.
+     That path lets OEMs override the activity to 60 Hz and downscale
+     the SurfaceView — one extra refresh vs the laptop after we already
+     locked preferredDisplayModeId to peak. -->
+<game-mode-config xmlns:android="http://schemas.android.com/apk/res/android"
+    android:allowGameDownscaling="false"
+    android:allowGameFpsOverride="false"
+    android:supportsBatteryGameMode="false"
+    android:supportsPerformanceGameMode="false" />
