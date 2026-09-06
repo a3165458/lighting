@@ -240,6 +240,7 @@ mod tests {
         assert!(graphs.iter().any(|g| g.contains("hwupload")));
     }
 
+    #[test]
     fn amf_identity_stays_on_d3d11() {
         let graphs = dda_capture_graphs(
             Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x1002 }),
