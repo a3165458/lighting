@@ -235,6 +235,44 @@ fn take_latest_audio(
     last
 }
 
+fn bind_control(
+    ctrl: ClassifiedStream,
+    slot: Arc<Mutex<Option<Vec<u8>>>>,
+    notify: Arc<Notify>,
+    stop: Arc<AtomicBool>,
+    touch_tx: std::sync::mpsc::Sender<protocol::TouchEvent>,
+    controls: Arc<Controls>,
+) -> tokio::task::JoinHandle<()> {
+    tracing::info!("cursor+HID on dedicated control socket (GlideX-style)");
+    spawn_cursor_control(ctrl, slot, notify, stop, touch_tx, controls)
+}
+
+async fn attach_control_plane(
+    ctrl_rx: &mut mpsc::Receiver<ClassifiedStream>,
+    slot: Arc<Mutex<Option<Vec<u8>>>>,
+    notify: Arc<Notify>,
+    stop: Arc<AtomicBool>,
+    touch_tx: std::sync::mpsc::Sender<protocol::TouchEvent>,
+    controls: Arc<Controls>,
+    wait: bool,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if let Ok(ctrl) = ctrl_rx.try_recv() {
+        return Some(bind_control(ctrl, slot, notify, stop, touch_tx, controls));
+    }
+    if !wait {
+        return None;
+    }
+    match tokio::time::timeout(
+        Duration::from_millis(session_policy::control_attach_wait_ms()),
+        ctrl_rx.recv(),
+    )
+    .await
+    {
+        Ok(Some(ctrl)) => Some(bind_control(ctrl, slot, notify, stop, touch_tx, controls)),
+        _ => None,
+    }
+}
+
 fn add_wire_bytes(status: &Arc<Mutex<SessionStatus>>, bytes: usize) {
     if let Ok(mut s) = status.lock() {
         s.bytes_sent += bytes as u64;
@@ -888,6 +926,44 @@ async fn handle_client(
         draw_mouse: !hello.cursor_overlay,
     };
 
+    let cursor_slot: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+    let cursor_stop = std::sync::Arc::new(AtomicBool::new(false));
+    let cursor_notify = Arc::new(Notify::new());
+    if hello.cursor_overlay {
+        crate::cursor::spawn_sampler(
+            display.clone(),
+            cursor_slot.clone(),
+            cursor_stop.clone(),
+            cursor_notify.clone(),
+        );
+        tracing::info!("tablet cursor overlay on; video will not bake the OS pointer");
+    }
+    let display_for_input = display.clone();
+    let (touch_tx, touch_rx) = std::sync::mpsc::channel::<protocol::TouchEvent>();
+    let input_display = display_for_input.clone();
+    std::thread::Builder::new()
+        .name("lighting-input".into())
+        .spawn(move || {
+            while let Ok(ev) = touch_rx.recv() {
+                input::inject_touch(&input_display, ev);
+            }
+        })
+        .ok();
+    let touch_for_control = touch_tx.clone();
+    let mut control_task = attach_control_plane(
+        ctrl_rx,
+        cursor_slot.clone(),
+        cursor_notify.clone(),
+        cursor_stop.clone(),
+        touch_for_control.clone(),
+        controls.clone(),
+        hello.cursor_overlay,
+    )
+    .await;
+    let mut mux_cursor_on_video =
+        session_policy::mux_cursor_on_video(hello.cursor_overlay, control_task.is_some());
+
     let hevc = codec.eq_ignore_ascii_case("hevc") || codec.eq_ignore_ascii_case("h265");
     let (mut session, bootstrap, mut capture_kind) =
         start_live_encoder(&ffmpeg, &display, &settings, hevc)?;
@@ -912,39 +988,11 @@ async fn handle_client(
         }
     }
 
-    let cursor_slot: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>> =
-        std::sync::Arc::new(std::sync::Mutex::new(None));
-    let cursor_stop = std::sync::Arc::new(AtomicBool::new(false));
-    let cursor_notify = Arc::new(Notify::new());
-    if hello.cursor_overlay {
-        crate::cursor::spawn_sampler(
-            display.clone(),
-            cursor_slot.clone(),
-            cursor_stop.clone(),
-            cursor_notify.clone(),
-        );
-        tracing::info!("tablet cursor overlay on; video will not bake the OS pointer");
-    }
-    let mut control_task: Option<tokio::task::JoinHandle<()>> = None;
-    let mut mux_cursor_on_video = hello.cursor_overlay;
-
-    let display_for_input = display.clone();
-    let (touch_tx, touch_rx) = std::sync::mpsc::channel::<protocol::TouchEvent>();
-    let input_display = display_for_input.clone();
-    std::thread::Builder::new()
-        .name("lighting-input".into())
-        .spawn(move || {
-            while let Ok(ev) = touch_rx.recv() {
-                input::inject_touch(&input_display, ev);
-            }
-        })
-        .ok();
     let stop_read = stop.clone();
     let ping_sent: Arc<Mutex<Option<std::time::Instant>>> = Arc::new(Mutex::new(None));
     let ping_reply = ping_sent.clone();
     let status_read = status.clone();
     let controls_read = controls.clone();
-    let touch_for_control = touch_tx.clone();
     let reader_task = tokio::spawn(async move {
         loop {
             if stop_read.load(Ordering::Relaxed) {
@@ -990,17 +1038,18 @@ async fn handle_client(
     let mut last_ping = std::time::Instant::now();
     while !stop.load(Ordering::Relaxed) {
         if control_task.is_none() {
-            if let Ok(ctrl) = ctrl_rx.try_recv() {
-                control_task = Some(spawn_cursor_control(
-                    ctrl,
-                    cursor_slot.clone(),
-                    cursor_notify.clone(),
-                    cursor_stop.clone(),
-                    touch_for_control.clone(),
-                    controls.clone(),
-                ));
+            control_task = attach_control_plane(
+                ctrl_rx,
+                cursor_slot.clone(),
+                cursor_notify.clone(),
+                cursor_stop.clone(),
+                touch_for_control.clone(),
+                controls.clone(),
+                false,
+            )
+            .await;
+            if control_task.is_some() {
                 mux_cursor_on_video = false;
-                tracing::info!("cursor+HID on dedicated control socket (GlideX-style)");
             }
         }
         if mux_cursor_on_video {

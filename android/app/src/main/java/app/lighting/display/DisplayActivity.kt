@@ -331,7 +331,11 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
             maxFps = refresh,
         )
         sock.write(LitProtocol.MSG_HELLO, 0, hello)
-        openControlPlane(host, port, gen)
+        // Open the GlideX-style control socket immediately so HID is live
+        // before the host finishes starting ffmpeg.
+        thread(name = "lighting-control-open") {
+            openControlPlane(host, port, gen)
+        }
         val cfgMsg = sock.read()
         if (cfgMsg.type != LitProtocol.MSG_CONFIG) {
             throw IllegalStateException("expected config, got ${cfgMsg.type}")

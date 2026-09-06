@@ -133,6 +133,19 @@ pub fn cursor_sample_interval_ms() -> u64 {
     4
 }
 
+/// Wait this long for the tablet's second LIT1 socket before starting ffmpeg.
+/// The Android client opens it right after Hello, so this is usually already
+/// queued. Cursor/HID must not sit behind encoder startup.
+pub fn control_attach_wait_ms() -> u64 {
+    400
+}
+
+/// Bake the OS pointer into the video TCP stream only when the tablet asked
+/// for an overlay but the control socket never showed up (old APK).
+pub fn mux_cursor_on_video(cursor_overlay: bool, control_attached: bool) -> bool {
+    cursor_overlay && !control_attached
+}
+
 /// TCP send buffer. ~2 encoded frames at 25 Mbps / 60 fps (~52 KB each).
 /// 256 KB used to hide ~80 ms of bufferbloat on USB adb reverse.
 pub fn tcp_send_buffer_bytes() -> usize {
@@ -560,6 +573,10 @@ mod tests {
         assert_eq!(encode_fps(60, 120, 60, false), 45);
         assert_eq!(encode_fps(30, 60, 60, true), 60);
         assert_eq!(audio_packets_per_video_frame(), 1);
+        assert_eq!(control_attach_wait_ms(), 400);
+        assert!(mux_cursor_on_video(true, false));
+        assert!(!mux_cursor_on_video(true, true));
+        assert!(!mux_cursor_on_video(false, false));
     }
 
     #[test]

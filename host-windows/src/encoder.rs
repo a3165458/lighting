@@ -204,6 +204,8 @@ fn build_args(
         lighting_host::session_policy::capture_thread_queue_size().to_string(),
         "-avioflags".into(),
         "direct".into(),
+        "-fps_mode".into(),
+        "passthrough".into(),
     ];
 
     args.extend(capture.device_args());
@@ -267,6 +269,8 @@ pub fn start_encoder_gdigrab(
         lighting_host::session_policy::capture_thread_queue_size().to_string(),
         "-avioflags".into(),
         "direct".into(),
+        "-fps_mode".into(),
+        "passthrough".into(),
     ];
     args.extend(lighting_host::capture_graph::gdigrab_input_args(
         display.x,
