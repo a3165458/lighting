@@ -358,17 +358,19 @@ fn copy_vui_force_restriction(src: &mut Bits<'_>, dst: &mut Writer) -> Option<()
         src.u(1)?;
     }
     let nal_hrd = src.u(1)?;
-    dst.u(1, nal_hrd);
+    // NVENC CBR writes HRD with cbr_flag=1. Android then waits on CPB
+    // fullness even after timing_info is gone. Drop both HRD flags.
+    dst.u(1, 0);
     if nal_hrd == 1 {
-        copy_hrd(src, dst)?;
+        skip_hrd(src)?;
     }
     let vcl_hrd = src.u(1)?;
-    dst.u(1, vcl_hrd);
+    dst.u(1, 0);
     if vcl_hrd == 1 {
-        copy_hrd(src, dst)?;
+        skip_hrd(src)?;
     }
     if nal_hrd == 1 || vcl_hrd == 1 {
-        dst.copy_u(src, 1)?;
+        src.u(1)?;
     }
     dst.copy_u(src, 1)?;
 
@@ -387,22 +389,6 @@ fn copy_vui_force_restriction(src: &mut Bits<'_>, dst: &mut Writer) -> Option<()
     } else {
         write_restriction_block(dst);
     }
-    Some(())
-}
-
-fn copy_hrd(src: &mut Bits<'_>, dst: &mut Writer) -> Option<()> {
-    let cpb_cnt = dst.copy_ue(src)?;
-    dst.copy_u(src, 4)?;
-    dst.copy_u(src, 4)?;
-    for _ in 0..=cpb_cnt {
-        dst.copy_ue(src)?;
-        dst.copy_ue(src)?;
-        dst.copy_u(src, 1)?;
-    }
-    dst.copy_u(src, 5)?;
-    dst.copy_u(src, 5)?;
-    dst.copy_u(src, 5)?;
-    dst.copy_u(src, 5)?;
     Some(())
 }
 
@@ -725,6 +711,64 @@ mod tests {
     #[test]
     fn drops_movie_timing_so_decoder_does_not_pace() {
         let src = baseline_sps_movie_timing(16);
+        assert_eq!(parse_dpb(&src), Some((16, Some((0, 1)))));
+        let out = rewrite_low_latency(src.clone());
+        assert_ne!(out, src);
+        assert_eq!(parse_dpb(&out), Some((1, Some((0, 1)))));
+        assert_eq!(out, rewrite_low_latency(baseline_sps(16, false)));
+        assert_eq!(rewrite_low_latency(out.clone()), out);
+    }
+
+    fn baseline_sps_cbr_hrd(refs: u32) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.u(8, 66);
+        w.u(8, 0);
+        w.u(8, 42);
+        w.ue(0);
+        w.ue(0);
+        w.ue(2);
+        w.ue(refs);
+        w.u(1, 0);
+        w.ue(119);
+        w.ue(67);
+        w.u(1, 1);
+        w.u(1, 1);
+        w.u(1, 1);
+        w.ue(0);
+        w.ue(0);
+        w.ue(0);
+        w.ue(4);
+        w.u(1, 1);
+        w.u(1, 0);
+        w.u(1, 0);
+        w.u(1, 0);
+        w.u(1, 0);
+        w.u(1, 1);
+        w.u(32, 1);
+        w.u(32, 60);
+        w.u(1, 1);
+        w.u(1, 1); // nal_hrd
+        w.ue(0); // cpb_cnt_minus1
+        w.u(4, 4);
+        w.u(4, 4);
+        w.ue(1000);
+        w.ue(1000);
+        w.u(1, 1); // cbr_flag
+        w.u(5, 23);
+        w.u(5, 23);
+        w.u(5, 23);
+        w.u(5, 24);
+        w.u(1, 0); // low_delay_hrd
+        w.u(1, 0); // vcl_hrd
+        w.u(1, 0); // pic_struct
+        w.u(1, 1);
+        write_restriction_block(&mut w);
+        nal_from_rbsp(0x67, &w.finish())
+    }
+
+    #[test]
+    fn drops_cbr_hrd_so_decoder_does_not_wait_cpb() {
+        let src = baseline_sps_cbr_hrd(16);
         assert_eq!(parse_dpb(&src), Some((16, Some((0, 1)))));
         let out = rewrite_low_latency(src.clone());
         assert_ne!(out, src);
