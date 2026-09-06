@@ -19,6 +19,7 @@ class VideoDecoder {
     private val skipUntilKey = AtomicBoolean(false)
     private val queue = ArrayBlockingQueue<Packet>(1)
     private var worker: Thread? = null
+    private var fakePtsUs = 0L
     @Volatile var activeName: String = ""
         private set
 
@@ -60,6 +61,7 @@ class VideoDecoder {
                     configured = true
                     activeName = decoder.name
                     skipUntilKey.set(false)
+                    fakePtsUs = 0L
                     running.set(true)
                     worker = Thread({ loop() }, "lighting-decode").apply { start() }
                     Log.i(TAG, "decoder ok: ${decoder.name} ${w}x$h $mime soc=${caps.soc} gsi=${caps.gsi}")
@@ -238,7 +240,7 @@ class VideoDecoder {
         decoder: MediaCodec,
         data: ByteArray,
         flags: Int,
-        ptsUs: Long,
+        @Suppress("UNUSED_PARAMETER") ptsUs: Long,
         waitUs: Long,
     ): Boolean {
         val index = decoder.dequeueInputBuffer(waitUs)
@@ -250,8 +252,10 @@ class VideoDecoder {
         }
         buf.clear()
         buf.put(data)
-        val ts = if (ptsUs > 0) ptsUs else System.nanoTime() / 1000
-        decoder.queueInputBuffer(index, 0, data.size, ts, flags)
+        // Moonlight/GlideX: never pace MediaCodec with the host wall clock.
+        // Host elapsed-µs as PTS made some SoCs hold frames like a movie.
+        fakePtsUs += 1
+        decoder.queueInputBuffer(index, 0, data.size, fakePtsUs, flags)
         return true
     }
 
@@ -260,7 +264,7 @@ class VideoDecoder {
         while (true) {
             val idx = decoder.dequeueOutputBuffer(info, 0)
             if (idx >= 0) {
-                decoder.releaseOutputBuffer(idx, 0L)
+                decoder.releaseOutputBuffer(idx, true)
             } else {
                 break
             }

@@ -6,25 +6,21 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.util.AttributeSet
 import android.view.View
+import android.widget.FrameLayout
 
 /**
- * GlideX-style local pointer: paint on a hardware layer so a move is one
- * invalidate, not a layout pass. Position is in encoded-frame pixels.
+ * GlideX-style local pointer: a wrap_content hardware layer moved with
+ * translationX/Y so the compositor updates the cursor without redrawing
+ * a full-screen overlay (and without blending over the video Surface).
  */
 class CursorOverlayView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
 ) : View(context, attrs) {
-    private val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+    private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
     private var bmp: Bitmap? = null
     private var hotX = 0f
     private var hotY = 0f
-    private var posX = 0f
-    private var posY = 0f
-    private var scaleX = 1f
-    private var scaleY = 1f
-    private var originX = 0f
-    private var originY = 0f
     @Volatile private var showing = false
 
     init {
@@ -36,16 +32,25 @@ class CursorOverlayView @JvmOverloads constructor(
 
     fun hidePointer() {
         showing = false
-        post {
-            visibility = GONE
-            invalidate()
-        }
+        visibility = GONE
+        translationX = 0f
+        translationY = 0f
     }
 
     fun setShape(bitmap: Bitmap, hotspotX: Int, hotspotY: Int) {
         bmp = bitmap
         hotX = hotspotX.toFloat()
         hotY = hotspotY.toFloat()
+        val lp = layoutParams ?: FrameLayout.LayoutParams(
+            bitmap.width.coerceAtLeast(1),
+            bitmap.height.coerceAtLeast(1),
+        )
+        if (lp.width != bitmap.width || lp.height != bitmap.height) {
+            lp.width = bitmap.width.coerceAtLeast(1)
+            lp.height = bitmap.height.coerceAtLeast(1)
+            layoutParams = lp
+        }
+        invalidate()
     }
 
     fun showAt(
@@ -58,32 +63,30 @@ class CursorOverlayView @JvmOverloads constructor(
         surfaceW: Int,
         surfaceH: Int,
     ) {
+        val b = bmp ?: return
         val sw = srcW.coerceAtLeast(1)
         val sh = srcH.coerceAtLeast(1)
-        scaleX = surfaceW.coerceAtLeast(1).toFloat() / sw
-        scaleY = surfaceH.coerceAtLeast(1).toFloat() / sh
-        originX = surfaceLeft.toFloat()
-        originY = surfaceTop.toFloat()
-        posX = x.toFloat()
-        posY = y.toFloat()
+        val scaleX = surfaceW.coerceAtLeast(1).toFloat() / sw
+        val scaleY = surfaceH.coerceAtLeast(1).toFloat() / sh
+        val w = (b.width * scaleX).toInt().coerceAtLeast(1)
+        val h = (b.height * scaleY).toInt().coerceAtLeast(1)
+        val lp = layoutParams
+        if (lp != null && (lp.width != w || lp.height != h)) {
+            lp.width = w
+            lp.height = h
+            layoutParams = lp
+        }
+        translationX = surfaceLeft + x * scaleX - hotX * scaleX
+        translationY = surfaceTop + y * scaleY - hotY * scaleY
         showing = true
         if (visibility != VISIBLE) {
-            post {
-                if (visibility != VISIBLE) visibility = VISIBLE
-                invalidate()
-            }
-        } else {
-            postInvalidateOnAnimation()
+            visibility = VISIBLE
         }
     }
 
     override fun onDraw(canvas: Canvas) {
         if (!showing) return
         val b = bmp ?: return
-        val left = originX + posX * scaleX - hotX * scaleX
-        val top = originY + posY * scaleY - hotY * scaleY
-        val right = left + b.width * scaleX
-        val bottom = top + b.height * scaleY
-        canvas.drawBitmap(b, null, android.graphics.RectF(left, top, right, bottom), paint)
+        canvas.drawBitmap(b, null, android.graphics.Rect(0, 0, width, height), paint)
     }
 }

@@ -945,6 +945,12 @@ async fn handle_client(
     std::thread::Builder::new()
         .name("lighting-input".into())
         .spawn(move || {
+            unsafe {
+                let _ = windows::Win32::System::Threading::SetThreadPriority(
+                    windows::Win32::System::Threading::GetCurrentThread(),
+                    windows::Win32::System::Threading::THREAD_PRIORITY_HIGHEST,
+                );
+            }
             while let Ok(ev) = touch_rx.recv() {
                 input::inject_touch(&input_display, ev);
             }
