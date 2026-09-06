@@ -3,30 +3,38 @@ package app.lighting.display
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.PixelFormat
+import android.graphics.PorterDuff
+import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
 import android.util.AttributeSet
-import android.view.View
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.widget.FrameLayout
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * GlideX-style local pointer: a wrap_content hardware layer moved with
- * translationX/Y. Host samples at 1 ms; applying every packet via View.post
- * backs up the UI queue. Take the latest pose and apply it at the front of
- * the UI queue so a mid-frame packet can still make this vsync (GlideX).
+ * GlideX-style local pointer as its own SurfaceView (HWC overlay plane).
+ *
+ * A regular View on top of the decoder SurfaceView forces SurfaceFlinger to
+ * GPU-compose every video frame while the pointer is visible. Keep pose
+ * updates as translationX/Y (no vsync wait) and only lockCanvas when the
+ * shape changes.
  */
 class CursorOverlayView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
-) : View(context, attrs) {
+) : SurfaceView(context, attrs), SurfaceHolder.Callback {
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
     private var bmp: Bitmap? = null
     private var hotX = 0f
     private var hotY = 0f
     @Volatile private var showing = false
+    @Volatile private var surfaceReady = false
 
     private data class Pose(
         val visible: Boolean,
@@ -58,10 +66,27 @@ class CursorOverlayView @JvmOverloads constructor(
     }
 
     init {
-        setLayerType(LAYER_TYPE_HARDWARE, null)
+        // Must run before attach: later calls do not move the overlay plane.
+        setZOrderMediaOverlay(true)
+        holder.setFormat(PixelFormat.TRANSLUCENT)
+        holder.addCallback(this)
         isClickable = false
         isFocusable = false
         visibility = GONE
+    }
+
+    override fun surfaceCreated(holder: SurfaceHolder) {
+        surfaceReady = true
+        paintShape()
+    }
+
+    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+        surfaceReady = true
+        paintShape()
+    }
+
+    override fun surfaceDestroyed(holder: SurfaceHolder) {
+        surfaceReady = false
     }
 
     fun hidePointer() {
@@ -197,14 +222,27 @@ class CursorOverlayView @JvmOverloads constructor(
             visibility = VISIBLE
         }
         if (shapeChanged) {
-            invalidate()
+            paintShape()
         }
     }
 
-    override fun onDraw(canvas: Canvas) {
-        if (!showing) return
+    private fun paintShape() {
+        if (!showing || !surfaceReady) return
         val b = bmp ?: return
         if (b.isRecycled) return
-        canvas.drawBitmap(b, null, android.graphics.Rect(0, 0, width, height), paint)
+        val canvas: Canvas = try {
+            holder.lockCanvas() ?: return
+        } catch (_: Throwable) {
+            return
+        }
+        try {
+            canvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+            canvas.drawBitmap(b, null, Rect(0, 0, canvas.width, canvas.height), paint)
+        } finally {
+            try {
+                holder.unlockCanvasAndPost(canvas)
+            } catch (_: Throwable) {
+            }
+        }
     }
 }
