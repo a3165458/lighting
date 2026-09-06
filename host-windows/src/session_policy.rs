@@ -222,6 +222,14 @@ pub fn qsv_rdo() -> bool {
     false
 }
 
+/// QSV adaptive I-frame placement. MSDK default is on (`-adaptive_i -1`);
+/// that is a scene-cut scan on every picture, same class of extra GPU time
+/// as RDO. Sunshine ULL sets AdaptiveI/AdaptiveB off. `-bf 0` already
+/// drops B frames; `-adaptive_b 0` stops the encoder looking for them.
+pub fn qsv_adaptive_i() -> bool {
+    false
+}
+
 /// Encoder DPB / `num_ref_frames`. NVENC default follows the level (4–16);
 /// Android then holds decoded pictures. Moonlight decoder-errata: 1.
 pub fn encoder_refs() -> u32 {
@@ -826,6 +834,7 @@ mod tests {
         assert_eq!(amf_async_depth(), 1);
         assert!(qsv_low_power());
         assert!(!qsv_rdo());
+        assert!(!qsv_adaptive_i());
         assert_eq!(encoder_refs(), 1);
         assert!(x265_params(120).contains("rc-lookahead=0"));
         assert!(x265_params(120).contains("bframes=0"));

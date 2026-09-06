@@ -495,6 +495,14 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             } else {
                 "0".into()
             },
+            "-adaptive_i".into(),
+            if lighting_host::session_policy::qsv_adaptive_i() {
+                "1".into()
+            } else {
+                "0".into()
+            },
+            "-adaptive_b".into(),
+            "0".into(),
         ]
     } else if encoder.contains("amf") {
         vec![
