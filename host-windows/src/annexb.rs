@@ -6,9 +6,10 @@ use std::time::{Duration, Instant};
 
 /// After ffmpeg `-flush_packets 1` the pipe goes quiet until the next picture.
 /// Waiting for that next start code is one refresh of glass delay. Waiting 0
-/// on a short `Read` is worse: Windows pipes return partial AUs. Idle ~2 ms
-/// is longer than a write burst and far shorter than 1/60 s.
-const IDLE_FLUSH: Duration = Duration::from_millis(2);
+/// on a short `Read` is worse: Windows pipes return partial AUs. Idle 1 ms
+/// (process `timeBeginPeriod(1)`) is longer than a local pipe burst and far
+/// shorter than 1/60 s.
+const IDLE_FLUSH: Duration = Duration::from_millis(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedPacket {
