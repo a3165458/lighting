@@ -86,11 +86,11 @@ pub fn pick_encoder(codec: &str) -> &'static str {
 }
 
 pub fn encoder_fallback_chain(codec: &str) -> Vec<&'static str> {
-    if codec == "hevc" {
-        vec!["hevc_nvenc", "hevc_qsv", "hevc_amf", "libx265"]
-    } else {
-        vec!["h264_nvenc", "h264_qsv", "h264_amf", "libx264"]
-    }
+    encoder_fallback_chain_for(codec, 0)
+}
+
+pub fn encoder_fallback_chain_for(codec: &str, vendor_id: u32) -> Vec<&'static str> {
+    lighting_host::session_policy::encoder_fallback_chain(codec, vendor_id)
 }
 
 pub fn start_encoder(
@@ -130,7 +130,7 @@ pub fn start_encoder(
 
     // Keep at most ~2 encoded AUs queued; annexb drops P-frames when full
     // so USB backpressure cannot turn into hundreds of ms of glass latency.
-    let (tx, rx) = mpsc::sync_channel(2);
+    let (tx, rx) = mpsc::sync_channel(lighting_host::session_policy::encoded_queue_capacity());
     let hevc = is_hevc(&settings.codec);
     thread::spawn(move || {
         if let Err(err) = annexb::pump_annexb(stdout, tx, hevc) {
@@ -179,7 +179,7 @@ fn build_args(
         "-analyzeduration".into(),
         "0".into(),
         "-thread_queue_size".into(),
-        "2".into(),
+        "8".into(),
     ];
 
     args.extend(capture.device_args());
@@ -236,7 +236,7 @@ pub fn start_encoder_gdigrab(
         "-analyzeduration".into(),
         "0".into(),
         "-thread_queue_size".into(),
-        "2".into(),
+        "8".into(),
     ];
     args.extend(lighting_host::capture_graph::gdigrab_input_args(
         display.x,
@@ -277,7 +277,7 @@ pub fn start_encoder_gdigrab(
             tracing::info!("ffmpeg stderr:\n{}", tail(&buf, 16));
         }
     });
-    let (tx, rx) = mpsc::sync_channel(2);
+    let (tx, rx) = mpsc::sync_channel(lighting_host::session_policy::encoded_queue_capacity());
     let hevc = is_hevc(&settings.codec);
     thread::spawn(move || {
         if let Err(err) = annexb::pump_annexb(stdout, tx, hevc) {

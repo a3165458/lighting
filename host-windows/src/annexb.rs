@@ -318,11 +318,15 @@ fn flush_au(
             *drop_until_key = false;
         }
         Err(mpsc::TrySendError::Full(pkt)) => {
-            if pkt.keyframe {
+            // Block rather than drop a P-frame. Skipping encoded P-frames
+            // forces the tablet to wait for the next IDR (~1s) and looks
+            // like "not even 30 Hz" on USB jitter, which is not a bandwidth
+            // limit. ffmpeg then skips *input* frames instead of tearing the GOP.
+            if crate::session_policy::drop_encoded_p_on_backpressure() && !pkt.keyframe {
+                *drop_until_key = true;
+            } else {
                 let _ = tx.send(pkt);
                 *drop_until_key = false;
-            } else {
-                *drop_until_key = true;
             }
         }
         Err(mpsc::TrySendError::Disconnected(_)) => {}

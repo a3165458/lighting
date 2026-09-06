@@ -104,6 +104,66 @@ pub fn jitter_backoff_ms(base_ms: u64, jitter_ms: u64, max_jitter_ms: u64) -> u6
     base_ms.saturating_add(jitter_ms.min(max_jitter_ms))
 }
 
+/// USB 2.0 Hi-Speed practically carries ~25–35 MB/s. 25 Mbps video is ~3 MB/s,
+/// so "not even 30 Hz" is not a USB bandwidth ceiling.
+pub fn usb2_can_carry_bitrate_kbps(bitrate_kbps: u32) -> bool {
+    bitrate_kbps <= 80_000
+}
+
+/// Encoded AU queue. Deep enough to absorb an IDR spike without tearing a GOP.
+pub fn encoded_queue_capacity() -> usize {
+    8
+}
+
+/// Never drop a P-frame from a live GOP: the decoder would show 1 fps until the
+/// next IDR. Block the encoder instead so ffmpeg skips *input* frames.
+pub fn drop_encoded_p_on_backpressure() -> bool {
+    false
+}
+
+/// Prefer the encoder that lives on the same GPU as the duplicated output.
+/// Cross-adapter DDA→NVENC on a laptop is a common 15 fps path.
+pub fn encoder_fallback_chain(codec: &str, vendor_id: u32) -> Vec<&'static str> {
+    let hevc = codec.eq_ignore_ascii_case("hevc") || codec.eq_ignore_ascii_case("h265");
+    match vendor_id {
+        0x8086 => {
+            if hevc {
+                vec!["hevc_qsv", "hevc_nvenc", "hevc_amf", "libx265"]
+            } else {
+                vec!["h264_qsv", "h264_nvenc", "h264_amf", "libx264"]
+            }
+        }
+        0x1002 => {
+            if hevc {
+                vec!["hevc_amf", "hevc_nvenc", "hevc_qsv", "libx265"]
+            } else {
+                vec!["h264_amf", "h264_nvenc", "h264_qsv", "libx264"]
+            }
+        }
+        _ => {
+            if hevc {
+                vec!["hevc_nvenc", "hevc_qsv", "hevc_amf", "libx265"]
+            } else {
+                vec!["h264_nvenc", "h264_qsv", "h264_amf", "libx264"]
+            }
+        }
+    }
+}
+
+/// Pin MttVDD to a discrete GPU when we know its DXGI name.
+pub fn pick_vdd_gpu_name(adapters: &[(u32, String)]) -> String {
+    for want in [0x10DEu32, 0x1002] {
+        if let Some((_, name)) = adapters.iter().find(|(id, n)| *id == want && !n.is_empty()) {
+            return name.clone();
+        }
+    }
+    adapters
+        .iter()
+        .find(|(_, n)| !n.is_empty())
+        .map(|(_, n)| n.clone())
+        .unwrap_or_else(|| "Best GPU (Auto)".into())
+}
+
 /// Smooth heartbeat round-trips so the latency tile does not flicker on a single
 /// slow reply. `prev` 0 means "no sample yet", so the first reading is taken raw.
 pub fn smooth_latency_ms(prev: u32, sample: u32) -> u32 {
@@ -718,5 +778,36 @@ Current AC Power Setting Index: 0x00000003
 电源设置 GUID: 7648efa3-dd9c-4e3e-b566-50f929386280
 "#;
         assert_eq!(parse_lid_current_indices(text), Some((0, 1)));
+    }
+
+    #[test]
+    fn usb2_holds_game_bitrate() {
+        assert!(usb2_can_carry_bitrate_kbps(25_000));
+        assert!(usb2_can_carry_bitrate_kbps(40_000));
+        assert!(!usb2_can_carry_bitrate_kbps(120_000));
+    }
+
+    #[test]
+    fn encoded_backpressure_does_not_tear_gop() {
+        assert!(!drop_encoded_p_on_backpressure());
+        assert!(encoded_queue_capacity() >= 4);
+    }
+
+    #[test]
+    fn encoder_follows_capture_gpu() {
+        assert_eq!(encoder_fallback_chain("avc", 0x8086)[0], "h264_qsv");
+        assert_eq!(encoder_fallback_chain("avc", 0x10DE)[0], "h264_nvenc");
+        assert_eq!(encoder_fallback_chain("avc", 0x1002)[0], "h264_amf");
+        assert_eq!(encoder_fallback_chain("hevc", 0x8086)[0], "hevc_qsv");
+    }
+
+    #[test]
+    fn vdd_prefers_nvidia_name() {
+        let adapters = [
+            (0x8086, "Intel(R) UHD Graphics".into()),
+            (0x10DE, "NVIDIA GeForce RTX 4060 Laptop GPU".into()),
+        ];
+        assert!(pick_vdd_gpu_name(&adapters).contains("NVIDIA"));
+        assert_eq!(pick_vdd_gpu_name(&[]), "Best GPU (Auto)");
     }
 }

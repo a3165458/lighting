@@ -614,10 +614,31 @@ async fn handle_client(
         match tokio::task::spawn_blocking(displays::apply_tablet_only_output).await {
             Ok(Ok(())) => {
                 tablet_only.store(true, Ordering::SeqCst);
+                // Win+P /external can reset the virtual mode to 30 Hz. Put 60+
+                // back and refresh DXGI *after* the topology change.
+                let (tw, th) = (hello.screen_width, hello.screen_height);
+                let want_fps = hello.max_fps.max(req.fps).min(120);
+                let preserve_for_hz = preserve.clone();
+                if tw > 0 && th > 0 {
+                    match tokio::task::spawn_blocking(move || {
+                        displays::configure_virtual_for_tablet(
+                            tw,
+                            th,
+                            want_fps,
+                            preserve_for_hz.as_ref(),
+                        )
+                    })
+                    .await
+                    {
+                        Ok(Ok(updated)) => display = updated,
+                        Ok(Err(err)) => tracing::warn!("reapply virtual Hz after tablet-only: {err:#}"),
+                        Err(err) => tracing::warn!("reapply virtual Hz join: {err:#}"),
+                    }
+                }
                 let list = displays::list_displays()?;
-                display = list.into_iter()
-                    .find(|d| d.name == display.name)
-                    .context("切换仅平板后原扩展屏已断开")?;
+                if let Some(updated) = list.into_iter().find(|d| d.name == display.name) {
+                    display = updated;
+                }
                 set_status(
                     &status,
                     "仅平板",
@@ -737,6 +758,14 @@ async fn handle_client(
     let (mut session, bootstrap, mut capture_kind) =
         start_live_encoder(&ffmpeg, &display, &settings, hevc)?;
     let mut dda_retries = 0u8;
+    if capture_kind == CaptureKind::Gdi {
+        tracing::warn!("using gdigrab; games will look like 10–20 fps");
+        set_status(
+            &status,
+            "编码",
+            "当前是 GDI 抓屏，游戏会明显卡。若本机有独显，请把虚拟屏绑到独显后重试。",
+        );
+    }
     let t0 = std::time::Instant::now();
     let audio_stop = Arc::new(AtomicBool::new(false));
     let (audio_tx, audio_rx) = std::sync::mpsc::sync_channel::<crate::audio::AudioPacket>(4);
@@ -978,7 +1007,8 @@ fn start_live_encoder(
         }
     }
     let mut last_err: Option<anyhow::Error> = None;
-    for enc in encoder::encoder_fallback_chain(&settings.codec) {
+    let vendor = display.dxgi.map(|d| d.vendor_id).unwrap_or(0);
+    for enc in encoder::encoder_fallback_chain_for(&settings.codec, vendor) {
         let graphs = lighting_host::capture_graph::dda_capture_graphs_for(
             display.dxgi,
             settings.fps,
@@ -1023,7 +1053,8 @@ fn restart_encoder_with_bootstrap(
     hevc: bool,
 ) -> Result<(encoder::EncoderSession, Vec<EncodedPacket>)> {
     let mut last_err: Option<anyhow::Error> = None;
-    for enc in encoder::encoder_fallback_chain(&settings.codec) {
+    let vendor = display.dxgi.map(|d| d.vendor_id).unwrap_or(0);
+    for enc in encoder::encoder_fallback_chain_for(&settings.codec, vendor) {
         let session = match encoder::start_encoder_gdigrab(ffmpeg, display, settings, enc) {
             Ok(s) => s,
             Err(err) => {

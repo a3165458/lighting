@@ -18,7 +18,7 @@ class VideoDecoder {
     private var mime: String = MediaFormat.MIMETYPE_VIDEO_AVC
     private val running = AtomicBoolean(false)
     private val skipUntilKey = AtomicBoolean(false)
-    private val queue = ArrayBlockingQueue<Packet>(1)
+    private val queue = ArrayBlockingQueue<Packet>(8)
     private var worker: Thread? = null
     @Volatile var activeName: String = ""
         private set
@@ -77,14 +77,17 @@ class VideoDecoder {
         if (!configured || !running.get() || data.isEmpty()) return
         if (!codecConfig && skipUntilKey.get() && !keyframe) return
         val pkt = Packet(data, codecConfig, keyframe, ptsUs)
-        if (queue.offer(pkt)) {
-            if (keyframe) skipUntilKey.set(false)
+        if (codecConfig || keyframe) {
+            queue.clear()
+            queue.offer(pkt)
+            skipUntilKey.set(false)
             return
         }
-        skipUntilKey.set(true)
-        if (keyframe) {
-            queue.clear()
-            if (queue.offer(pkt)) skipUntilKey.set(false)
+        try {
+            if (!queue.offer(pkt, 12, TimeUnit.MILLISECONDS)) {
+                Log.w(TAG, "decoder queue full; keeping GOP (not skipping to IDR)")
+            }
+        } catch (_: InterruptedException) {
         }
     }
 
@@ -117,9 +120,13 @@ class VideoDecoder {
             val flags = if (pkt.keyframe) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
             val wait = if (pkt.keyframe) 4_000L else 0L
             if (!enqueue(decoder, pkt.data, flags, pkt.ptsUs, wait)) {
-                skipUntilKey.set(true)
-                skips++
-                continue
+                drain(decoder)
+                val retry = if (pkt.keyframe) 8_000L else 2_000L
+                if (!enqueue(decoder, pkt.data, flags, pkt.ptsUs, retry)) {
+                    if (pkt.keyframe) skipUntilKey.set(true)
+                    skips++
+                    continue
+                }
             }
             if (pkt.keyframe) skipUntilKey.set(false)
             drain(decoder)
@@ -242,7 +249,7 @@ class VideoDecoder {
         while (true) {
             val idx = decoder.dequeueOutputBuffer(info, 0)
             if (idx >= 0) {
-                decoder.releaseOutputBuffer(idx, true)
+                decoder.releaseOutputBuffer(idx, 0L)
             } else {
                 break
             }
