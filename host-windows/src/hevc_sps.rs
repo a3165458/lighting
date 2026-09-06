@@ -327,7 +327,81 @@ fn copy_st_ref_pic_set(src: &mut Bits<'_>, dst: &mut Writer, idx: u32) -> Option
     Some(())
 }
 
-fn copy_vui_drop_timing(src: &mut Bits<'_>, dst: &mut Writer) -> Option<()> {
+fn skip_hevc_sub_layer_hrd(
+    src: &mut Bits<'_>,
+    cpb_cnt_minus1: u32,
+    sub_pic: u32,
+) -> Option<()> {
+    if cpb_cnt_minus1 > 31 {
+        return None;
+    }
+    for _ in 0..=cpb_cnt_minus1 {
+        src.ue()?;
+        src.ue()?;
+        if sub_pic == 1 {
+            src.ue()?;
+            src.ue()?;
+        }
+        src.u(1)?;
+    }
+    Some(())
+}
+
+/// H.265 E.2.2. `common` is `commonInfPresentFlag`.
+fn skip_hevc_hrd(src: &mut Bits<'_>, common: bool, max_sub_layers: u32) -> Option<()> {
+    if max_sub_layers == 0 || max_sub_layers > 8 {
+        return None;
+    }
+    // Subsequent VPS HRD sets reuse the previous nal/vcl flags. We only
+    // rewrite the common-inf case (NVENC nhrd=1).
+    if !common {
+        return None;
+    }
+    let nal = src.u(1)?;
+    let vcl = src.u(1)?;
+    let mut sub_pic = 0;
+    if nal == 1 || vcl == 1 {
+        sub_pic = src.u(1)?;
+        if sub_pic == 1 {
+            src.u(8)?;
+            src.u(5)?;
+            src.u(1)?;
+            src.u(5)?;
+        }
+        src.u(4)?;
+        src.u(4)?;
+        if sub_pic == 1 {
+            src.u(4)?;
+        }
+        src.u(5)?;
+        src.u(5)?;
+        src.u(5)?;
+    }
+    for _ in 0..max_sub_layers {
+        let general = src.u(1)?;
+        let within = if general == 1 { 1 } else { src.u(1)? };
+        let low_delay = if within == 1 {
+            src.ue()?;
+            0
+        } else {
+            src.u(1)?
+        };
+        let cpb_cnt = if low_delay == 1 { 0 } else { src.ue()? };
+        if nal == 1 {
+            skip_hevc_sub_layer_hrd(src, cpb_cnt, sub_pic)?;
+        }
+        if vcl == 1 {
+            skip_hevc_sub_layer_hrd(src, cpb_cnt, sub_pic)?;
+        }
+    }
+    Some(())
+}
+
+fn copy_vui_drop_timing(
+    src: &mut Bits<'_>,
+    dst: &mut Writer,
+    max_sub_layers: u32,
+) -> Option<()> {
     let ar = src.u(1)?;
     dst.u(1, ar);
     if ar == 1 {
@@ -385,7 +459,7 @@ fn copy_vui_drop_timing(src: &mut Bits<'_>, dst: &mut Writer) -> Option<()> {
         }
         let hrd = src.u(1)?;
         if hrd == 1 {
-            return None;
+            skip_hevc_hrd(src, true, max_sub_layers)?;
         }
     }
     let restrict = src.u(1)?;
@@ -407,6 +481,7 @@ fn copy_sps_tail_drop_timing(
     src: &mut Bits<'_>,
     dst: &mut Writer,
     poc_lsb_bits: u32,
+    max_sub_layers: u32,
 ) -> Option<()> {
     dst.copy_ue(src)?;
     dst.copy_ue(src)?;
@@ -458,7 +533,7 @@ fn copy_sps_tail_drop_timing(
     let vui = src.u(1)?;
     dst.u(1, vui);
     if vui == 1 {
-        copy_vui_drop_timing(src, dst)?;
+        copy_vui_drop_timing(src, dst, max_sub_layers)?;
     }
     copy_rest_without_trailing(src, dst)
 }
@@ -496,7 +571,13 @@ fn rewrite_sps_rbsp(rbsp: &[u8]) -> Option<Vec<u8>> {
     rewrite_dpb_loop(&mut src, &mut dst, max_sub_layers, ordering == 1)?;
     let tail_bit = src.bit;
     let tail_dst = dst.clone();
-    if copy_sps_tail_drop_timing(&mut src, &mut dst, log2_poc_lsb_minus4.saturating_add(4)).is_none()
+    if copy_sps_tail_drop_timing(
+        &mut src,
+        &mut dst,
+        log2_poc_lsb_minus4.saturating_add(4),
+        max_sub_layers,
+    )
+    .is_none()
     {
         src.bit = tail_bit;
         dst = tail_dst;
@@ -525,7 +606,7 @@ fn rewrite_vps_rbsp(rbsp: &[u8]) -> Option<Vec<u8>> {
     rewrite_dpb_loop(&mut src, &mut dst, max_sub_layers, ordering == 1)?;
     let tail_bit = src.bit;
     let tail_dst = dst.clone();
-    if copy_vps_tail_drop_timing(&mut src, &mut dst).is_none() {
+    if copy_vps_tail_drop_timing(&mut src, &mut dst, max_sub_layers).is_none() {
         src.bit = tail_bit;
         dst = tail_dst;
         copy_rest_without_trailing(&mut src, &mut dst)?;
@@ -533,7 +614,11 @@ fn rewrite_vps_rbsp(rbsp: &[u8]) -> Option<Vec<u8>> {
     Some(dst.finish())
 }
 
-fn copy_vps_tail_drop_timing(src: &mut Bits<'_>, dst: &mut Writer) -> Option<()> {
+fn copy_vps_tail_drop_timing(
+    src: &mut Bits<'_>,
+    dst: &mut Writer,
+    max_sub_layers: u32,
+) -> Option<()> {
     let max_layer_id = src.u(6)?;
     dst.u(6, max_layer_id);
     let sets_minus1 = dst.copy_ue(src)?;
@@ -555,8 +640,13 @@ fn copy_vps_tail_drop_timing(src: &mut Bits<'_>, dst: &mut Writer) -> Option<()>
             src.ue()?;
         }
         let nhrd = src.ue()?;
-        if nhrd > 0 {
+        if nhrd > 16 {
             return None;
+        }
+        for i in 0..nhrd {
+            src.ue()?; // hrd_layer_set_idx
+            let common = if i == 0 { true } else { src.u(1)? == 1 };
+            skip_hevc_hrd(src, common, max_sub_layers)?;
         }
     }
     copy_rest_without_trailing(src, dst)
@@ -897,6 +987,132 @@ mod tests {
         assert_ne!(out, src);
         assert_eq!(parse_dpb(&out), Some((1, 0, 0)));
         assert!(out.len() < src.len(), "timing_info should be gone");
+        assert_eq!(rewrite_low_latency(out.clone()), out);
+    }
+
+    fn write_hevc_cbr_hrd(w: &mut Writer) {
+        w.u(1, 1); // nal_hrd
+        w.u(1, 0); // vcl_hrd
+        w.u(1, 0); // sub_pic
+        w.u(4, 4);
+        w.u(4, 4);
+        w.u(5, 23);
+        w.u(5, 23);
+        w.u(5, 23);
+        w.u(1, 1); // fixed_pic_rate_general
+        w.ue(0); // elemental_duration_in_tc_minus1
+        w.ue(0); // cpb_cnt_minus1
+        w.ue(1000);
+        w.ue(1000);
+        w.u(1, 1); // cbr_flag
+    }
+
+    fn nvenc_like_sps_cbr_hrd(dpb: u32, reorder: u32) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.u(4, 0);
+        w.u(3, 0);
+        w.u(1, 1);
+        write_main_ptl(&mut w);
+        w.ue(0);
+        w.ue(1);
+        w.ue(1920);
+        w.ue(1088);
+        w.u(1, 1);
+        w.ue(0);
+        w.ue(0);
+        w.ue(0);
+        w.ue(8);
+        w.ue(0);
+        w.ue(0);
+        w.ue(4);
+        w.u(1, 1);
+        w.ue(dpb);
+        w.ue(reorder);
+        w.ue(0);
+        w.ue(0);
+        w.ue(3);
+        w.ue(0);
+        w.ue(3);
+        w.ue(2);
+        w.ue(2);
+        w.u(1, 0);
+        w.u(1, 1);
+        w.u(1, 0);
+        w.u(1, 0);
+        w.ue(1);
+        w.ue(1);
+        w.ue(0);
+        w.ue(0);
+        w.u(1, 1);
+        w.u(1, 0);
+        w.u(1, 1);
+        w.u(1, 1);
+        w.u(1, 1); // vui
+        w.u(1, 0);
+        w.u(1, 0);
+        w.u(1, 0);
+        w.u(1, 0);
+        w.u(1, 0);
+        w.u(1, 0);
+        w.u(1, 0);
+        w.u(1, 0);
+        w.u(1, 1); // timing
+        w.u(32, 1);
+        w.u(32, 60);
+        w.u(1, 0);
+        w.u(1, 1); // hrd
+        write_hevc_cbr_hrd(&mut w);
+        w.u(1, 0);
+        w.u(1, 0);
+        nal_from_rbsp(&[0x42, 0x01], &w.finish())
+    }
+
+    fn nvenc_like_vps_cbr_hrd(dpb: u32, reorder: u32) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.u(4, 0);
+        w.u(1, 1);
+        w.u(1, 1);
+        w.u(6, 0);
+        w.u(3, 0);
+        w.u(1, 1);
+        w.u(16, 0xffff);
+        write_main_ptl(&mut w);
+        w.u(1, 1);
+        w.ue(dpb);
+        w.ue(reorder);
+        w.ue(0);
+        w.u(6, 0);
+        w.ue(0);
+        w.u(1, 1);
+        w.u(32, 1);
+        w.u(32, 60);
+        w.u(1, 0);
+        w.ue(1); // nhrd
+        w.ue(0); // hrd_layer_set_idx
+        write_hevc_cbr_hrd(&mut w);
+        w.u(1, 0);
+        nal_from_rbsp(&[0x40, 0x01], &w.finish())
+    }
+
+    #[test]
+    fn drops_hevc_cbr_hrd_so_decoder_does_not_wait_cpb() {
+        let src = nvenc_like_sps_cbr_hrd(16, 2);
+        assert_eq!(parse_dpb(&src), Some((16, 2, 0)));
+        let out = rewrite_low_latency(src.clone());
+        assert_ne!(out, src);
+        assert_eq!(parse_dpb(&out), Some((1, 0, 0)));
+        assert_eq!(out, rewrite_low_latency(nvenc_like_sps(16, 2)));
+        assert_eq!(rewrite_low_latency(out.clone()), out);
+    }
+
+    #[test]
+    fn drops_vps_cbr_hrd_so_decoder_does_not_wait_cpb() {
+        let src = nvenc_like_vps_cbr_hrd(5, 2);
+        assert_eq!(parse_dpb(&src), Some((5, 2, 0)));
+        let out = rewrite_low_latency(src.clone());
+        assert_ne!(out, src);
+        assert_eq!(parse_dpb(&out), Some((1, 0, 0)));
+        assert_eq!(out, rewrite_low_latency(nvenc_like_vps(5, 2)));
         assert_eq!(rewrite_low_latency(out.clone()), out);
     }
 }
