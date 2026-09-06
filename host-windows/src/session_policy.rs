@@ -335,6 +335,15 @@ pub fn qsv_vcm() -> bool {
     true
 }
 
+/// QSV `-recovery_point_sei`. Default -1 leaves MSDK unspecified; some
+/// drivers then emit recovery-point SEI (or treat the stream as intra-
+/// refresh) and hold a picture. Sunshine ULL sets 0 on h264_qsv and
+/// hevc_qsv. Valid on both; annexb already drops SEI NALs, but the
+/// encoder still pays the hold if this stays on.
+pub fn qsv_recovery_point_sei() -> bool {
+    false
+}
+
 /// Encoder DPB / `num_ref_frames`. NVENC default follows the level (4–16);
 /// Android then holds decoded pictures. Moonlight decoder-errata: 1.
 pub fn encoder_refs() -> u32 {
@@ -1021,6 +1030,7 @@ mod tests {
         assert!(qsv_aud());
         assert!(!qsv_a53cc());
         assert!(qsv_vcm());
+        assert!(!qsv_recovery_point_sei());
         assert_eq!(encoder_refs(), 1);
         assert_eq!(nvenc_dpb_size(), 1);
         assert!(!nvenc_extra_sei());
