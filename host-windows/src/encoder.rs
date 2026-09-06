@@ -664,6 +664,16 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
                 },
             ]);
         }
+        if lighting_host::session_policy::qsv_hevc_private_options(encoder) {
+            qsv.extend([
+                "-gpb".into(),
+                if lighting_host::session_policy::qsv_gpb() {
+                    "1".into()
+                } else {
+                    "0".into()
+                },
+            ]);
+        }
         qsv
     } else if encoder.contains("amf") {
         vec![

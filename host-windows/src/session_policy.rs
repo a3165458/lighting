@@ -278,6 +278,18 @@ pub fn qsv_h264_private_options(encoder: &str) -> bool {
     encoder.contains("qsv") && encoder.contains("h264")
 }
 
+/// HEVC QSV `gpb`. Default 1 still emits generalized P/B pictures when
+/// `-bf 0`. Android treats those as B slices and holds a reorder frame —
+/// one refresh of glass next to the laptop. Intel low-delay HEVC is
+/// `-bf 0 -gpb 0`. Not valid on h264_qsv.
+pub fn qsv_gpb() -> bool {
+    false
+}
+
+pub fn qsv_hevc_private_options(encoder: &str) -> bool {
+    encoder.contains("qsv") && encoder.contains("hevc")
+}
+
 /// Encoder DPB / `num_ref_frames`. NVENC default follows the level (4–16);
 /// Android then holds decoded pictures. Moonlight decoder-errata: 1.
 pub fn encoder_refs() -> u32 {
@@ -954,6 +966,10 @@ mod tests {
         assert!(qsv_h264_private_options("h264_qsv"));
         assert!(!qsv_h264_private_options("hevc_qsv"));
         assert!(!qsv_h264_private_options("h264_nvenc"));
+        assert!(!qsv_gpb());
+        assert!(qsv_hevc_private_options("hevc_qsv"));
+        assert!(!qsv_hevc_private_options("h264_qsv"));
+        assert!(!qsv_hevc_private_options("hevc_nvenc"));
         assert_eq!(encoder_refs(), 1);
         assert_eq!(nvenc_dpb_size(), 1);
         assert!(!nvenc_extra_sei());
