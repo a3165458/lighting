@@ -93,49 +93,58 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
         // scale_d3d11 still succeeds on new ffmpeg and then uses the filter
         // default pool (often 16 pictures). Unknown extra_hw_frames on old
         // ffmpeg fails this graph (~3s); the unkeyed graph below is last.
+        // Identity still needs NV12, but width/height on scale_d3d11 runs a
+        // VPP resize kernel (~0.5–2 ms) even when src==dst. Omit them so
+        // the filter only converts format. Sunshine's native DDA path has
+        // no resize either.
+        let d3d11 = if scale {
+            format!("scale_d3d11=width={dst_w}:height={dst_h}:format=nv12")
+        } else {
+            "scale_d3d11=format=nv12".to_string()
+        };
+        let cuda = if scale {
+            format!("scale_cuda={dst_w}:{dst_h}:format=nv12")
+        } else {
+            "scale_cuda=format=nv12".to_string()
+        };
+        for extra in &extras {
+            graphs.push(format!("{dda},{d3d11}:extra_hw_frames={extra}"));
+        }
+        graphs.push(format!("{dda},{d3d11}"));
         for extra in &extras {
             graphs.push(format!(
-                "{dda},scale_d3d11=width={dst_w}:height={dst_h}:format=nv12:extra_hw_frames={extra}"
+                "{dda},hwupload_cuda=extra_hw_frames={extra},{cuda}:extra_hw_frames={extra}"
+            ));
+        }
+        for extra in &extras {
+            graphs.push(format!(
+                "{dda},hwmap=derive_device=cuda:mode=direct:extra_hw_frames={extra},{cuda}:extra_hw_frames={extra}"
             ));
         }
         graphs.push(format!(
-            "{dda},scale_d3d11=width={dst_w}:height={dst_h}:format=nv12"
-        ));
-        for extra in &extras {
-            if scale {
-                graphs.push(format!(
-                    "{dda},hwupload_cuda=extra_hw_frames={extra},scale_cuda={dst_w}:{dst_h}:format=nv12:extra_hw_frames={extra}"
-                ));
-            } else {
-                graphs.push(format!(
-                    "{dda},hwupload_cuda=extra_hw_frames={extra},scale_cuda=format=nv12:extra_hw_frames={extra}"
-                ));
-            }
-        }
-        for extra in &extras {
-            graphs.push(format!(
-                "{dda},hwmap=derive_device=cuda:mode=direct:extra_hw_frames={extra},scale_cuda={dst_w}:{dst_h}:format=nv12:extra_hw_frames={extra}"
-            ));
-        }
-        graphs.push(format!(
-            "{dda},hwmap=derive_device=cuda:mode=direct,scale_cuda={dst_w}:{dst_h}:format=nv12"
+            "{dda},hwmap=derive_device=cuda:mode=direct,{cuda}"
         ));
     }
     if encoder.contains("qsv") {
         // ddagrab is D3D11. hwmap first avoids a sysmem upload (~1–2 ms).
         // Same trap as NVENC: unkeyed hwmap still succeeds and keeps the
         // default 16-frame pool. Try extra_hw_frames=0 first.
+        // Identity: scale_qsv with w/h is a VPP resize even at 1:1. Format
+        // convert only, matching Sunshine ULL (no extra scale pass).
+        let qsv = if scale {
+            format!("scale_qsv=w={dst_w}:h={dst_h}:format=nv12")
+        } else {
+            "scale_qsv=format=nv12".to_string()
+        };
         for extra in &extras {
             graphs.push(format!(
-                "{dda},hwmap=derive_device=qsv:extra_hw_frames={extra},scale_qsv=w={dst_w}:h={dst_h}:format=nv12:extra_hw_frames={extra}"
+                "{dda},hwmap=derive_device=qsv:extra_hw_frames={extra},{qsv}:extra_hw_frames={extra}"
             ));
         }
-        graphs.push(format!(
-            "{dda},hwmap=derive_device=qsv,scale_qsv=w={dst_w}:h={dst_h}:format=nv12"
-        ));
+        graphs.push(format!("{dda},hwmap=derive_device=qsv,{qsv}"));
         for extra in &extras {
             graphs.push(format!(
-                "{dda},hwupload=extra_hw_frames={extra},hwmap=derive_device=qsv,scale_qsv=w={dst_w}:h={dst_h}:format=nv12:extra_hw_frames={extra}"
+                "{dda},hwupload=extra_hw_frames={extra},hwmap=derive_device=qsv,{qsv}:extra_hw_frames={extra}"
             ));
         }
     }
@@ -265,10 +274,38 @@ mod tests {
             60, 1920, 1080, 1920, 1080, "h264_qsv",
         );
         assert!(graphs[0].contains("hwmap=derive_device=qsv:extra_hw_frames=0"));
-        assert!(graphs[0].contains("scale_qsv=w=1920:h=1080:format=nv12:extra_hw_frames=0"));
+        assert!(graphs[0].contains("scale_qsv=format=nv12:extra_hw_frames=0"));
+        assert!(!graphs[0].contains("w=1920"));
+        assert!(!graphs[0].contains("h=1080"));
         assert!(!graphs[0].contains("hwupload"));
         assert!(graphs.iter().any(|g| g.contains("hwmap=derive_device=qsv,") && !g.contains("extra_hw_frames")));
         assert!(graphs.iter().any(|g| g.contains("hwupload")));
+    }
+
+    #[test]
+    fn identity_nvenc_skips_d3d11_resize() {
+        let same = dda_capture_graphs(
+            Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x10DE }),
+            60, 1920, 1080, 1920, 1080, "h264_nvenc",
+        );
+        assert!(same[0].contains("scale_d3d11=format=nv12:extra_hw_frames=0"));
+        assert!(!same[0].contains("width="));
+        assert!(!same[0].contains("height="));
+        assert!(same.iter().any(|g| g.contains("scale_cuda=format=nv12") && !g.contains("1920:1080")));
+        let scaled = dda_capture_graphs(
+            Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x10DE }),
+            60, 2560, 1440, 1920, 1080, "h264_nvenc",
+        );
+        assert!(scaled[0].contains("scale_d3d11=width=1920:height=1080:format=nv12:extra_hw_frames=0"));
+    }
+
+    #[test]
+    fn identity_qsv_skips_vpp_resize() {
+        let scaled = dda_capture_graphs(
+            Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x8086 }),
+            60, 2560, 1440, 1920, 1080, "h264_qsv",
+        );
+        assert!(scaled[0].contains("scale_qsv=w=1920:h=1080:format=nv12:extra_hw_frames=0"));
     }
 
     #[test]
