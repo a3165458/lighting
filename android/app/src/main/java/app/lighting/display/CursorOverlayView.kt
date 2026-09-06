@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.AttributeSet
+import android.view.Surface
 import android.view.SurfaceControl
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -87,16 +88,41 @@ class CursorOverlayView @JvmOverloads constructor(
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         surfaceReady = true
+        hintOverlayFrameRate()
         paintShape()
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
         surfaceReady = true
+        hintOverlayFrameRate()
         paintShape()
     }
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         surfaceReady = false
+    }
+
+    /**
+     * Overlay planes default to 60 Hz even after the activity locked peak
+     * refresh. SurfaceControl.Transaction then waits 16 ms; GlideX does not.
+     */
+    private fun hintOverlayFrameRate() {
+        if (Build.VERSION.SDK_INT < 30) return
+        val s = holder.surface
+        if (!s.isValid) return
+        val hz = display?.refreshRate?.takeIf { it >= 30f } ?: 120f
+        try {
+            if (Build.VERSION.SDK_INT >= 31) {
+                s.setFrameRate(
+                    hz,
+                    Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
+                    Surface.CHANGE_FRAME_RATE_ALWAYS,
+                )
+            } else {
+                s.setFrameRate(hz, Surface.FRAME_RATE_COMPATIBILITY_DEFAULT)
+            }
+        } catch (_: Throwable) {
+        }
     }
 
     fun hidePointer() {
