@@ -4,11 +4,43 @@ pub fn continue_accept_loop(user_stopped: bool) -> bool {
     !user_stopped
 }
 
-/// IddCx virtual monitors often drop Desktop Duplication mid-stream, which
-/// looks like a random disconnect. GDI capture of the selected region does
-/// not retarget the GPU output and keeps the physical panel alive.
-pub fn prefer_gdigrab_capture(is_virtual: bool, has_dxgi: bool) -> bool {
-    is_virtual || !has_dxgi
+/// GDI `gdigrab` is last-resort only. BitBlt of an IddCx / game desktop is
+/// typically 10–20 fps and misses exclusive Direct3D. Sunshine / Parsec use
+/// DXGI Desktop Duplication whenever the output exists; we do the same and
+/// keep GDI for monitors DXGI does not enumerate.
+pub fn prefer_gdigrab_capture(_is_virtual: bool, has_dxgi: bool) -> bool {
+    !has_dxgi
+}
+
+/// What to do to the PC panel after the tablet socket dies (sleep / power off).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientDropDesktopAction {
+    None,
+    ReassertPrimary,
+    /// Win+P "仅第二屏幕" left the laptop detached. Undo it so the user is
+    /// not staring at a black panel that only Win+Ctrl+Shift+B can revive.
+    UndoExternal,
+}
+
+pub fn client_drop_desktop_action(
+    tablet_only_active: bool,
+    restore: PrimaryRestoreAction,
+) -> ClientDropDesktopAction {
+    if tablet_only_active {
+        ClientDropDesktopAction::UndoExternal
+    } else {
+        match restore {
+            PrimaryRestoreAction::Skip => ClientDropDesktopAction::None,
+            _ => ClientDropDesktopAction::ReassertPrimary,
+        }
+    }
+}
+
+/// Virtual monitors must present at >=60 Hz or DDA/games look like 15-20 fps
+/// even when the encoder is asked for 60. Never go above 120: IddCx mode
+/// tables get sparse, and higher values used to retime the laptop panel.
+pub fn virtual_target_hz(requested: u32, tablet_max: u32) -> u32 {
+    requested.max(tablet_max).clamp(60, 120)
 }
 
 /// The PC panel must never be the target of a virtual-display mode change.
@@ -345,8 +377,8 @@ mod tests {
     }
 
     #[test]
-    fn virtual_capture_avoids_duplication() {
-        assert!(prefer_gdigrab_capture(true, true));
+    fn virtual_capture_uses_dda_when_dxgi_exists() {
+        assert!(!prefer_gdigrab_capture(true, true));
         assert!(prefer_gdigrab_capture(true, false));
         assert!(prefer_gdigrab_capture(false, false));
         assert!(!prefer_gdigrab_capture(false, true));
@@ -552,10 +584,43 @@ mod tests {
 
     #[test]
     fn virtual_capture_prefers_gdigrab() {
-        assert!(prefer_gdigrab_capture(true, true));
+        assert!(!prefer_gdigrab_capture(true, true));
         assert!(prefer_gdigrab_capture(true, false));
         assert!(prefer_gdigrab_capture(false, false));
         assert!(!prefer_gdigrab_capture(false, true));
+    }
+
+    #[test]
+    fn tablet_sleep_undoes_external_topology() {
+        assert_eq!(
+            client_drop_desktop_action(true, PrimaryRestoreAction::Skip),
+            ClientDropDesktopAction::UndoExternal
+        );
+        assert_eq!(
+            client_drop_desktop_action(true, PrimaryRestoreAction::SetPrimary),
+            ClientDropDesktopAction::UndoExternal
+        );
+        assert_eq!(
+            client_drop_desktop_action(false, PrimaryRestoreAction::Skip),
+            ClientDropDesktopAction::None
+        );
+        assert_eq!(
+            client_drop_desktop_action(false, PrimaryRestoreAction::TimingOnly),
+            ClientDropDesktopAction::ReassertPrimary
+        );
+        assert_eq!(
+            client_drop_desktop_action(false, PrimaryRestoreAction::SetPrimary),
+            ClientDropDesktopAction::ReassertPrimary
+        );
+    }
+
+    #[test]
+    fn virtual_refresh_is_at_least_60() {
+        assert_eq!(virtual_target_hz(30, 60), 60);
+        assert_eq!(virtual_target_hz(60, 60), 60);
+        assert_eq!(virtual_target_hz(45, 30), 60);
+        assert_eq!(virtual_target_hz(120, 90), 120);
+        assert_eq!(virtual_target_hz(240, 144), 120);
     }
 
     #[test]

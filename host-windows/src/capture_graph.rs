@@ -39,18 +39,51 @@ pub fn dda_capture_graphs(
     dst_h: u32,
     encoder: &str,
 ) -> Vec<String> {
+    dda_capture_graphs_for(dxgi, fps, src_w, src_h, dst_w, dst_h, encoder, false)
+}
+
+/// `allow_tearing` on IddCx outputs avoids waiting for a vsync the virtual
+/// adapter may never signal, which otherwise caps games at ~15 fps.
+pub fn dda_source_filter(output_idx: u32, fps: u32, is_virtual: bool) -> String {
+    if is_virtual {
+        format!("ddagrab=output_idx={output_idx}:framerate={fps}:draw_mouse=1:allow_tearing=1")
+    } else {
+        format!("ddagrab=output_idx={output_idx}:framerate={fps}:draw_mouse=1")
+    }
+}
+
+pub fn dda_capture_graphs_for(
+    dxgi: Option<DxgiCapture>,
+    fps: u32,
+    src_w: u32,
+    src_h: u32,
+    dst_w: u32,
+    dst_h: u32,
+    encoder: &str,
+    is_virtual: bool,
+) -> Vec<String> {
     // Indirect/virtual displays can be visible to GDI but absent from DXGI.
     // Never reinterpret their position in the monitor list as output zero.
     let Some(dxgi) = dxgi else {
         return Vec::new();
     };
-    let dda = format!(
-        "ddagrab=output_idx={}:framerate={fps}:draw_mouse=1",
-        dxgi.output_index
-    );
+    let mut sources = vec![dda_source_filter(dxgi.output_index, fps, is_virtual)];
+    if is_virtual {
+        let without_tearing = dda_source_filter(dxgi.output_index, fps, false);
+        if without_tearing != sources[0] {
+            sources.push(without_tearing);
+        }
+    }
     let scale = needs_scale(src_w, src_h, dst_w, dst_h);
     let mut graphs = Vec::new();
+    for dda in &sources {
+        graphs.extend(dda_encoder_graphs(dda, scale, dst_w, dst_h, encoder));
+    }
+    graphs
+}
 
+fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &str) -> Vec<String> {
+    let mut graphs = Vec::new();
     if encoder.contains("nvenc") {
         if scale {
             graphs.push(format!(
@@ -60,26 +93,17 @@ pub fn dda_capture_graphs(
                 "{dda},hwupload_cuda,scale_cuda={dst_w}:{dst_h}:format=nv12"
             ));
         } else {
-            // Identity size: still run scale_cuda to convert to NV12 on GPU.
             graphs.push(format!(
                 "{dda},hwmap=derive_device=cuda:mode=direct,scale_cuda={dst_w}:{dst_h}:format=nv12"
             ));
             graphs.push(format!("{dda},hwupload_cuda,scale_cuda=format=nv12"));
         }
     }
-
     if encoder.contains("qsv") {
-        if scale {
-            graphs.push(format!(
-                "{dda},hwmap=derive_device=qsv,scale_qsv=w={dst_w}:h={dst_h}:format=nv12"
-            ));
-        } else {
-            graphs.push(format!(
-                "{dda},hwmap=derive_device=qsv,scale_qsv=w={dst_w}:h={dst_h}:format=nv12"
-            ));
-        }
+        graphs.push(format!(
+            "{dda},hwmap=derive_device=qsv,scale_qsv=w={dst_w}:h={dst_h}:format=nv12"
+        ));
     }
-
     if encoder.contains("amf") {
         if scale {
             graphs.push(format!(
@@ -91,8 +115,6 @@ pub fn dda_capture_graphs(
             ));
         }
     }
-
-    // Portable CPU fallback: skip scale on identity to preserve every pixel.
     if scale {
         graphs.push(format!(
             "{dda},hwdownload,format=bgra,format=yuv420p,scale={dst_w}:{dst_h}:flags=bilinear"
@@ -100,7 +122,6 @@ pub fn dda_capture_graphs(
     } else {
         graphs.push(format!("{dda},hwdownload,format=bgra,format=yuv420p"));
     }
-
     graphs
 }
 
@@ -190,6 +211,21 @@ mod tests {
         );
         let graphs = dda_capture_graphs(Some(capture), 60, 1920, 1080, 1920, 1080, "libx264");
         assert!(graphs.iter().all(|g| g.starts_with("ddagrab=output_idx=3:")));
+    }
+
+    #[test]
+    fn virtual_dda_allows_tearing() {
+        let filter = dda_source_filter(1, 60, true);
+        assert!(filter.contains("output_idx=1"));
+        assert!(filter.contains("allow_tearing=1"));
+        assert!(!dda_source_filter(0, 60, false).contains("allow_tearing"));
+        let graphs = dda_capture_graphs_for(
+            Some(DxgiCapture { adapter_index: 0, output_index: 1 }),
+            60, 1920, 1080, 1920, 1080, "h264_nvenc", true,
+        );
+        assert!(graphs.iter().any(|g| g.contains("allow_tearing=1")));
+        assert!(graphs.iter().any(|g| !g.contains("allow_tearing")));
+        assert!(graphs.iter().all(|g| g.contains("output_idx=1")));
     }
 
     #[test]
