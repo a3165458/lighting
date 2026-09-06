@@ -364,6 +364,14 @@ pub fn encode_fps(_req_fps: u32, _tablet_max: u32, _dec_fps: u32, hw: bool) -> u
     }
 }
 
+/// ffmpeg output `-r`. `ddagrab=framerate=` is the DXGI poll grid
+/// (`dda_poll_hz`, 8000) and becomes the filter's advertised frame_rate.
+/// NVENC/QSV write that into SPS/VUI; Qualcomm C2 then paces like a movie
+/// (or falls back to 30 fps). Always the virtual panel rate, never 8000.
+pub fn ffmpeg_output_fps(encode_fps: u32) -> u32 {
+    encode_fps.max(1)
+}
+
 /// Anonymous `CreatePipe` default is 4 KB. A 25 Mbps P-frame is ~26 KB, so
 /// ffmpeg stdout used to land as many short `Read`s and PeekNamedPipe went
 /// quiet between them. 256 KB still hid ~10 pictures at 120 Hz after the
@@ -903,6 +911,9 @@ mod tests {
         assert_eq!(encode_fps(60, 90, 60, true), 120);
         assert_eq!(encode_fps(60, 120, 60, false), 45);
         assert_eq!(encode_fps(30, 60, 60, true), 120);
+        assert_eq!(ffmpeg_output_fps(encode_fps(60, 60, 60, true)), 120);
+        assert_ne!(ffmpeg_output_fps(120), dda_poll_hz(120));
+        assert_eq!(ffmpeg_output_fps(45), 45);
         assert_eq!(ffmpeg_pipe_buffer_bytes(), 64 * 1024);
         assert!(ffmpeg_pipe_buffer_bytes() > 16 * 1024);
         assert_eq!(audio_packets_per_video_frame(), 1);

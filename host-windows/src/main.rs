@@ -47,6 +47,15 @@ fn enable_process_priority() {
     }
 }
 
+/// Sunshine: DWM on MMCSS so the IddCx virtual panel keeps 120 Hz while a
+/// game loads the GPU. Without this the laptop (independent flip) stays
+/// snappy and the tablet, which only sees DWM's copy, sits a refresh behind.
+fn enable_dwm_mmcss() {
+    unsafe {
+        let _ = windows::Win32::Graphics::Dwm::DwmEnableMMCSS(true);
+    }
+}
+
 fn log_writer() -> BoxMakeWriter {
     let path = std::env::current_exe()
         .ok()
@@ -81,6 +90,7 @@ fn main() -> eframe::Result<()> {
     enable_dpi_awareness();
     enable_timer_resolution();
     enable_process_priority();
+    enable_dwm_mmcss();
     init_tracing();
 
     let service = HostService::new();

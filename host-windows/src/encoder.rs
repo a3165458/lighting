@@ -400,7 +400,15 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
     // that IDR spikes do not dominate USB3 bandwidth.
     let gop = settings.fps.max(30).to_string();
     let level = avc_level(settings.width, settings.height, settings.fps).to_string();
-    if encoder.contains("nvenc") {
+    // ddagrab advertises dda_poll_hz (8000) as filter frame_rate. Without
+    // `-r`, NVENC/QSV copy that into SPS/VUI and Qualcomm C2 holds frames
+    // like a movie. Panel rate, never the poll grid. fps_mode=passthrough
+    // keeps wall-clock PTS so this is VUI/RC metadata, not a cfr queue.
+    let mut flags = vec![
+        "-r".into(),
+        lighting_host::session_policy::ffmpeg_output_fps(settings.fps).to_string(),
+    ];
+    flags.extend(if encoder.contains("nvenc") {
         vec![
             "-preset".into(),
             "p1".into(),
@@ -613,7 +621,8 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             )
             .into(),
         ]
-    }
+    });
+    flags
 }
 
 pub fn avc_level(width: u32, height: u32, fps: u32) -> &'static str {
