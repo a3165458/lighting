@@ -385,20 +385,25 @@ class VideoDecoder {
             if (enqueue(decoder, pkt.data, flags, pkt.ptsUs, 0L)) return true
         }
         if (waitUs <= 0L) return false
-        var left = waitUs
-        while (left > 0 && running.get()) {
-            try {
-                Thread.sleep(1)
-            } catch (_: InterruptedException) {
+        // Block inside MediaCodec until an input slot exists. Thread.sleep(1)
+        // is not woken when present() frees a buffer; at 120 Hz that was a
+        // 1–8 ms slice GlideX / Moonlight do not pay.
+        val index = try {
+            decoder.dequeueInputBuffer(waitUs)
+        } catch (_: IllegalStateException) {
+            return false
+        }
+        if (index < 0) return false
+        synchronized(inputLock) {
+            if (!running.get() || codec !== decoder) {
+                try {
+                    decoder.queueInputBuffer(index, 0, 0, 0, 0)
+                } catch (_: Throwable) {
+                }
                 return false
             }
-            left -= 1_000L
-            synchronized(inputLock) {
-                if (!running.get() || codec !== decoder) return false
-                if (enqueue(decoder, pkt.data, flags, pkt.ptsUs, 0L)) return true
-            }
+            return fillInput(decoder, index, pkt.data, flags)
         }
-        return false
     }
 
     private fun enqueue(
@@ -410,6 +415,15 @@ class VideoDecoder {
     ): Boolean {
         val index = decoder.dequeueInputBuffer(waitUs)
         if (index < 0) return false
+        return fillInput(decoder, index, data, flags)
+    }
+
+    private fun fillInput(
+        decoder: MediaCodec,
+        index: Int,
+        data: ByteArray,
+        flags: Int,
+    ): Boolean {
         val buf = decoder.getInputBuffer(index) ?: return false
         if (buf.remaining() < data.size) {
             decoder.queueInputBuffer(index, 0, 0, 0, 0)
