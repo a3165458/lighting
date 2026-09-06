@@ -240,10 +240,11 @@ pub fn mux_cursor_on_video(cursor_overlay: bool, control_attached: bool) -> bool
     cursor_overlay && !control_attached
 }
 
-/// TCP send buffer. ~1 encoded frame at 25 Mbps / 60 fps (~52 KB).
-/// 256 KB used to hide ~80 ms of bufferbloat on USB adb reverse.
+/// TCP send buffer. One encoded P-frame at 25 Mbps / 120 fps (~26 KB).
+/// 48 KB was sized for 60 fps and sat ~15 ms on USB adb reverse after
+/// annexb/encoded queues were already 1–2 deep.
 pub fn tcp_send_buffer_bytes() -> usize {
-    48 * 1024
+    24 * 1024
 }
 
 /// TCP recv buffer on the video socket (host side, mostly unused).
@@ -798,7 +799,7 @@ mod tests {
         assert_eq!(dda_poll_hz(120), 8000);
         assert_eq!(dda_poll_hz(144), 8000);
         assert_eq!(dda_poll_hz(30), 8000);
-        assert_eq!(tcp_send_buffer_bytes(), 48 * 1024);
+        assert_eq!(tcp_send_buffer_bytes(), 24 * 1024);
         assert!(tcp_control_buffer_bytes() < tcp_send_buffer_bytes());
     }
 
