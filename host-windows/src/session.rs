@@ -132,6 +132,38 @@ fn apply_socket_buffers(stream: &TcpStream, send: usize, recv: usize) {
     }
 }
 
+/// scrcpy / Moonlight: NODELAY after connect *and* after SO_SNDBUF (some
+/// stacks drop the flag). SIO_TCP_SET_ACK_FREQUENCY=1 is the Windows
+/// equivalent of the tablet's TCP_QUICKACK — default delayed ACK is 200 ms.
+fn apply_tcp_low_delay(stream: &TcpStream) {
+    use std::os::windows::io::AsRawSocket;
+    use windows::Win32::Networking::WinSock::{
+        setsockopt, WSAIoctl, IPPROTO_TCP, SIO_TCP_SET_ACK_FREQUENCY, SOCKET,
+        TCP_NODELAY,
+    };
+    unsafe {
+        let s = SOCKET(stream.as_raw_socket() as usize);
+        let nodelay = 1i32.to_le_bytes();
+        let _ = setsockopt(s, IPPROTO_TCP.0, TCP_NODELAY, Some(&nodelay));
+        if !session_policy::tcp_ack_every_packet() {
+            return;
+        }
+        let freq: u32 = 1;
+        let mut returned = 0u32;
+        let _ = WSAIoctl(
+            s,
+            SIO_TCP_SET_ACK_FREQUENCY,
+            Some((&freq as *const u32).cast()),
+            std::mem::size_of::<u32>() as u32,
+            None,
+            0,
+            &mut returned,
+            None,
+            None,
+        );
+    }
+}
+
 async fn classify_incoming(
     mut stream: TcpStream,
     addr: std::net::SocketAddr,
@@ -157,6 +189,8 @@ async fn classify_incoming(
         )
     };
     apply_socket_buffers(&stream, send, recv);
+    let _ = stream.set_nodelay(true);
+    apply_tcp_low_delay(&stream);
     let (reader, writer) = stream.into_split();
     Ok(ClassifiedStream {
         reader,
