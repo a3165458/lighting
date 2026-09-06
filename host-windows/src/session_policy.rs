@@ -269,6 +269,15 @@ pub fn qsv_forced_idr() -> bool {
     true
 }
 
+/// H.264 QSV private options (`max_dec_frame_buffering`, `look_ahead`,
+/// `p_strategy`, `pic_timing_sei`, `mbbrc`, `rdo`, `adaptive_i`,
+/// `low_delay_brc`). `hevc_qsv` rejects them and ffmpeg then falls
+/// through to libx265 (45 fps software — a GOP of glass). HEVC DPB is
+/// already capped in `hevc_sps::rewrite_low_latency`.
+pub fn qsv_h264_private_options(encoder: &str) -> bool {
+    encoder.contains("qsv") && encoder.contains("h264")
+}
+
 /// Encoder DPB / `num_ref_frames`. NVENC default follows the level (4–16);
 /// Android then holds decoded pictures. Moonlight decoder-errata: 1.
 pub fn encoder_refs() -> u32 {
@@ -942,6 +951,9 @@ mod tests {
         assert!(!qsv_pic_timing_sei());
         assert_eq!(qsv_max_dec_frame_buffering(), 1);
         assert!(qsv_forced_idr());
+        assert!(qsv_h264_private_options("h264_qsv"));
+        assert!(!qsv_h264_private_options("hevc_qsv"));
+        assert!(!qsv_h264_private_options("h264_nvenc"));
         assert_eq!(encoder_refs(), 1);
         assert_eq!(nvenc_dpb_size(), 1);
         assert!(!nvenc_extra_sei());
