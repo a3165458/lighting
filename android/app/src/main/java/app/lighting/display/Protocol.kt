@@ -194,8 +194,8 @@ class LitSocket(
         }
         // Android ignores TCP_NODELAY set *before* connect on some pads
         // (Moonlight/scrcpy re-apply after connect). Delayed ACK then
-        // parks the host write_all behind 40–200 ms once the 64 KB send
-        // buffer fills (~two P-frames). Os.setsockoptInt on the public
+        // parks the host write_all behind 40–200 ms once the send
+        // buffer fills. Os.setsockoptInt on the public
         // ParcelFileDescriptor runs in init — hidden getFileDescriptor$
         // is greylisted on API 28+.
         tcpNoDelay = true
