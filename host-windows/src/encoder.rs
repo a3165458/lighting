@@ -218,6 +218,7 @@ fn raise_thread_priority() {
     unsafe {
         let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     }
+    lighting_host::annexb::enter_mmcss();
 }
 
 fn raise_process_priority(child: &std::process::Child) {
