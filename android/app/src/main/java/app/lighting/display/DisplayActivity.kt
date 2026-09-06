@@ -136,6 +136,32 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        reassertPeakPresentation()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) reassertPeakPresentation()
+    }
+
+    /**
+     * Notification shade / USB dialog / doze leave the activity alive.
+     * OEM governors then recap a 120 Hz panel to 60 and drop GameState;
+     * every picture waits a vsync the laptop does not. Re-pin before
+     * the next frame. Do not restart the session here: surfaceDestroyed
+     * already tears down, surfaceCreated starts it.
+     */
+    private fun reassertPeakPresentation() {
+        setGameplayState(true)
+        lockPeakRefresh()
+        hideSystemUi()
+        if (this::surface.isInitialized && surface.holder.surface.isValid) {
+            applySurfaceFrameRate(surface.holder.surface)
+        }
+    }
+
     /**
      * Moonlight UiHelper.notifyStreamConnected: tell GameManager this is
      * uninterruptible gameplay. Without it (and without isGame / appCategory)
@@ -144,6 +170,14 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
      * PERFORMANCE / FPS-override off so those tools cannot undo lockPeakRefresh.
      */
     private fun setGameplayState(streaming: Boolean) {
+        // API 24 window flag: keep SoC clocks off the "app" DVFS bin on
+        // Android 12 pads where GameManager does not exist. Moonlight
+        // only talks to GameManager (33+); GlideX-class glass still
+        // needs this or a 120 Hz decode sits a refresh behind the laptop.
+        try {
+            window.setSustainedPerformanceMode(streaming)
+        } catch (_: Throwable) {
+        }
         if (Build.VERSION.SDK_INT < 33) return
         try {
             val gm = getSystemService(GameManager::class.java) ?: return
