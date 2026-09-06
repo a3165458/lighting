@@ -9,6 +9,7 @@ import android.util.Log
 import android.view.Surface
 import java.nio.ByteBuffer
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 class VideoDecoder {
@@ -101,10 +102,16 @@ class VideoDecoder {
             queue.offer(pkt)
             return
         }
-        // Never block the TCP reader. One pending P-frame; keep the latest.
-        if (!queue.offer(pkt)) {
-            queue.poll()
-            queue.offer(pkt)
+        // Host never drops a live P-frame (`drop_encoded_p_on_backpressure`
+        // is false). Replacing the queued P tears the GOP until the next
+        // IDR (~1 s). Block the TCP reader so ffmpeg skips *input* frames.
+        while (running.get()) {
+            try {
+                if (queue.offer(pkt, 4, TimeUnit.MILLISECONDS)) return
+            } catch (_: InterruptedException) {
+                return
+            }
+            if (enqueueLocked(pkt, 0L)) return
         }
     }
 
@@ -132,16 +139,28 @@ class VideoDecoder {
                 skips++
                 continue
             }
-            val wait = if (pkt.keyframe) 4_000L else 0L
-            if (!enqueueLocked(pkt, wait)) {
+            var submitted = enqueueLocked(pkt, if (pkt.keyframe) 4_000L else 0L)
+            if (!submitted) {
                 // Present thread owns dequeueOutputBuffer. Wait for it to
                 // free an input slot instead of draining here (that raced).
-                val retry = if (pkt.keyframe) 16_000L else 8_000L
-                if (!enqueueLocked(pkt, retry)) {
-                    if (pkt.keyframe) skipUntilKey.set(true)
-                    skips++
-                    continue
+                // P-frames: keep retrying. Dropping one tears the GOP until
+                // the next IDR (host does not drop encoded P for the same
+                // reason). Keyframes still arm skipUntilKey after a stall.
+                while (running.get()) {
+                    val retry = if (pkt.keyframe) 16_000L else 8_000L
+                    if (enqueueLocked(pkt, retry)) {
+                        submitted = true
+                        break
+                    }
+                    if (pkt.keyframe) {
+                        skipUntilKey.set(true)
+                        break
+                    }
                 }
+            }
+            if (!submitted) {
+                skips++
+                continue
             }
             if (pkt.keyframe) skipUntilKey.set(false)
             frames++
