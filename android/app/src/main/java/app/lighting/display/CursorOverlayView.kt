@@ -13,7 +13,8 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * GlideX-style local pointer: a wrap_content hardware layer moved with
  * translationX/Y. Host samples at 1 ms; applying every packet via View.post
- * backs up the UI queue. Take the latest pose and paint it on the next vsync.
+ * backs up the UI queue. Take the latest pose and apply it at the front of
+ * the UI queue so a mid-frame packet can still make this vsync (GlideX).
  */
 class CursorOverlayView @JvmOverloads constructor(
     context: Context,
@@ -49,7 +50,7 @@ class CursorOverlayView @JvmOverloads constructor(
         val pose = pending.getAndSet(null) ?: return
         applyPose(pose)
         if (pending.get() != null && scheduled.compareAndSet(false, true)) {
-            postOnAnimation(applyOnce)
+            postAtFrontOfQueue(applyOnce)
         }
     }
 
@@ -149,7 +150,7 @@ class CursorOverlayView @JvmOverloads constructor(
             prev.bitmap.recycle()
         }
         if (scheduled.compareAndSet(false, true)) {
-            postOnAnimation(applyOnce)
+            postAtFrontOfQueue(applyOnce)
         }
     }
 

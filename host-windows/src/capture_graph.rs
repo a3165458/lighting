@@ -95,8 +95,11 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
     if encoder.contains("nvenc") {
         // GlideX / Sunshine: ddagrab is already D3D11. scale_d3d11 converts
         // BGRA→NV12 on the same device and NVENC consumes D3D11 frames.
-        // hwupload_cuda copies every picture to CUDA (~1–2 ms) and was the
-        // first graph, so a working NVENC path always paid that tax.
+        // extra_hw_frames on the filter is not in older ffmpeg option tables;
+        // unknown keys used to fail this graph (~3s) and we encoded on CUDA.
+        graphs.push(format!(
+            "{dda},scale_d3d11=width={dst_w}:height={dst_h}:format=nv12"
+        ));
         for extra in &extras {
             graphs.push(format!(
                 "{dda},scale_d3d11=width={dst_w}:height={dst_h}:format=nv12:extra_hw_frames={extra}"
@@ -130,19 +133,23 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
     }
     if encoder.contains("amf") {
         if scale {
+            graphs.push(format!(
+                "{dda},scale_d3d11=width={dst_w}:height={dst_h}:format=nv12"
+            ));
             for extra in &extras {
                 graphs.push(format!(
                     "{dda},hwupload=extra_hw_frames={extra},scale_d3d11={dst_w}:{dst_h}:format=nv12"
                 ));
             }
         } else {
-            // Stay on D3D11. hwdownload of an identity frame was a full CPU copy.
+            // Stay on D3D11. hwmap first; hwupload of an identity frame is a copy.
+            graphs.push(format!("{dda},hwmap=derive_device=d3d11"));
+            graphs.push(format!("{dda},format=d3d11"));
             for extra in &extras {
                 graphs.push(format!(
                     "{dda},hwupload=extra_hw_frames={extra},format=d3d11"
                 ));
             }
-            graphs.push(format!("{dda},hwmap=derive_device=d3d11"));
         }
     }
     if scale {
@@ -217,8 +224,9 @@ mod tests {
         assert!(graphs.len() >= 4);
         assert!(graphs[0].contains("scale_d3d11"));
         assert!(graphs[0].contains("format=nv12"));
-        assert!(graphs[0].contains("extra_hw_frames=1"));
+        assert!(!graphs[0].contains("extra_hw_frames"));
         assert!(!graphs[0].contains("hwupload_cuda"));
+        assert!(graphs.iter().any(|g| g.contains("scale_d3d11") && g.contains("extra_hw_frames=1")));
         assert!(graphs.iter().any(|g| g.contains("hwupload_cuda") && g.contains("scale_cuda")));
         assert!(graphs.iter().any(|g| g.contains("extra_hw_frames=2")));
         assert!(graphs.last().unwrap().contains("hwdownload"));
@@ -246,8 +254,10 @@ mod tests {
             Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x1002 }),
             60, 1920, 1080, 1920, 1080, "h264_amf",
         );
-        assert!(graphs[0].contains("format=d3d11"));
+        assert!(graphs[0].contains("hwmap=derive_device=d3d11"));
+        assert!(!graphs[0].contains("hwupload"));
         assert!(!graphs[0].contains("hwdownload"));
+        assert!(graphs.iter().any(|g| g.contains("format=d3d11")));
     }
 
     #[test]

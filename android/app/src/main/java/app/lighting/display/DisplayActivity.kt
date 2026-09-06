@@ -616,21 +616,15 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
             }
             if (Build.VERSION.SDK_INT >= 30) {
                 try {
-                    // Present on the tablet's vsync. Pinning to streamFps used to
-                    // drop a 120 Hz panel to 60 and add a frame of glass delay.
+                    // Hint the panel refresh, but do not mark the surface as a
+                    // fixed-rate movie. FIXED_SOURCE made SurfaceFlinger wait a
+                    // vsync; GlideX / Moonlight present as soon as the buffer is
+                    // released (releaseOutputBuffer(..., 0)).
                     val hz = panelFps.coerceAtLeast(streamFps).toFloat()
-                    if (Build.VERSION.SDK_INT >= 31) {
-                        surface.holder.surface.setFrameRate(
-                            hz,
-                            Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE,
-                            Surface.CHANGE_FRAME_RATE_ALWAYS,
-                        )
-                    } else {
-                        surface.holder.surface.setFrameRate(
-                            hz,
-                            Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE,
-                        )
-                    }
+                    surface.holder.surface.setFrameRate(
+                        hz,
+                        Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
+                    )
                 } catch (_: Throwable) {
                 }
             }
