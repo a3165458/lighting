@@ -70,6 +70,9 @@ pub enum NalRole {
     Aud,
     Idr,
     Vcl,
+    /// Prefix/suffix SEI. NVENC pic_timing / buffering_period makes Android
+    /// hold the picture for the CPB delay even after VUI timing is stripped.
+    Sei,
     Other,
 }
 
@@ -245,12 +248,14 @@ pub fn nal_role(nal: &[u8], hevc: bool) -> NalRole {
         match hevc_nal_type(nal) {
             32 | 33 | 34 => NalRole::ParameterSet,
             35 => NalRole::Aud,
+            39 | 40 => NalRole::Sei,
             19 | 20 | 21 => NalRole::Idr,
             0..=31 => NalRole::Vcl,
             _ => NalRole::Other,
         }
     } else {
         match h264_nal_type(nal) {
+            6 => NalRole::Sei,
             7 | 8 => NalRole::ParameterSet,
             9 => NalRole::Aud,
             5 => NalRole::Idr,
@@ -454,6 +459,9 @@ fn ingest_nal(
         crate::h264_sps::rewrite_low_latency(nal)
     };
     let role = nal_role(&nal, hevc);
+    if role == NalRole::Sei {
+        return;
+    }
     if role == NalRole::ParameterSet {
         if starts_parameter_set_group(&nal, hevc) {
             sps_pps.clear();
@@ -589,6 +597,7 @@ mod tests {
         assert_eq!(nal_role(&nal(0x65, &[]), false), NalRole::Idr);
         assert_eq!(nal_role(&nal(0x41, &[]), false), NalRole::Vcl);
         assert_eq!(nal_role(&nal(0x09, &[]), false), NalRole::Aud);
+        assert_eq!(nal_role(&nal(0x06, &[]), false), NalRole::Sei);
     }
 
     #[test]
@@ -599,6 +608,8 @@ mod tests {
         assert_eq!(nal_role(&nal(0x28, &[]), true), NalRole::Idr); // IDR_N_LP 20
         assert_eq!(nal_role(&nal(0x26, &[]), true), NalRole::Idr); // IDR_W_RADL 19
         assert_eq!(nal_role(&nal(0x02, &[]), true), NalRole::Vcl);
+        assert_eq!(nal_role(&nal(0x4E, &[]), true), NalRole::Sei); // PREFIX_SEI 39
+        assert_eq!(nal_role(&nal(0x50, &[]), true), NalRole::Sei); // SUFFIX_SEI 40
     }
 
     #[test]
@@ -694,6 +705,26 @@ mod tests {
         let second = rx.recv().unwrap();
         assert!(second.keyframe);
         assert!(looks_like_codec_config(&second.data, false));
+    }
+
+    #[test]
+    fn drops_sei_so_decoder_does_not_pace() {
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&nal(0x67, &[0x42]));
+        stream.extend_from_slice(&nal(0x68, &[0xCE]));
+        stream.extend_from_slice(&nal(0x06, &[0, 1, 2, 3]));
+        stream.extend_from_slice(&nal(0x65, &[0xAA]));
+        let (tx, rx) = mpsc::sync_channel(8);
+        pump_annexb(Cursor::new(stream), tx, false).unwrap();
+        let cfg = rx.recv().unwrap();
+        assert!(cfg.codec_config);
+        let idr = rx.recv().unwrap();
+        assert!(idr.keyframe);
+        assert!(
+            !idr.data.windows(5).any(|w| w == [0, 0, 0, 1, 0x06]),
+            "pic_timing SEI must not reach Android"
+        );
+        assert!(idr.data.windows(5).any(|w| w == [0, 0, 0, 1, 0x65]));
     }
 
     #[test]
