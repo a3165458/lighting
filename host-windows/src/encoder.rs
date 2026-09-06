@@ -489,6 +489,12 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "0".into(),
             "-mbbrc".into(),
             "0".into(),
+            "-rdo".into(),
+            if lighting_host::session_policy::qsv_rdo() {
+                "1".into()
+            } else {
+                "0".into()
+            },
         ]
     } else if encoder.contains("amf") {
         vec![

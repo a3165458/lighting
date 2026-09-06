@@ -215,6 +215,13 @@ pub fn qsv_low_power() -> bool {
     true
 }
 
+/// QSV rate-distortion optimization. Default on; it is extra GPU encode
+/// time, not a picture queue. At 1440p120 a 4 ms encode that becomes ~10 ms
+/// misses the next vsync. Sunshine ULL leaves RDO off.
+pub fn qsv_rdo() -> bool {
+    false
+}
+
 /// Encoder DPB / `num_ref_frames`. NVENC default follows the level (4–16);
 /// Android then holds decoded pictures. Moonlight decoder-errata: 1.
 pub fn encoder_refs() -> u32 {
@@ -818,6 +825,7 @@ mod tests {
         assert_eq!(nvenc_rc_attempts(), vec!["cbr_ld_hq", "cbr"]);
         assert_eq!(amf_async_depth(), 1);
         assert!(qsv_low_power());
+        assert!(!qsv_rdo());
         assert_eq!(encoder_refs(), 1);
         assert!(x265_params(120).contains("rc-lookahead=0"));
         assert!(x265_params(120).contains("bframes=0"));
