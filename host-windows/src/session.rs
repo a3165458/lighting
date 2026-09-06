@@ -1134,12 +1134,18 @@ async fn handle_client(
         };
         match pkt {
             Some(pkt) => {
-                // One TCP write for the picture plus PCM. Separate write_all
-                // on a TCP_NODELAY USB socket was a second reverse RTT after
-                // the AU, while the next frame sat in the 1-deep queue.
+                // One TCP write for this picture plus latest PCM. Separate
+                // write_all on a TCP_NODELAY USB socket was a second reverse
+                // RTT after the AU. Do not try_recv more video: recv() already
+                // freed the 1-deep slot, so the assembler may have pushed the
+                // next AU — coalescing it here parks the first picture for a
+                // whole encode and the ~52 KB write misses the 48 KB send
+                // buffer (USB ACK mid-write). GlideX emits one picture per send.
                 let mut out = encode_video_packet(t0, &pkt);
-                while let Ok(more) = session.rx.try_recv() {
-                    out.extend_from_slice(&encode_video_packet(t0, &more));
+                if session_policy::coalesce_extra_video_on_write() {
+                    while let Ok(more) = session.rx.try_recv() {
+                        out.extend_from_slice(&encode_video_packet(t0, &more));
+                    }
                 }
                 if session_policy::audio_packets_per_video_frame() > 0 {
                     if let Some(ap) = take_latest_audio(&audio_rx) {
