@@ -116,6 +116,15 @@ pub fn encoded_queue_capacity() -> usize {
     1
 }
 
+/// Drain extra encoded AUs into the same TCP write. After `recv` unblocks
+/// the 1-deep queue the assembler may already have the next picture;
+/// coalescing then parks the first AU for a whole encode and ~52 KB at
+/// 25 Mbps/120 Hz exceeds the 48 KB send buffer. GlideX / Moonlight emit
+/// one picture per send. PCM still rides the same write (not a second RTT).
+pub fn coalesce_extra_video_on_write() -> bool {
+    false
+}
+
 /// Raw annexb reader→assembler queue. 8 held ~8 AUs (60–130 ms at 120 Hz)
 /// so ffmpeg never saw backpressure and `encoded_queue_capacity(1)` could
 /// not make it skip *input* frames. 2 still parked the next AU's
@@ -1454,6 +1463,7 @@ Current AC Power Setting Index: 0x00000003
         assert_eq!(encoded_queue_capacity(), 1);
         assert_eq!(annexb_raw_queue_capacity(), 1);
         assert_eq!(capture_thread_queue_size(), 1);
+        assert!(!coalesce_extra_video_on_write());
     }
 
     #[test]
