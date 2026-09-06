@@ -13,6 +13,7 @@ import android.util.Log
 import android.view.MotionEvent
 import android.graphics.PixelFormat
 import android.view.Surface
+import android.view.SurfaceControl
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
@@ -663,6 +664,10 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
      * Hint the panel refresh, but do not mark the surface as a fixed-rate
      * movie. FIXED_SOURCE made SurfaceFlinger wait a vsync; GlideX /
      * Moonlight present as soon as the buffer is released.
+     *
+     * MediaCodec consumes the BufferQueue Surface, and Android then
+     * ignores Surface.setFrameRate. Pin the SurfaceView's SurfaceControl
+     * too so the compositor still latches at peak Hz, not 60.
      */
     private fun applySurfaceFrameRate(surfaceObj: Surface) {
         if (Build.VERSION.SDK_INT < 30 || !surfaceObj.isValid) return
@@ -680,6 +685,21 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
                 )
             }
+        } catch (_: Throwable) {
+        }
+        if (Build.VERSION.SDK_INT < 31) return
+        if (!this::surface.isInitialized) return
+        try {
+            val sc = surface.surfaceControl
+            if (!sc.isValid) return
+            SurfaceControl.Transaction()
+                .setFrameRate(
+                    sc,
+                    hz,
+                    Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
+                    Surface.CHANGE_FRAME_RATE_ALWAYS,
+                )
+                .apply()
         } catch (_: Throwable) {
         }
     }
