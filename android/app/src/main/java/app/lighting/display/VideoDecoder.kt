@@ -234,12 +234,16 @@ class VideoDecoder {
         val out = ArrayList<MediaFormat>()
         val n = codecName.lowercase()
         val software = n.contains("google") || n.contains("c2.android") || n.contains("software")
-        // Prefer low-latency configure first on SoCs that tolerate it.
+        // Moonlight setDecoderLowLatencyOptions(tryNumber): most-to-least
+        // risky. Dumping every vendor key plus max-output-buffers on try 0
+        // made FEATURE_LowLatency configure() fail, then we used the
+        // high-latency format (a vsync or more of hold).
         if (caps.lowLatencySafe && !software) {
-            out.add(buildFormat(width, height, csd, codecName, lowLatency = true, operatingRate = true))
-            out.add(buildFormat(width, height, csd, codecName, lowLatency = true, operatingRate = false))
+            for (tryNumber in 0..5) {
+                out.add(buildFormat(width, height, csd, codecName, tryNumber))
+            }
         }
-        out.add(buildFormat(width, height, csd, codecName, lowLatency = false, operatingRate = false))
+        out.add(buildFormat(width, height, csd, codecName, -1))
         return out
     }
 
@@ -248,8 +252,7 @@ class VideoDecoder {
         height: Int,
         csd: ByteArray?,
         codecName: String,
-        lowLatency: Boolean,
-        operatingRate: Boolean,
+        tryNumber: Int,
     ): MediaFormat {
         val format = MediaFormat.createVideoFormat(mime, width, height)
         format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 8 * 1024 * 1024)
@@ -258,17 +261,8 @@ class VideoDecoder {
             format.setInteger(MediaFormat.KEY_FRAME_RATE, 120)
         } catch (_: Throwable) {
         }
-        if (operatingRate) {
-            try {
-                format.setInteger(MediaFormat.KEY_PRIORITY, 0)
-                // Moonlight: Short.MAX_VALUE on Qualcomm. 240 still let some
-                // SoCs pace like a 60 Hz movie.
-                format.setInteger(MediaFormat.KEY_OPERATING_RATE, 32767)
-            } catch (_: Throwable) {
-            }
-        }
-        if (lowLatency) {
-            applyLowLatencyOptions(format, codecName)
+        if (tryNumber >= 0) {
+            applyLowLatencyOptions(format, codecName, tryNumber)
         }
         if (csd != null && csd.isNotEmpty()) {
             applyCsd(format, csd)
@@ -276,45 +270,82 @@ class VideoDecoder {
         return format
     }
 
+    private fun decoderHasFeatureLowLatency(codecName: String): Boolean {
+        if (Build.VERSION.SDK_INT < 30) return false
+        return try {
+            val info = MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos
+                .firstOrNull { it.name.equals(codecName, true) }
+                ?: return false
+            info.getCapabilitiesForType(mime)
+                .isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency)
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     /**
-     * Moonlight MediaCodecHelper.setDecoderLowLatencyOptions. Vendor keys are
-     * prefix-specific: a QTI key on MTK can fail configure() and drop us onto
-     * the high-latency fallback.
+     * Moonlight MediaCodecHelper.setDecoderLowLatencyOptions(tryNumber).
+     * Try 0 on a FEATURE_LowLatency decoder is KEY_LOW_LATENCY alone.
      */
-    private fun applyLowLatencyOptions(format: MediaFormat, codecName: String) {
+    private fun applyLowLatencyOptions(format: MediaFormat, codecName: String, tryNumber: Int) {
+        val official = decoderHasFeatureLowLatency(codecName)
+        val n = codecName.lowercase()
+        val qcom = n.startsWith("omx.qcom") || n.startsWith("c2.qti") || n.contains(".qcom.")
         try {
-            format.setInteger("low-latency", 1)
-            if (Build.VERSION.SDK_INT >= 30) {
-                format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+            if (tryNumber < 1) {
+                format.setInteger("low-latency", 1)
+                if (Build.VERSION.SDK_INT >= 30) {
+                    format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+                }
+                // Official low-latency codecs reject extra vendor keys.
+                if (official) return
             }
-            format.setInteger(MediaFormat.KEY_PRIORITY, 0)
-            format.setInteger("latency", 0)
-            // MediaTek / Fire TV: ACodec "vdec-lowlatency", not the vendor.mtk.* alias.
-            format.setInteger("vdec-lowlatency", 1)
-            // Moonlight: OMX/C2 default output pools are 4-8 pictures.
-            // Cap at 2 (decode + present) so the SoC cannot hold a vsync.
-            format.setInteger("max-output-buffers", 2)
+            if (tryNumber < 2 &&
+                (!android.os.Build.MANUFACTURER.equals("xiaomi", true) ||
+                    Build.VERSION.SDK_INT > 23)
+            ) {
+                format.setInteger("vdec-lowlatency", 1)
+            }
+            if (tryNumber < 3) {
+                if (qcom) {
+                    format.setInteger(MediaFormat.KEY_OPERATING_RATE, 32767)
+                } else if (Build.VERSION.SDK_INT >= 23) {
+                    format.setInteger(MediaFormat.KEY_PRIORITY, 0)
+                }
+            }
         } catch (_: Throwable) {
         }
-        val n = codecName.lowercase()
+        if (Build.VERSION.SDK_INT < 26) return
         try {
             when {
-                n.startsWith("omx.qcom") || n.startsWith("c2.qti") || n.contains(".qcom.") -> {
-                    format.setInteger("vendor.qti-ext-dec-picture-order.enable", 1)
-                    format.setInteger("vendor.qti-ext-dec-low-latency.enable", 1)
+                qcom -> {
+                    if (tryNumber < 4) {
+                        format.setInteger("vendor.qti-ext-dec-picture-order.enable", 1)
+                    }
+                    if (tryNumber < 5) {
+                        format.setInteger("vendor.qti-ext-dec-low-latency.enable", 1)
+                    }
                 }
                 n.startsWith("omx.hisi") || n.startsWith("c2.hisi") || n.contains("kirin") -> {
-                    format.setInteger("vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-req", 1)
-                    format.setInteger("vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-rdy", -1)
+                    if (tryNumber < 4) {
+                        format.setInteger("vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-req", 1)
+                        format.setInteger("vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-rdy", -1)
+                    }
                 }
                 n.startsWith("omx.exynos") || n.startsWith("c2.exynos") || n.contains(".sec.") -> {
-                    format.setInteger("vendor.rtc-ext-dec-low-latency.enable", 1)
+                    if (tryNumber < 4) {
+                        format.setInteger("vendor.rtc-ext-dec-low-latency.enable", 1)
+                    }
                 }
                 n.startsWith("omx.amlogic") || n.startsWith("c2.amlogic") -> {
-                    format.setInteger("vendor.low-latency.enable", 1)
+                    if (tryNumber < 4) {
+                        format.setInteger("vendor.low-latency.enable", 1)
+                    }
                 }
                 n.startsWith("omx.mtk") || n.startsWith("c2.mtk") || n.contains(".mtk.") -> {
-                    format.setInteger("vendor.mtk.vdec.low.latency", 1)
+                    if (tryNumber < 4) {
+                        format.setInteger("vendor.mtk.vdec.low.latency", 1)
+                    }
                 }
             }
         } catch (_: Throwable) {

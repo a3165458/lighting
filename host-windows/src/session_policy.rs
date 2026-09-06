@@ -170,6 +170,12 @@ pub fn nvenc_spatial_aq() -> bool {
     false
 }
 
+/// Sunshine ULL: `CBR_LOWDELAY_HQ`. Plain `cbr` can keep a 1-frame RC delay
+/// even with `-zerolatency 1`.
+pub fn nvenc_rc() -> &'static str {
+    "cbr_ld_hq"
+}
+
 /// WASAPI shared-mode loopback buffer, 100-ns units. 50 ms was audible lag.
 pub fn wasapi_buffer_hns() -> i64 {
     200_000
@@ -734,6 +740,8 @@ mod tests {
         assert_eq!(hw_extra_frames_fallback(), 2);
         assert_eq!(nvenc_surfaces(), 1);
         assert_eq!(nvenc_surfaces_fallback(), 2);
+        assert_eq!(nvenc_rc(), "cbr_ld_hq");
+        assert_ne!(nvenc_rc(), "cbr");
         assert_eq!(nvenc_surface_attempts(), vec![1, 2]);
         assert!(!nvenc_spatial_aq());
         assert_eq!(wasapi_buffer_hns(), 200_000);
