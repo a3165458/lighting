@@ -1,10 +1,13 @@
 package app.lighting.display
 
+import android.system.Os
+import android.system.OsConstants
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.EOFException
+import java.io.FileDescriptor
 import java.net.InetSocketAddress
 import java.net.Socket
 
@@ -186,12 +189,25 @@ class LitSocket(
             }
             throw t
         }
+        // Android ignores TCP_NODELAY set *before* connect on some pads
+        // (Moonlight/scrcpy re-apply after connect). Delayed ACK then
+        // parks the host write_all behind 40–200 ms once the 64 KB send
+        // buffer fills (~two P-frames).
+        tcpNoDelay = true
+        applyTcpQuickAck(this)
     }
     val input = DataInputStream(socket.getInputStream())
     val output = DataOutputStream(socket.getOutputStream())
     private val writeLock = Any()
+    private val tcpFd: FileDescriptor? = socketFileDescriptor(socket)
 
-    fun read(): LitProtocol.Message = LitProtocol.read(input)
+    fun read(): LitProtocol.Message {
+        val msg = LitProtocol.read(input)
+        // Linux clears TCP_QUICKACK after an ACK; re-arm so the host is
+        // not waiting on delayed ACK to free the next picture.
+        applyTcpQuickAck(tcpFd)
+        return msg
+    }
     fun write(type: Byte, flags: Int = 0, payload: ByteArray = ByteArray(0)) {
         synchronized(writeLock) {
             LitProtocol.write(output, type, flags, payload)
@@ -203,6 +219,40 @@ class LitSocket(
             socket.close()
         } catch (_: Exception) {
         }
+    }
+}
+
+/** linux/tcp.h; not always present on OsConstants. */
+private const val TCP_QUICKACK = 12
+
+private fun applyTcpQuickAck(socket: Socket) {
+    applyTcpQuickAck(socketFileDescriptor(socket))
+}
+
+private fun applyTcpQuickAck(fd: FileDescriptor?) {
+    if (fd == null || !fd.valid()) return
+    try {
+        Os.setsockoptInt(fd, OsConstants.IPPROTO_TCP, TCP_QUICKACK, 1)
+    } catch (_: Throwable) {
+    }
+}
+
+private fun socketFileDescriptor(socket: Socket): FileDescriptor? {
+    for (name in arrayOf("getFileDescriptor$", "getFileDescriptor")) {
+        try {
+            val m = socket.javaClass.getDeclaredMethod(name).apply { isAccessible = true }
+            val fd = m.invoke(socket) as? FileDescriptor
+            if (fd != null && fd.valid()) return fd
+        } catch (_: Throwable) {
+        }
+    }
+    return try {
+        val implField = Socket::class.java.getDeclaredField("impl").apply { isAccessible = true }
+        val impl = implField.get(socket) ?: return null
+        val fdField = impl.javaClass.getDeclaredField("fd").apply { isAccessible = true }
+        fdField.get(impl) as? FileDescriptor
+    } catch (_: Throwable) {
+        null
     }
 }
 
