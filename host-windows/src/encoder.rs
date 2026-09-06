@@ -36,6 +36,8 @@ pub struct EncodeSettings {
     pub draw_mouse: bool,
     /// NVENC `-surfaces`. 1 is Sunshine ULL; 2 if ffmpeg never emits IDR.
     pub nvenc_surfaces: u32,
+    /// NVENC `-rc`. `cbr_ld_hq` first; `cbr` if that ffmpeg rejects it.
+    pub nvenc_rc: String,
 }
 
 pub struct EncoderSession {
@@ -401,7 +403,11 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "-multipass".into(),
             "disabled".into(),
             "-rc".into(),
-            lighting_host::session_policy::nvenc_rc().into(),
+            if settings.nvenc_rc.is_empty() {
+                lighting_host::session_policy::nvenc_rc().into()
+            } else {
+                settings.nvenc_rc.clone()
+            },
             "-b:v".into(),
             br.clone(),
             "-maxrate".into(),

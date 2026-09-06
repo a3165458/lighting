@@ -44,7 +44,6 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private lateinit var status: TextView
     private lateinit var statusReason: TextView
     private lateinit var statusBar: PassThroughBar
-    private lateinit var touchLayer: View
     private lateinit var reconnectLayer: View
     private lateinit var cursorOverlay: CursorOverlayView
     private var cursorBitmap: Bitmap? = null
@@ -105,7 +104,6 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         status = findViewById(R.id.status)
         statusReason = findViewById(R.id.statusReason)
         statusBar = findViewById(R.id.statusBar)
-        touchLayer = findViewById(R.id.touchLayer)
         reconnectLayer = findViewById(R.id.reconnectLayer)
         cursorOverlay = findViewById(R.id.cursorOverlay)
         cursorOverlay.isClickable = false
@@ -120,17 +118,18 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         reconnectLayer.isClickable = false
         reconnectLayer.isFocusable = false
         reconnectLayer.setOnClickListener(null)
-        surface.isClickable = false
-        surface.isFocusable = false
-        // SurfaceView sits under the overlay; z-order media overlay keeps HUD/touch above.
+        // Touch on the SurfaceView itself. A fullscreen transparent overlay
+        // forces SurfaceFlinger to GPU-compose the video (one extra vsync
+        // on many pads). Moonlight/GlideX keep the decoder surface uncovered.
+        surface.isClickable = true
+        surface.isFocusable = true
         surface.setZOrderMediaOverlay(false)
         // OPAQUE lets HWC punch the video overlay through. RGBX_8888 forced GPU composition.
         surface.holder.setFormat(PixelFormat.OPAQUE)
         surface.holder.addCallback(this)
-        touchLayer.bringToFront()
         reconnectLayer.bringToFront()
         statusBar.bringToFront()
-        touch.attach(touchLayer, surface)
+        touch.attach(surface, surface)
         if (surface.holder.surface.isValid) {
             bindVideoSurface(surface.holder.surface)
             startSession()
@@ -666,7 +665,6 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 }
             }
             cursorOverlay.bringToFront()
-            touchLayer.bringToFront()
             reconnectLayer.bringToFront()
             statusBar.bringToFront()
         }
