@@ -9,6 +9,8 @@ import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.EOFException
 import java.io.FileDescriptor
+import java.io.FilterInputStream
+import java.io.InputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 
@@ -198,8 +200,6 @@ class LitSocket(
         // is greylisted on API 28+.
         tcpNoDelay = true
     }
-    val input = DataInputStream(socket.getInputStream())
-    val output = DataOutputStream(socket.getOutputStream())
     private val writeLock = Any()
     // Keep the dup fd for the socket lifetime. Hidden getFileDescriptor$
     // is greylisted on API 28+ so QUICKACK used to silently no-op and
@@ -207,6 +207,12 @@ class LitSocket(
     private val tcpPfd: ParcelFileDescriptor? = parcelSocketFd(socket)
     private val tcpFd: FileDescriptor? = tcpPfd?.fileDescriptor?.takeIf { it.valid() }
         ?: socketFileDescriptor(socket)
+    // scrcpy: re-arm QUICKACK on every recv, not once per LIT1 message.
+    // Linux drops the flag after the first ACK, so a 30 KB AU's last
+    // odd segment waited on delayed ACK and parked the host's 1-deep
+    // encoded queue.
+    val input = DataInputStream(QuickAckInputStream(socket.getInputStream(), tcpFd))
+    val output = DataOutputStream(socket.getOutputStream())
 
     init {
         applyTcpLowDelay(tcpFd)
@@ -214,8 +220,6 @@ class LitSocket(
 
     fun read(): LitProtocol.Message {
         val msg = LitProtocol.read(input)
-        // Linux clears TCP_QUICKACK after an ACK; re-arm so the host is
-        // not waiting on delayed ACK to free the next picture.
         applyTcpQuickAck(tcpFd)
         return msg
     }
@@ -262,6 +266,26 @@ private fun applyTcpQuickAck(fd: FileDescriptor?) {
     try {
         Os.setsockoptInt(fd, OsConstants.IPPROTO_TCP, TCP_QUICKACK, 1)
     } catch (_: Throwable) {
+    }
+}
+
+/** Re-arm TCP_QUICKACK around each kernel recv of a video AU. */
+private class QuickAckInputStream(
+    inner: InputStream,
+    private val fd: FileDescriptor?,
+) : FilterInputStream(inner) {
+    override fun read(): Int {
+        applyTcpQuickAck(fd)
+        val n = super.read()
+        applyTcpQuickAck(fd)
+        return n
+    }
+
+    override fun read(b: ByteArray, off: Int, len: Int): Int {
+        applyTcpQuickAck(fd)
+        val n = super.read(b, off, len)
+        applyTcpQuickAck(fd)
+        return n
     }
 }
 
