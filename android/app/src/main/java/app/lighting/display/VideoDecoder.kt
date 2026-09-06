@@ -311,6 +311,14 @@ class VideoDecoder {
                 format.setInteger("low-latency", 1)
                 if (Build.VERSION.SDK_INT >= 30) {
                     format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+                    // KEY_LOW_LATENCY is "low-latency". FEATURE_LowLatency
+                    // writes "feature-low-latency". C2 codecs that advertise
+                    // the feature still hold a decoded picture unless the
+                    // feature- prefix is on; Moonlight/GlideX set both.
+                    format.setFeatureEnabled(
+                        MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency,
+                        true,
+                    )
                 }
                 if (tryNumber < 1 && Build.VERSION.SDK_INT >= 23) {
                     format.setInteger(MediaFormat.KEY_OPERATING_RATE, 32767)
