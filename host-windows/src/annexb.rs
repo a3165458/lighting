@@ -241,8 +241,54 @@ pub fn pump_annexb(
                 &mut drop_until_key,
             );
         }
+        // ffmpeg `-flush_packets 1` writes one AU then waits. split_annexb
+        // keeps the last NAL until the next start code, which would hold the
+        // picture until the following AU (~16 ms at 60 Hz). A short read
+        // means the writer flushed: the leftover NAL is complete.
+        if n < buf.len() {
+            finish_flushed_au(
+                &mut acc,
+                hevc,
+                &mut au,
+                &mut au_has_vcl,
+                &mut au_key,
+                &mut sps_pps,
+                &mut sent_cfg,
+                &tx,
+                &mut drop_until_key,
+            );
+        }
     }
     Ok(())
+}
+
+fn finish_flushed_au(
+    acc: &mut Vec<u8>,
+    hevc: bool,
+    au: &mut Vec<u8>,
+    au_has_vcl: &mut bool,
+    au_key: &mut bool,
+    sps_pps: &mut Vec<u8>,
+    sent_cfg: &mut bool,
+    tx: &mpsc::SyncSender<EncodedPacket>,
+    drop_until_key: &mut bool,
+) {
+    if start_code_len(acc) > 0 {
+        ingest_nal(
+            std::mem::take(acc),
+            hevc,
+            au,
+            au_has_vcl,
+            au_key,
+            sps_pps,
+            sent_cfg,
+            tx,
+            drop_until_key,
+        );
+    }
+    if *au_has_vcl {
+        flush_au(au, au_has_vcl, au_key, sps_pps, tx, drop_until_key);
+    }
 }
 
 fn ingest_nal(
@@ -512,6 +558,55 @@ mod tests {
         assert!(first.codec_config);
         let second = rx.recv().unwrap();
         assert!(second.keyframe);
+    }
+
+    /// One flushed AU must leave the pump without waiting for the next frame's
+    /// start code. Otherwise glass-to-glass is one display refresh behind.
+    #[test]
+    fn flushed_au_emits_before_next_frame_arrives() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use std::thread;
+        use std::time::Duration;
+
+        struct OneAuThenBlock {
+            chunk: Option<Vec<u8>>,
+            unblock: Arc<AtomicBool>,
+        }
+        impl std::io::Read for OneAuThenBlock {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if let Some(data) = self.chunk.take() {
+                    buf[..data.len()].copy_from_slice(&data);
+                    return Ok(data.len());
+                }
+                while !self.unblock.load(Ordering::SeqCst) {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Ok(0)
+            }
+        }
+
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&nal(0x67, &[0x42]));
+        stream.extend_from_slice(&nal(0x68, &[0xCE]));
+        stream.extend_from_slice(&nal(0x65, &[0xAA]));
+        let unblock = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::sync_channel(8);
+        let reader = OneAuThenBlock {
+            chunk: Some(stream),
+            unblock: unblock.clone(),
+        };
+        let pump = thread::spawn(move || pump_annexb(reader, tx, false));
+        let first = rx
+            .recv_timeout(Duration::from_millis(400))
+            .expect("codec-config should emit on the flushed AU, not on EOF");
+        assert!(first.codec_config);
+        let second = rx
+            .recv_timeout(Duration::from_millis(400))
+            .expect("IDR should emit on the flushed AU, not wait for the next frame");
+        assert!(second.keyframe);
+        unblock.store(true, Ordering::SeqCst);
+        pump.join().unwrap().unwrap();
     }
 
     #[test]
