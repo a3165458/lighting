@@ -42,6 +42,9 @@ class CursorOverlayView @JvmOverloads constructor(
     @Volatile private var surfaceReady = false
     @Volatile private var lastTx = Float.NaN
     @Volatile private var lastTy = Float.NaN
+    // Overlay planes ignore the activity mode and sit at 60 Hz unless we
+    // pin the SurfaceControl. display.refreshRate is that 60 until then.
+    @Volatile private var peakHz = 120f
 
     private data class Pose(
         val visible: Boolean,
@@ -102,25 +105,47 @@ class CursorOverlayView @JvmOverloads constructor(
         surfaceReady = false
     }
 
+    fun setPeakRefreshHz(hz: Float) {
+        peakHz = hz.coerceIn(30f, 120f)
+        hintOverlayFrameRate()
+    }
+
     /**
      * Overlay planes default to 60 Hz even after the activity locked peak
      * refresh. SurfaceControl.Transaction then waits 16 ms; GlideX does not.
+     * Pin the Surface *and* its SurfaceControl to the mode lockPeakRefresh
+     * chose — display.refreshRate on this overlay is still 60 until then.
      */
     private fun hintOverlayFrameRate() {
         if (Build.VERSION.SDK_INT < 30) return
+        val hz = peakHz
         val s = holder.surface
-        if (!s.isValid) return
-        val hz = display?.refreshRate?.takeIf { it >= 30f } ?: 120f
+        if (s.isValid) {
+            try {
+                if (Build.VERSION.SDK_INT >= 31) {
+                    s.setFrameRate(
+                        hz,
+                        Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
+                        Surface.CHANGE_FRAME_RATE_ALWAYS,
+                    )
+                } else {
+                    s.setFrameRate(hz, Surface.FRAME_RATE_COMPATIBILITY_DEFAULT)
+                }
+            } catch (_: Throwable) {
+            }
+        }
+        if (Build.VERSION.SDK_INT < 31) return
         try {
-            if (Build.VERSION.SDK_INT >= 31) {
-                s.setFrameRate(
+            val sc = surfaceControl
+            if (!sc.isValid) return
+            SurfaceControl.Transaction()
+                .setFrameRate(
+                    sc,
                     hz,
                     Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
                     Surface.CHANGE_FRAME_RATE_ALWAYS,
                 )
-            } else {
-                s.setFrameRate(hz, Surface.FRAME_RATE_COMPATIBILITY_DEFAULT)
-            }
+                .apply()
         } catch (_: Throwable) {
         }
     }
@@ -246,7 +271,16 @@ class CursorOverlayView @JvmOverloads constructor(
         return try {
             val sc = surfaceControl
             if (!sc.isValid) return false
-            SurfaceControl.Transaction().setPosition(sc, x, y).apply()
+            val tx = SurfaceControl.Transaction().setPosition(sc, x, y)
+            if (Build.VERSION.SDK_INT >= 31) {
+                tx.setFrameRate(
+                    sc,
+                    peakHz,
+                    Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
+                    Surface.CHANGE_FRAME_RATE_ALWAYS,
+                )
+            }
+            tx.apply()
             lastTx = x
             lastTy = y
             true

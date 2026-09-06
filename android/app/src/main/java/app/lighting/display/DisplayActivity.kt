@@ -111,6 +111,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         cursorOverlay = findViewById(R.id.cursorOverlay)
         cursorOverlay.isClickable = false
         cursorOverlay.isFocusable = false
+        cursorOverlay.setPeakRefreshHz(panelFps.toFloat().coerceAtLeast(60f))
         status.isClickable = false
         status.isFocusable = false
         statusReason.isClickable = false
@@ -169,6 +170,9 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 window.attributes = lp
             } catch (_: Throwable) {
             }
+        }
+        if (this::cursorOverlay.isInitialized) {
+            cursorOverlay.setPeakRefreshHz(hz.toFloat().coerceAtLeast(60f))
         }
         return hz
     }
