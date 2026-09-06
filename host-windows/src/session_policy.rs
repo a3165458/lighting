@@ -341,6 +341,14 @@ pub fn qsv_aud() -> bool {
     true
 }
 
+/// h264_amf `-aud`. Default unset. Without an AU delimiter the assembler
+/// holds the VCL until Quiet (PeekNamedPipe) or the next picture — up to
+/// IDLE_FLUSH (1 ms) on every AMD frame. NVENC/QSV already insert AUD.
+/// hevc_amf rejects this key (header_insertion_mode instead).
+pub fn amf_aud() -> bool {
+    true
+}
+
 /// h264_qsv `-a53cc`. Default 1 walks A/53 caption SEI on every picture.
 /// ddagrab has none; NVENC already turns this off. Not an hevc_qsv option.
 pub fn qsv_a53cc() -> bool {
@@ -1051,6 +1059,7 @@ mod tests {
         assert!(!qsv_hevc_private_options("hevc_nvenc"));
         assert_eq!(qsv_scenario(), "gamestreaming");
         assert!(qsv_aud());
+        assert!(amf_aud());
         assert!(!qsv_a53cc());
         assert!(qsv_vcm());
         assert!(!qsv_recovery_point_sei());
