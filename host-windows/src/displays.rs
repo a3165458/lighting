@@ -471,7 +471,7 @@ pub fn configure_virtual_for_tablet(
 ) -> Result<DisplayInfo> {
     let w = (width.max(16) & !1).max(16);
     let h = (height.max(16) & !1).max(16);
-    let hz = lighting_host::session_policy::virtual_target_hz(fps, 60);
+    let hz = lighting_host::session_policy::virtual_target_hz(fps, 120);
     let primary_name = preserve.map(|p| p.device.as_str());
 
     // Never reload the IddCx adapter here: InitAdapter makes Windows promote
@@ -492,16 +492,30 @@ pub fn configure_virtual_for_tablet(
     if target.width != w || target.height != h || current_hz < hz {
         // Size + refresh on the virtual device only. Immediately reassert the
         // laptop snapshot below so a CCD side-effect cannot keep the panel at 60.
-        if let Err(err) = change_display_mode(&target.name, w, h, Some(hz), None, false) {
-            tracing::warn!("set virtual mode {w}×{h}@{hz} failed: {err:#}");
-            if target.width != w || target.height != h {
-                if let Err(err) = change_display_mode(&target.name, w, h, None, None, false) {
-                    tracing::warn!("set virtual size {w}×{h} failed: {err:#}");
+        // 120 Hz first (GlideX); 90 then 60 if the mode table is sparse.
+        let mut applied = false;
+        for try_hz in [hz, 90, 60] {
+            match change_display_mode(&target.name, w, h, Some(try_hz), None, false) {
+                Ok(()) => {
+                    tracing::info!(
+                        "virtual display mode {w}×{h}@{try_hz} (was {}×{}@{} )",
+                        target.width,
+                        target.height,
+                        current_hz
+                    );
+                    std::thread::sleep(Duration::from_millis(400));
+                    applied = true;
+                    break;
+                }
+                Err(err) => {
+                    tracing::warn!("set virtual mode {w}×{h}@{try_hz} failed: {err:#}");
                 }
             }
-        } else {
-            tracing::info!("virtual display mode {w}×{h}@{hz} (was {}×{}@{} )", target.width, target.height, current_hz);
-            std::thread::sleep(Duration::from_millis(400));
+        }
+        if !applied && (target.width != w || target.height != h) {
+            if let Err(err) = change_display_mode(&target.name, w, h, None, None, false) {
+                tracing::warn!("set virtual size {w}×{h} failed: {err:#}");
+            }
         }
     }
     if let Some(snap) = preserve {

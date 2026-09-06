@@ -47,9 +47,15 @@ impl PacketSink for tokio::sync::mpsc::Sender<EncodedPacket> {
 /// After ffmpeg `-flush_packets 1` the pipe goes quiet until the next picture.
 /// Waiting for that next start code is one refresh of glass delay. Waiting 0
 /// on a short `Read` is worse: Windows pipes return partial AUs. Idle 1 ms
-/// (process `timeBeginPeriod(1)`) is longer than a local pipe burst and far
-/// shorter than 1/60 s.
+/// (process `timeBeginPeriod(1)`) is the portable fallback. Live capture uses
+/// PeekNamedPipe + a 250 µs spin so we do not sit on a 1 ms timer tick.
 const IDLE_FLUSH: Duration = Duration::from_millis(1);
+const PIPE_QUIET: Duration = Duration::from_micros(250);
+
+enum RawMsg {
+    Data(Vec<u8>),
+    Quiet,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedPacket {
@@ -263,11 +269,40 @@ fn starts_parameter_set_group(nal: &[u8], hevc: bool) -> bool {
 }
 
 pub fn pump_annexb(
-    mut stdout: impl Read + Send + 'static,
+    stdout: impl Read + Send + 'static,
     tx: impl PacketSink + 'static,
     hevc: bool,
 ) -> Result<()> {
-    let (raw_tx, raw_rx) = mpsc::sync_channel::<Vec<u8>>(8);
+    pump_annexb_with_available(stdout, tx, hevc, |_| None)
+}
+
+/// `available` is PeekNamedPipe on the live ffmpeg stdout. `None` means
+/// "unknown" (tests / non-pipe) and we fall back to `idle`.
+pub fn pump_annexb_with_available<R, F>(
+    stdout: R,
+    tx: impl PacketSink + 'static,
+    hevc: bool,
+    available: F,
+) -> Result<()>
+where
+    R: Read + Send + 'static,
+    F: Fn(&R) -> Option<usize> + Send + 'static,
+{
+    pump_annexb_with_available_idle(stdout, tx, hevc, available, IDLE_FLUSH)
+}
+
+fn pump_annexb_with_available_idle<R, F>(
+    mut stdout: R,
+    tx: impl PacketSink + 'static,
+    hevc: bool,
+    available: F,
+    idle: Duration,
+) -> Result<()>
+where
+    R: Read + Send + 'static,
+    F: Fn(&R) -> Option<usize> + Send + 'static,
+{
+    let (raw_tx, raw_rx) = mpsc::sync_channel::<RawMsg>(8);
     let reader = thread::Builder::new()
         .name("lighting-annexb-read".into())
         .spawn(move || {
@@ -276,8 +311,19 @@ pub fn pump_annexb(
                 match stdout.read(&mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
-                        if raw_tx.send(buf[..n].to_vec()).is_err() {
+                        if raw_tx.send(RawMsg::Data(buf[..n].to_vec())).is_err() {
                             break;
+                        }
+                        let Some(mut avail) = available(&stdout) else {
+                            continue;
+                        };
+                        let spin = Instant::now();
+                        while avail == 0 && spin.elapsed() < PIPE_QUIET {
+                            std::hint::spin_loop();
+                            avail = available(&stdout).unwrap_or(0);
+                        }
+                        if avail == 0 {
+                            let _ = raw_tx.send(RawMsg::Quiet);
                         }
                     }
                 }
@@ -294,8 +340,8 @@ pub fn pump_annexb(
     let mut drop_until_key = false;
 
     loop {
-        match raw_rx.recv_timeout(IDLE_FLUSH) {
-            Ok(chunk) => {
+        match raw_rx.recv_timeout(idle) {
+            Ok(RawMsg::Data(chunk)) => {
                 acc.extend_from_slice(&chunk);
                 for nal in split_annexb(&mut acc) {
                     ingest_nal(
@@ -311,7 +357,7 @@ pub fn pump_annexb(
                     );
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
+            Ok(RawMsg::Quiet) | Err(mpsc::RecvTimeoutError::Timeout) => {
                 finish_flushed_au(
                     &mut acc,
                     hevc,
@@ -755,6 +801,55 @@ mod tests {
         let second = rx
             .recv_timeout(Duration::from_millis(400))
             .expect("IDR after the chunked AU goes idle");
+        assert!(second.keyframe);
+        unblock.store(true, Ordering::SeqCst);
+        pump.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn quiet_hint_flushes_without_waiting_idle() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use std::thread;
+
+        struct OneAuThenBlock {
+            chunk: Option<Vec<u8>>,
+            unblock: Arc<AtomicBool>,
+        }
+        impl std::io::Read for OneAuThenBlock {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if let Some(data) = self.chunk.take() {
+                    buf[..data.len()].copy_from_slice(&data);
+                    return Ok(data.len());
+                }
+                while !self.unblock.load(Ordering::SeqCst) {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Ok(0)
+            }
+        }
+
+        let mut stream = Vec::new();
+        stream.extend_from_slice(&nal(0x67, &[0x42]));
+        stream.extend_from_slice(&nal(0x68, &[0xCE]));
+        stream.extend_from_slice(&nal(0x65, &[0xAA]));
+        let unblock = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::sync_channel(8);
+        let reader = OneAuThenBlock {
+            chunk: Some(stream),
+            unblock: unblock.clone(),
+        };
+        // Idle is 400 ms — Quiet must emit well before that.
+        let pump = thread::spawn(move || {
+            pump_annexb_with_available_idle(reader, tx, false, |_| Some(0), Duration::from_millis(400))
+        });
+        let first = rx
+            .recv_timeout(Duration::from_millis(80))
+            .expect("codec-config on Quiet, not 400 ms idle");
+        assert!(first.codec_config);
+        let second = rx
+            .recv_timeout(Duration::from_millis(80))
+            .expect("IDR on Quiet, not 400 ms idle");
         assert!(second.keyframe);
         unblock.store(true, Ordering::SeqCst);
         pump.join().unwrap().unwrap();
