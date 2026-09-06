@@ -35,6 +35,18 @@ fn enable_timer_resolution() {
     }
 }
 
+/// ffmpeg is HIGH_PRIORITY_CLASS. A NORMAL host loses the pointer sampler
+/// (and the TCP write loop) whenever NVENC is busy — that's the tablet
+/// mouse sitting a refresh behind the laptop.
+fn enable_process_priority() {
+    unsafe {
+        let _ = windows::Win32::System::Threading::SetPriorityClass(
+            windows::Win32::System::Threading::GetCurrentProcess(),
+            windows::Win32::System::Threading::HIGH_PRIORITY_CLASS,
+        );
+    }
+}
+
 fn log_writer() -> BoxMakeWriter {
     let path = std::env::current_exe()
         .ok()
@@ -68,6 +80,7 @@ fn wants_ipc_only() -> bool {
 fn main() -> eframe::Result<()> {
     enable_dpi_awareness();
     enable_timer_resolution();
+    enable_process_priority();
     init_tracing();
 
     let service = HostService::new();
