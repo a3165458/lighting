@@ -130,6 +130,7 @@ fn main() -> eframe::Result<()> {
     enable_process_priority();
     enable_dwm_mmcss();
     init_tracing();
+    displays::raise_gpu_scheduling(windows::Win32::System::Threading::GetCurrentProcess());
 
     let service = HostService::new();
     let port = ipc::resolve_port();

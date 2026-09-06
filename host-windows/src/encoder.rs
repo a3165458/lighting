@@ -226,6 +226,7 @@ fn raise_process_priority(child: &std::process::Child) {
         let handle = HANDLE(child.as_raw_handle());
         let _ = SetPriorityClass(handle, HIGH_PRIORITY_CLASS);
         disable_power_throttling(handle);
+        crate::displays::raise_gpu_scheduling(handle);
     }
 }
 

@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use windows::Win32::Foundation::{BOOL, CloseHandle, HANDLE, LPARAM, RECT, WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows::Win32::Foundation::{BOOL, CloseHandle, HANDLE, LPARAM, LUID, RECT, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::Devices::Display::{
     SetDisplayConfig, SDC_APPLY, SDC_TOPOLOGY_CLONE, SDC_TOPOLOGY_EXTEND,
     SDC_TOPOLOGY_EXTERNAL, SDC_TOPOLOGY_INTERNAL, SET_DISPLAY_CONFIG_FLAGS,
@@ -22,7 +22,9 @@ use windows::Win32::Graphics::Gdi::{
     DEVMODEW, DISPLAY_DEVICEW, ENUM_CURRENT_SETTINGS, HDC, HMONITOR, MONITORINFOEXW,
 };
 use windows::Win32::Security::{
-    GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    AdjustTokenPrivileges, GetTokenInformation, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES,
+    SE_INC_BASE_PRIORITY_NAME, SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_ELEVATION,
+    TOKEN_PRIVILEGES, TokenElevation, TOKEN_QUERY,
 };
 use windows::Win32::Media::{timeBeginPeriod, timeEndPeriod};
 use windows::Win32::System::Power::{
@@ -63,6 +65,63 @@ pub fn process_is_elevated() -> bool {
         );
         let _ = CloseHandle(token);
         ok.is_ok() && elev.TokenIsElevated != 0
+    }
+}
+
+/// Sunshine: D3DKMT HIGH so DDA/NVENC keep GPU time while a game owns the
+/// virtual panel. The caller needs `SeIncreaseBasePriorityPrivilege`
+/// (usually an elevated host). REALTIME is not used: NVIDIA + HAGS can freeze.
+pub fn raise_gpu_scheduling(process: HANDLE) {
+    if !lighting_host::session_policy::gpu_scheduling_priority_high() {
+        return;
+    }
+    enable_increase_base_priority();
+    unsafe {
+        let st = windows::Wdk::Graphics::Direct3D::D3DKMTSetProcessSchedulingPriorityClass(
+            process,
+            windows::Wdk::Graphics::Direct3D::D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH,
+        );
+        if st.0 >= 0 {
+            tracing::info!("gpu scheduling class=HIGH");
+        } else {
+            tracing::debug!("gpu scheduling HIGH failed status={}", st.0);
+        }
+    }
+}
+
+fn enable_increase_base_priority() {
+    unsafe {
+        let mut token = HANDLE::default();
+        if OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+            &mut token,
+        )
+        .is_err()
+        {
+            return;
+        }
+        let mut luid = LUID::default();
+        if LookupPrivilegeValueW(PCWSTR::null(), SE_INC_BASE_PRIORITY_NAME, &mut luid).is_err() {
+            let _ = CloseHandle(token);
+            return;
+        }
+        let tp = TOKEN_PRIVILEGES {
+            PrivilegeCount: 1,
+            Privileges: [LUID_AND_ATTRIBUTES {
+                Luid: luid,
+                Attributes: SE_PRIVILEGE_ENABLED,
+            }],
+        };
+        let _ = AdjustTokenPrivileges(
+            token,
+            BOOL(0),
+            Some(&tp as *const TOKEN_PRIVILEGES),
+            0,
+            None,
+            None,
+        );
+        let _ = CloseHandle(token);
     }
 }
 
