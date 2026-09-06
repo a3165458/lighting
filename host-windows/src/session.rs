@@ -973,7 +973,7 @@ async fn handle_client(
 
     let hevc = codec.eq_ignore_ascii_case("hevc") || codec.eq_ignore_ascii_case("h265");
     let (mut session, bootstrap, mut capture_kind) =
-        start_live_encoder(&ffmpeg, &display, &settings, hevc)?;
+        start_live_encoder(&ffmpeg, &display, &settings, hevc).await?;
     let mut dda_retries = 0u8;
     if capture_kind == CaptureKind::Gdi {
         tracing::warn!("using gdigrab; games will look like 10–20 fps");
@@ -1087,10 +1087,20 @@ async fn handle_client(
                 }
             }
         }
-        // std recv_timeout blocks this worker. block_in_place lets the
-        // runtime run the cursor/HID task instead of hitching the pointer.
-        match tokio::task::block_in_place(|| session.rx.recv_timeout(Duration::from_millis(1))) {
-            Ok(pkt) => {
+        // Wake as soon as ffmpeg emits an AU. 1 ms std recv_timeout left
+        // each picture sitting until the next poll (GlideX does not).
+        let tick = if mux_cursor_on_video || control_task.is_none() {
+            Duration::from_millis(1)
+        } else {
+            Duration::from_millis(1_000)
+        };
+        let pkt = tokio::select! {
+            biased;
+            pkt = session.rx.recv() => pkt,
+            _ = tokio::time::sleep(tick) => continue,
+        };
+        match pkt {
+            Some(pkt) => {
                 let mut sent = match write_video_packet(&mut writer, t0, &pkt).await {
                     Ok(bytes) => bytes,
                     Err(err) => {
@@ -1116,8 +1126,7 @@ async fn handle_client(
                     s.connected_secs = t0.elapsed().as_secs();
                 }
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            None => {
                 session.stop();
                 let retry_dda = capture_kind == CaptureKind::Dda && dda_retries < 1;
                 dda_retries = dda_retries.saturating_add(1);
@@ -1129,9 +1138,10 @@ async fn handle_client(
                     set_status(&status, "回退", "改用 gdigrab 抓屏");
                 }
                 let restarted = if retry_dda {
-                    start_live_encoder(&ffmpeg, &display, &settings, hevc)
+                    start_live_encoder(&ffmpeg, &display, &settings, hevc).await
                 } else {
                     restart_encoder_with_bootstrap(&ffmpeg, &display, &settings, hevc)
+                        .await
                         .map(|(s, b)| (s, b, CaptureKind::Gdi))
                 };
                 match restarted {
@@ -1224,7 +1234,7 @@ enum CaptureKind {
     Gdi,
 }
 
-fn start_live_encoder(
+async fn start_live_encoder(
     ffmpeg: &std::path::PathBuf,
     display: &DisplayInfo,
     settings: &EncodeSettings,
@@ -1234,7 +1244,7 @@ fn start_live_encoder(
         display.is_virtual,
         display.dxgi.is_some(),
     ) {
-        match restart_encoder_with_bootstrap(ffmpeg, display, settings, hevc) {
+        match restart_encoder_with_bootstrap(ffmpeg, display, settings, hevc).await {
             Ok((session, bootstrap)) => return Ok((session, bootstrap, CaptureKind::Gdi)),
             Err(err) => tracing::warn!("gdigrab-first for GDI-only display failed: {err:#}"),
         }
@@ -1261,7 +1271,7 @@ fn start_live_encoder(
             for surfaces in &surface_tries {
                 let mut attempt = settings.clone();
                 attempt.nvenc_surfaces = *surfaces;
-                let session = match encoder::start_encoder(ffmpeg, display, &attempt, enc, &graph) {
+                let mut session = match encoder::start_encoder(ffmpeg, display, &attempt, enc, &graph) {
                     Ok(s) => s,
                     Err(err) => {
                         tracing::warn!("encoder {enc} spawn failed: {err:#}");
@@ -1269,7 +1279,7 @@ fn start_live_encoder(
                         continue;
                     }
                 };
-                match annexb::recv_bootstrap(&session.rx, Duration::from_secs(3), hevc) {
+                match annexb::recv_bootstrap_async(&mut session.rx, Duration::from_secs(3), hevc).await {
                     Ok(bootstrap) => {
                         let virtual_output = display.is_virtual;
                         tracing::info!(
@@ -1289,10 +1299,11 @@ fn start_live_encoder(
     }
     tracing::warn!("desktop duplication encoders failed, trying gdigrab: {:?}", last_err);
     restart_encoder_with_bootstrap(ffmpeg, display, settings, hevc)
+        .await
         .map(|(session, bootstrap)| (session, bootstrap, CaptureKind::Gdi))
 }
 
-fn restart_encoder_with_bootstrap(
+async fn restart_encoder_with_bootstrap(
     ffmpeg: &std::path::PathBuf,
     display: &DisplayInfo,
     settings: &EncodeSettings,
@@ -1309,7 +1320,7 @@ fn restart_encoder_with_bootstrap(
         for surfaces in surface_tries {
             let mut attempt = settings.clone();
             attempt.nvenc_surfaces = surfaces;
-            let session = match encoder::start_encoder_gdigrab(ffmpeg, display, &attempt, enc) {
+            let mut session = match encoder::start_encoder_gdigrab(ffmpeg, display, &attempt, enc) {
                 Ok(s) => s,
                 Err(err) => {
                     tracing::warn!("gdigrab encoder {enc} failed: {err:#}");
@@ -1317,7 +1328,7 @@ fn restart_encoder_with_bootstrap(
                     continue;
                 }
             };
-            match annexb::recv_bootstrap(&session.rx, Duration::from_secs(3), hevc) {
+            match annexb::recv_bootstrap_async(&mut session.rx, Duration::from_secs(3), hevc).await {
                 Ok(bootstrap) => {
                     tracing::info!("gdigrab bootstrap ok with {enc} surfaces={surfaces}");
                     return Ok((session, bootstrap));

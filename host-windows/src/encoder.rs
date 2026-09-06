@@ -1,10 +1,8 @@
 use anyhow::{Context, Result};
 use std::io::BufReader;
-use std::io::Read;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
 use crate::displays::DisplayInfo;
@@ -36,7 +34,7 @@ pub struct EncodeSettings {
 
 pub struct EncoderSession {
     child: Option<Child>,
-    pub rx: Receiver<EncodedPacket>,
+    pub rx: tokio::sync::mpsc::Receiver<EncodedPacket>,
 }
 
 impl EncoderSession {
@@ -138,20 +136,28 @@ pub fn start_encoder(
         }
     });
 
-    // One encoded AU: a deeper queue is glass latency, not a USB cushion.
-    let (tx, rx) = mpsc::sync_channel(lighting_host::session_policy::encoded_queue_capacity());
     let hevc = is_hevc(&settings.codec);
+    let rx = spawn_annexb_pump(stdout, hevc);
+    Ok(EncoderSession {
+        child: Some(child),
+        rx,
+    })
+}
+
+fn spawn_annexb_pump(
+    stdout: impl std::io::Read + Send + 'static,
+    hevc: bool,
+) -> tokio::sync::mpsc::Receiver<EncodedPacket> {
+    // One encoded AU: a deeper queue is glass latency, not a USB cushion.
+    let cap = lighting_host::session_policy::encoded_queue_capacity().max(1);
+    let (tx, rx) = tokio::sync::mpsc::channel(cap);
     thread::spawn(move || {
         raise_thread_priority();
         if let Err(err) = annexb::pump_annexb(stdout, tx, hevc) {
             tracing::warn!("encoder pump ended: {err:#}");
         }
     });
-
-    Ok(EncoderSession {
-        child: Some(child),
-        rx,
-    })
+    rx
 }
 
 fn raise_thread_priority() {
@@ -278,7 +284,7 @@ pub fn start_encoder_gdigrab(
         display.y,
         display.width,
         display.height,
-        lighting_host::session_policy::dda_poll_hz(settings.fps),
+        settings.fps,
         settings.draw_mouse,
     ));
     args.extend([
@@ -314,14 +320,8 @@ pub fn start_encoder_gdigrab(
             tracing::info!("ffmpeg stderr:\n{}", tail(&buf, 16));
         }
     });
-    let (tx, rx) = mpsc::sync_channel(lighting_host::session_policy::encoded_queue_capacity());
     let hevc = is_hevc(&settings.codec);
-    thread::spawn(move || {
-        raise_thread_priority();
-        if let Err(err) = annexb::pump_annexb(stdout, tx, hevc) {
-            tracing::warn!("encoder pump ended: {err:#}");
-        }
-    });
+    let rx = spawn_annexb_pump(stdout, hevc);
     Ok(EncoderSession {
         child: Some(child),
         rx,

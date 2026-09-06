@@ -4,6 +4,46 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// Pump output. Tests use a std channel; the live encoder uses tokio so the
+/// send loop can `recv().await` instead of polling every 1 ms.
+pub trait PacketSink: Send {
+    fn try_push(&self, pkt: EncodedPacket) -> TryPush;
+    fn push_blocking(&self, pkt: EncodedPacket);
+}
+
+#[derive(Debug)]
+pub enum TryPush {
+    Sent,
+    Full(EncodedPacket),
+    Closed,
+}
+
+impl PacketSink for mpsc::SyncSender<EncodedPacket> {
+    fn try_push(&self, pkt: EncodedPacket) -> TryPush {
+        match self.try_send(pkt) {
+            Ok(()) => TryPush::Sent,
+            Err(mpsc::TrySendError::Full(p)) => TryPush::Full(p),
+            Err(mpsc::TrySendError::Disconnected(_)) => TryPush::Closed,
+        }
+    }
+    fn push_blocking(&self, pkt: EncodedPacket) {
+        let _ = self.send(pkt);
+    }
+}
+
+impl PacketSink for tokio::sync::mpsc::Sender<EncodedPacket> {
+    fn try_push(&self, pkt: EncodedPacket) -> TryPush {
+        match self.try_send(pkt) {
+            Ok(()) => TryPush::Sent,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(p)) => TryPush::Full(p),
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => TryPush::Closed,
+        }
+    }
+    fn push_blocking(&self, pkt: EncodedPacket) {
+        let _ = self.blocking_send(pkt);
+    }
+}
+
 /// After ffmpeg `-flush_packets 1` the pipe goes quiet until the next picture.
 /// Waiting for that next start code is one refresh of glass delay. Waiting 0
 /// on a short `Read` is worse: Windows pipes return partial AUs. Idle 1 ms
@@ -121,6 +161,33 @@ pub fn recv_bootstrap(
     }
 }
 
+pub async fn recv_bootstrap_async(
+    rx: &mut tokio::sync::mpsc::Receiver<EncodedPacket>,
+    timeout: Duration,
+    hevc: bool,
+) -> Result<Vec<EncodedPacket>> {
+    let deadline = Instant::now() + timeout;
+    let mut collector = BootstrapCollector::new();
+    while !collector.complete() {
+        let now = Instant::now();
+        if now >= deadline {
+            break;
+        }
+        match tokio::time::timeout(deadline.saturating_duration_since(now), rx.recv()).await {
+            Ok(Some(pkt)) => {
+                collector.push(pkt, hevc);
+            }
+            Ok(None) => bail!("encoder pipe closed before codec-config + IDR"),
+            Err(_) => break,
+        }
+    }
+    if collector.complete() {
+        Ok(collector.into_packets())
+    } else {
+        bail!("encoder restart did not emit codec-config + IDR in time")
+    }
+}
+
 pub fn looks_like_codec_config(data: &[u8], hevc: bool) -> bool {
     split_annexb_complete(data)
         .into_iter()
@@ -197,7 +264,7 @@ fn starts_parameter_set_group(nal: &[u8], hevc: bool) -> bool {
 
 pub fn pump_annexb(
     mut stdout: impl Read + Send + 'static,
-    tx: mpsc::SyncSender<EncodedPacket>,
+    tx: impl PacketSink + 'static,
     hevc: bool,
 ) -> Result<()> {
     let (raw_tx, raw_rx) = mpsc::sync_channel::<Vec<u8>>(8);
@@ -295,7 +362,7 @@ fn finish_flushed_au(
     au_key: &mut bool,
     sps_pps: &mut Vec<u8>,
     sent_cfg: &mut bool,
-    tx: &mpsc::SyncSender<EncodedPacket>,
+    tx: &dyn PacketSink,
     drop_until_key: &mut bool,
 ) {
     if start_code_len(acc) > 0 {
@@ -324,7 +391,7 @@ fn ingest_nal(
     au_key: &mut bool,
     sps_pps: &mut Vec<u8>,
     sent_cfg: &mut bool,
-    tx: &mpsc::SyncSender<EncodedPacket>,
+    tx: &dyn PacketSink,
     drop_until_key: &mut bool,
 ) {
     let role = nal_role(&nal, hevc);
@@ -336,7 +403,7 @@ fn ingest_nal(
         return;
     }
     if !*sent_cfg && !sps_pps.is_empty() {
-        let _ = tx.send(EncodedPacket {
+        tx.push_blocking(EncodedPacket {
             data: sps_pps.clone(),
             keyframe: false,
             codec_config: true,
@@ -361,7 +428,7 @@ fn flush_au(
     has_vcl: &mut bool,
     key: &mut bool,
     sps_pps: &[u8],
-    tx: &mpsc::SyncSender<EncodedPacket>,
+    tx: &dyn PacketSink,
     drop_until_key: &mut bool,
 ) {
     if au.is_empty() {
@@ -384,11 +451,11 @@ fn flush_au(
         keyframe: is_key,
         codec_config: false,
     };
-    match tx.try_send(pkt) {
-        Ok(()) => {
+    match tx.try_push(pkt) {
+        TryPush::Sent => {
             *drop_until_key = false;
         }
-        Err(mpsc::TrySendError::Full(pkt)) => {
+        TryPush::Full(pkt) => {
             // Block rather than drop a P-frame. Skipping encoded P-frames
             // forces the tablet to wait for the next IDR (~1s) and looks
             // like "not even 30 Hz" on USB jitter, which is not a bandwidth
@@ -396,11 +463,11 @@ fn flush_au(
             if crate::session_policy::drop_encoded_p_on_backpressure() && !pkt.keyframe {
                 *drop_until_key = true;
             } else {
-                let _ = tx.send(pkt);
+                tx.push_blocking(pkt);
                 *drop_until_key = false;
             }
         }
-        Err(mpsc::TrySendError::Disconnected(_)) => {}
+        TryPush::Closed => {}
     }
     *has_vcl = false;
     *key = false;
@@ -705,5 +772,29 @@ mod tests {
         drop(tx);
         let err = recv_bootstrap(&rx, Duration::from_millis(20), false).unwrap_err();
         assert!(format!("{err:#}").contains("codec-config + IDR"));
+    }
+
+    #[tokio::test]
+    async fn async_bootstrap_wakes_without_polling() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        tx.try_send(EncodedPacket {
+            data: nal(0x67, &[1]),
+            keyframe: false,
+            codec_config: true,
+        })
+        .unwrap();
+        tx.try_send(EncodedPacket {
+            data: nal(0x65, &[2]),
+            keyframe: true,
+            codec_config: false,
+        })
+        .unwrap();
+        drop(tx);
+        let pkts = recv_bootstrap_async(&mut rx, Duration::from_millis(200), false)
+            .await
+            .unwrap();
+        assert_eq!(pkts.len(), 2);
+        assert!(pkts[0].codec_config);
+        assert!(pkts[1].keyframe);
     }
 }
