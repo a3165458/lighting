@@ -118,14 +118,15 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
         ));
     }
     if encoder.contains("qsv") {
+        // ddagrab is D3D11. hwmap first avoids a sysmem upload (~1–2 ms).
+        graphs.push(format!(
+            "{dda},hwmap=derive_device=qsv,scale_qsv=w={dst_w}:h={dst_h}:format=nv12"
+        ));
         for extra in &extras {
             graphs.push(format!(
                 "{dda},hwupload=extra_hw_frames={extra},hwmap=derive_device=qsv,scale_qsv=w={dst_w}:h={dst_h}:format=nv12"
             ));
         }
-        graphs.push(format!(
-            "{dda},hwmap=derive_device=qsv,scale_qsv=w={dst_w}:h={dst_h}:format=nv12"
-        ));
     }
     if encoder.contains("amf") {
         if scale {
@@ -229,6 +230,16 @@ mod tests {
     }
 
     #[test]
+    fn qsv_prefers_hwmap_before_upload() {
+        let graphs = dda_capture_graphs(
+            Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x8086 }),
+            60, 1920, 1080, 1920, 1080, "h264_qsv",
+        );
+        assert!(graphs[0].contains("hwmap=derive_device=qsv"));
+        assert!(!graphs[0].contains("hwupload"));
+        assert!(graphs.iter().any(|g| g.contains("hwupload")));
+    }
+
     fn amf_identity_stays_on_d3d11() {
         let graphs = dda_capture_graphs(
             Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x1002 }),
@@ -279,7 +290,7 @@ mod tests {
         );
         assert!(graphs.iter().all(|g| !g.contains("allow_tearing")));
         assert!(graphs.iter().all(|g| g.contains("output_idx=1")));
-        assert!(graphs.iter().all(|g| g.contains("framerate=120")));
+        assert!(graphs.iter().all(|g| g.contains("framerate=1000")));
         assert!(graphs.iter().all(|g| g.contains("dup_frames=0")));
     }
 
