@@ -593,7 +593,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
             }
             if (Build.VERSION.SDK_INT >= 30) {
                 try {
-                    surface.setFrameRate(
+                    surface.holder.surface.setFrameRate(
                         streamFps.toFloat(),
                         Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE,
                     )
