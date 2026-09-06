@@ -8,9 +8,11 @@ import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.PorterDuff
 import android.graphics.Rect
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.AttributeSet
+import android.view.SurfaceControl
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.widget.FrameLayout
@@ -22,8 +24,10 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * A regular View on top of the decoder SurfaceView forces SurfaceFlinger to
  * GPU-compose every video frame while the pointer is visible. Keep pose
- * updates as translationX/Y (no vsync wait) and only lockCanvas when the
- * shape changes.
+ * updates as translationX/Y and only lockCanvas when the shape changes.
+ * Move-only poses also punch SurfaceControl.Transaction.setPosition from
+ * the control thread so the overlay does not sit on the next Choreographer
+ * vsync (8–16 ms of pointer lag vs GlideX).
  */
 class CursorOverlayView @JvmOverloads constructor(
     context: Context,
@@ -35,6 +39,8 @@ class CursorOverlayView @JvmOverloads constructor(
     private var hotY = 0f
     @Volatile private var showing = false
     @Volatile private var surfaceReady = false
+    @Volatile private var lastTx = Float.NaN
+    @Volatile private var lastTy = Float.NaN
 
     private data class Pose(
         val visible: Boolean,
@@ -58,7 +64,11 @@ class CursorOverlayView @JvmOverloads constructor(
 
     private fun drainPose() {
         scheduled.set(false)
-        val pose = pending.getAndSet(null) ?: return
+        var pose = pending.getAndSet(null) ?: return
+        while (true) {
+            val next = pending.getAndSet(null) ?: break
+            pose = next
+        }
         applyPose(pose)
         if (pending.get() != null && scheduled.compareAndSet(false, true)) {
             ui.postAtFrontOfQueue(applyOnce)
@@ -177,8 +187,45 @@ class CursorOverlayView @JvmOverloads constructor(
         if (prev?.bitmap != null && prev.bitmap !== pose.bitmap) {
             prev.bitmap.recycle()
         }
+        // Move the overlay plane now; still coalesce a UI apply so
+        // translationX matches and RenderThread cannot snap back.
+        applySurfacePosition(pose)
         if (scheduled.compareAndSet(false, true)) {
             ui.postAtFrontOfQueue(applyOnce)
+        }
+    }
+
+    /**
+     * API 29+: SurfaceFlinger position without waiting for the View
+     * traversal. Returns false if the View path must run first (show/hide
+     * / resize / first frame).
+     */
+    private fun applySurfacePosition(pose: Pose): Boolean {
+        if (Build.VERSION.SDK_INT < 29) return false
+        if (!pose.visible || !showing || !surfaceReady) return false
+        if (visibility != VISIBLE) return false
+        val b = bmp ?: return false
+        if (pose.bitmap != null && pose.bitmap !== b) return false
+        val sw = pose.srcW.coerceAtLeast(1).toFloat()
+        val sh = pose.srcH.coerceAtLeast(1).toFloat()
+        val scaleX = pose.surfaceW.coerceAtLeast(1).toFloat() / sw
+        val scaleY = pose.surfaceH.coerceAtLeast(1).toFloat() / sh
+        val w = (b.width * scaleX).toInt().coerceAtLeast(1)
+        val h = (b.height * scaleY).toInt().coerceAtLeast(1)
+        val lp = layoutParams
+        if (lp != null && (lp.width != w || lp.height != h)) return false
+        val x = pose.surfaceLeft + pose.x * scaleX - hotX * scaleX
+        val y = pose.surfaceTop + pose.y * scaleY - hotY * scaleY
+        if (x == lastTx && y == lastTy) return true
+        return try {
+            val sc = surfaceControl
+            if (!sc.isValid) return false
+            SurfaceControl.Transaction().setPosition(sc, x, y).apply()
+            lastTx = x
+            lastTy = y
+            true
+        } catch (_: Throwable) {
+            false
         }
     }
 
@@ -188,6 +235,8 @@ class CursorOverlayView @JvmOverloads constructor(
             visibility = GONE
             translationX = 0f
             translationY = 0f
+            lastTx = Float.NaN
+            lastTy = Float.NaN
             return
         }
         var shapeChanged = false
@@ -215,8 +264,12 @@ class CursorOverlayView @JvmOverloads constructor(
             lp.height = h
             layoutParams = lp
         }
-        translationX = pose.surfaceLeft + pose.x * scaleX - hotX * scaleX
-        translationY = pose.surfaceTop + pose.y * scaleY - hotY * scaleY
+        val tx = pose.surfaceLeft + pose.x * scaleX - hotX * scaleX
+        val ty = pose.surfaceTop + pose.y * scaleY - hotY * scaleY
+        translationX = tx
+        translationY = ty
+        lastTx = tx
+        lastTy = ty
         showing = true
         if (visibility != VISIBLE) {
             visibility = VISIBLE

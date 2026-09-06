@@ -664,7 +664,9 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 } catch (_: Throwable) {
                 }
             }
-            cursorOverlay.bringToFront()
+            // Overlay z-order is setZOrderMediaOverlay, set in the view
+            // ctor. bringToFront() on that SurfaceView can rebuild it and
+            // drop the first picture into surfaceDestroyed.
             reconnectLayer.bringToFront()
             statusBar.bringToFront()
         }
