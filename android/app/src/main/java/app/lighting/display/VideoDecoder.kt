@@ -9,7 +9,6 @@ import android.util.Log
 import android.view.Surface
 import java.nio.ByteBuffer
 import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 class VideoDecoder {
@@ -111,13 +110,11 @@ class VideoDecoder {
         // Host never drops a live P-frame (`drop_encoded_p_on_backpressure`
         // is false). Replacing the queued P tears the GOP until the next
         // IDR (~1 s). Block the TCP reader so ffmpeg skips *input* frames.
+        // queue.offer(4 ms) is not woken when present() frees a buffer —
+        // on a loaded pad that sat every overflow picture on a 4 ms tick
+        // GlideX / Moonlight do not pay. dequeueInputBuffer is.
         while (running.get()) {
-            try {
-                if (queue.offer(pkt, 4, TimeUnit.MILLISECONDS)) return
-            } catch (_: InterruptedException) {
-                return
-            }
-            if (enqueueLocked(pkt, 0L)) return
+            if (enqueueLocked(pkt, 8_000L)) return
         }
     }
 
