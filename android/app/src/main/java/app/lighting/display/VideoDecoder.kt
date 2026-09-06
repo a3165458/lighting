@@ -53,11 +53,8 @@ class VideoDecoder {
                     decoder = MediaCodec.createByCodecName(name)
                     decoder.configure(format, surface, null, 0)
                     decoder.start()
-                    // Try 1–2 are FEATURE-only so a vendor-key reject still
-                    // configures. Qualcomm C2 then advertises LowLatency and
-                    // still paces at SPS (one vsync) unless qti-ext is on.
                     // setParameters cannot fail configure(); poke the SoC
-                    // keys Moonlight puts on try 0.
+                    // keys in case this try won without them (try 5 / -1).
                     applyRuntimeLowLatency(decoder, name)
                     codec = decoder
                     configured = true
@@ -264,8 +261,8 @@ class VideoDecoder {
         // Moonlight setDecoderLowLatencyOptions(tryNumber): most-to-least
         // risky. Try 0 is official + matching SoC vendor key. Dumping every
         // vendor key on try 0 used to fail FEATURE_LowLatency configure().
-        // Try 1 still has the SoC key (no operating-rate). Try 2 is KEY-only
-        // so a vendor reject still configures.
+        // Try 1 still has the SoC key (no operating-rate). Try 2 is KEY +
+        // SoC (no FEATURE). Try 5 / -1 omit vendor so a reject still configures.
         // max-output-buffers=2 and KEY_PRIORITY=0 ride with KEY_LOW_LATENCY
         // (try 0–2). GSI / Treble crash on vendor keys — those stay behind
         // lowLatencySafe (try 3–5).
@@ -316,13 +313,10 @@ class VideoDecoder {
      * Try 0 is official keys plus the matching SoC vendor key (Moonlight).
      * Qualcomm C2 advertises FEATURE_LowLatency, so a FEATURE-only try 0
      * used to succeed and never reach qti-ext-dec-low-latency — then the
-     * decoder paced at SPS like a movie (a vsync of hold). Try 1–2 stay
-     * FEATURE-only so a vendor reject still configures. max-output-buffers=2
-     * and KEY_PRIORITY=0 (Moonlight realtime) are try 0–2. Try 2 is
-     * KEY_LOW_LATENCY alone plus the small pool and priority.
-     * Try 1 still carries the matching SoC key (Moonlight keeps qti-ext
-     * past try 0): setParameters after start is often ignored, so a
-     * FEATURE-only try 1 used to win and C2 paced at SPS.
+     * decoder paced at SPS like a movie (a vsync of hold). Try 2 is KEY +
+     * SoC (no FEATURE / no operating-rate). A KEY-only try 2 used to
+     * configure() and skip try 3–4, so C2 never saw qti-ext. Try 5 / -1
+     * stay bare. max-output-buffers=2 and KEY_PRIORITY=0 ride try 0–2.
      */
     private fun applyLowLatencyOptions(
         format: MediaFormat,
@@ -367,11 +361,10 @@ class VideoDecoder {
                 }
                 // GSI / Treble crash on a dump of every vendor key.
                 // Matching SoC keys must be on the format that actually
-                // succeeds. Try 0 is official + vendor; try 1 is the same
-                // without operating-rate (the usual try-0 reject). Try 2
-                // stays KEY-only so a vendor-key reject still configures.
-                // setParameters after start cannot replace configure().
-                if (tryNumber >= 2 || !allowVendor) return
+                // succeeds. A KEY-only try 2 used to configure() and skip
+                // try 3–4, so C2 never got qti-ext. Moonlight keeps the
+                // SoC key through try 4. Try 5 / -1 stay KEY/bare.
+                if (!allowVendor) return
             }
             if (tryNumber < 2 &&
                 (!android.os.Build.MANUFACTURER.equals("xiaomi", true) ||
@@ -419,7 +412,7 @@ class VideoDecoder {
     }
 
     /**
-     * Vendor low-latency after start(). Configure try 1–2 omit these so a
+     * Vendor low-latency after start(). Configure try 5 / -1 omit these so a
      * reject still succeeds; without the poke, FEATURE_LowLatency C2 holds
      * a decoded picture. Each key is its own bundle: one unknown vendor
      * extra must not skip qti-ext-dec-low-latency.
