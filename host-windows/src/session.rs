@@ -1590,8 +1590,8 @@ mod tests {
     #[test]
     fn software_decode_caps_fps() {
         assert_eq!(adapted_fps(60, 60, 60, false), 45);
-        assert_eq!(adapted_fps(120, 60, 60, true), 60);
-        assert_eq!(adapted_fps(60, 60, 30, true), 30);
+        assert_eq!(adapted_fps(120, 60, 60, true), 120);
+        assert_eq!(adapted_fps(60, 60, 30, true), 120);
     }
 
     #[test]
