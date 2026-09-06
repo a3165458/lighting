@@ -67,15 +67,25 @@ class CursorOverlayView @JvmOverloads constructor(
     private val applyOnce: Runnable = Runnable { drainPose() }
 
     private fun drainPose() {
-        scheduled.set(false)
-        var pose = pending.getAndSet(null) ?: return
+        // Consume every pose that landed while applyPose ran. Re-posting
+        // to the Looper let Choreographer commit a stale translationX and
+        // SurfaceView.updateSurface snapped the overlay back a vsync —
+        // the pointer sat behind the laptop after setPosition had already
+        // punched the new spot.
         while (true) {
-            val next = pending.getAndSet(null) ?: break
-            pose = next
-        }
-        applyPose(pose)
-        if (pending.get() != null && scheduled.compareAndSet(false, true)) {
-            ui.postAtFrontOfQueue(applyOnce)
+            var pose = pending.getAndSet(null)
+            if (pose == null) {
+                scheduled.set(false)
+                if (pending.get() != null && scheduled.compareAndSet(false, true)) {
+                    continue
+                }
+                return
+            }
+            while (true) {
+                val next = pending.getAndSet(null) ?: break
+                pose = next
+            }
+            applyPose(pose)
         }
     }
 
@@ -331,6 +341,9 @@ class CursorOverlayView @JvmOverloads constructor(
         }
         val tx = pose.surfaceLeft + pose.x * scaleX - hotX * scaleX
         val ty = pose.surfaceTop + pose.y * scaleY - hotY * scaleY
+        // Keep View translation in lockstep with SurfaceControl so the next
+        // SurfaceView.updateSurface does not snap back. Skip requestLayout
+        // on a move-only pose (layoutParams already matched above).
         translationX = tx
         translationY = ty
         lastTx = tx
