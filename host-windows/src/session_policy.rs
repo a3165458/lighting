@@ -459,6 +459,7 @@ pub fn mux_cursor_on_video(cursor_overlay: bool, control_attached: bool) -> bool
 /// the 1-deep encoded queue. 64 KB still hid a second default P-frame
 /// (~26 KB) — one extra refresh next to the laptop. 48 KB fits one picture
 /// up to 40 Mbps, not two at 25 Mbps. IDR still write_all's in chunks.
+/// Tablet `LitSocket` recvBytes must match or the kernel hides the second P.
 pub fn tcp_send_buffer_bytes() -> usize {
     48 * 1024
 }

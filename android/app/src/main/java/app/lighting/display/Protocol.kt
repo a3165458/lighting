@@ -170,14 +170,16 @@ class LitSocket(
     host: String,
     port: Int,
     connectTimeoutMs: Int = 1_500,
-    recvBytes: Int = 64 * 1024,
+    recvBytes: Int = 48 * 1024,
     sendBytes: Int = 32 * 1024,
 ) : AutoCloseable {
     val socket: Socket = Socket().apply {
         tcpNoDelay = true
         keepAlive = true
-        // Host coalesces video+PCM (~30 KB P). 24 KB was smaller than one
-        // AU, so the USB window stalled write_all mid-picture.
+        // Match host tcp_send_buffer_bytes (48 KB). 64 KB hid a second
+        // 25 Mbps P-frame (~26 KB) after encoded/annexb queues were already
+        // 1-deep — one extra refresh next to the laptop. 24 KB was smaller
+        // than one P+PCM AU and stalled the USB window mid-picture.
         try {
             receiveBufferSize = recvBytes
             sendBufferSize = sendBytes
