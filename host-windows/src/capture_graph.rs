@@ -93,9 +93,15 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
     let mut graphs = Vec::new();
     let extras = hw_frame_pool_sizes();
     if encoder.contains("nvenc") {
-        // hwupload_cuda first so we cap the CUDA pool. Try 1 extra frame
-        // (Sunshine-like) then 2 if ffmpeg stalls. hwmap looks zero-copy
-        // but ffmpeg's derived pool is often 16 frames (~250 ms).
+        // GlideX / Sunshine: ddagrab is already D3D11. scale_d3d11 converts
+        // BGRA→NV12 on the same device and NVENC consumes D3D11 frames.
+        // hwupload_cuda copies every picture to CUDA (~1–2 ms) and was the
+        // first graph, so a working NVENC path always paid that tax.
+        for extra in &extras {
+            graphs.push(format!(
+                "{dda},scale_d3d11=width={dst_w}:height={dst_h}:format=nv12:extra_hw_frames={extra}"
+            ));
+        }
         for extra in &extras {
             if scale {
                 graphs.push(format!(
@@ -205,11 +211,14 @@ mod tests {
     }
 
     #[test]
-    fn nvenc_prefers_cuda_before_cpu() {
+    fn nvenc_prefers_d3d11_before_cuda() {
         let graphs = dda_capture_graphs(Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0 }), 60, 2560, 1440, 1920, 1080, "h264_nvenc");
-        assert!(graphs.len() >= 3);
-        assert!(graphs[0].contains("scale_cuda"));
+        assert!(graphs.len() >= 4);
+        assert!(graphs[0].contains("scale_d3d11"));
+        assert!(graphs[0].contains("format=nv12"));
         assert!(graphs[0].contains("extra_hw_frames=1"));
+        assert!(!graphs[0].contains("hwupload_cuda"));
+        assert!(graphs.iter().any(|g| g.contains("hwupload_cuda") && g.contains("scale_cuda")));
         assert!(graphs.iter().any(|g| g.contains("extra_hw_frames=2")));
         assert!(graphs.last().unwrap().contains("hwdownload"));
         // Same bitrate path — graphs must not embed bitrate/fps quality knobs.
