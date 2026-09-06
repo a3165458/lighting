@@ -966,6 +966,8 @@ mod tests {
         assert_eq!(ffmpeg_output_fps(45), 45);
         assert_eq!(ffmpeg_pipe_buffer_bytes(), 64 * 1024);
         assert!(ffmpeg_pipe_buffer_bytes() > 16 * 1024);
+        // annexb read vec must be this size: larger and n==buf.len() never
+        // fires, so a full-pipe IDR Quiet-flushes a truncated slice.
         assert_eq!(audio_packets_per_video_frame(), 1);
         assert_eq!(control_attach_wait_ms(), 0);
         assert!(mux_cursor_on_video(true, false));

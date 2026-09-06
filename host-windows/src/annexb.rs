@@ -52,6 +52,10 @@ impl PacketSink for tokio::sync::mpsc::Sender<EncodedPacket> {
 const IDLE_FLUSH: Duration = Duration::from_millis(1);
 const PIPE_QUIET: Duration = Duration::from_micros(250);
 
+fn read_buffer_bytes() -> usize {
+    crate::session_policy::ffmpeg_pipe_buffer_bytes().max(1) as usize
+}
+
 enum RawMsg {
     Data(Vec<u8>),
     Quiet,
@@ -357,7 +361,11 @@ where
         .name("lighting-annexb-read".into())
         .spawn(move || {
             raise_reader_priority();
-            let mut buf = vec![0u8; 256 * 1024];
+            // Same size as CreatePipe. A 256 KB vec never filled because the
+            // pipe is 64 KB, so n == buf.len() was dead and a full-pipe IDR
+            // looked like a short AU: Quiet truncated the slice and the
+            // tablet waited until the next keyframe.
+            let mut buf = vec![0u8; read_buffer_bytes()];
             loop {
                 match stdout.read(&mut buf) {
                     Ok(0) | Err(_) => break,
@@ -897,6 +905,16 @@ mod tests {
         assert!(second.keyframe);
         unblock.store(true, Ordering::SeqCst);
         pump.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn read_buffer_matches_ffmpeg_pipe_so_full_reads_spin() {
+        assert_eq!(
+            read_buffer_bytes(),
+            crate::session_policy::ffmpeg_pipe_buffer_bytes() as usize
+        );
+        assert!(read_buffer_bytes() >= 16 * 1024);
+        assert!(read_buffer_bytes() <= 128 * 1024);
     }
 
     #[test]
