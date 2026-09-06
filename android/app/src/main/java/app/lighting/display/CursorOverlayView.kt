@@ -63,7 +63,14 @@ class CursorOverlayView @JvmOverloads constructor(
 
     private val pending = AtomicReference<Pose?>()
     private val scheduled = AtomicBoolean(false)
-    private val ui = Handler(Looper.getMainLooper())
+    // createAsync jumps Choreographer's sync barrier. A default main
+    // Handler waits for the next vsync traversal; translationX then lands
+    // a refresh late and SurfaceView.updateSurface snaps the punch back.
+    private val ui = if (Build.VERSION.SDK_INT >= 28) {
+        Handler.createAsync(Looper.getMainLooper())
+    } else {
+        Handler(Looper.getMainLooper())
+    }
     private val applyOnce: Runnable = Runnable { drainPose() }
 
     private fun drainPose() {
@@ -258,16 +265,14 @@ class CursorOverlayView @JvmOverloads constructor(
         if (prev?.bitmap != null && prev.bitmap !== pose.bitmap) {
             prev.bitmap.recycle()
         }
-        // Punch the overlay plane now. A Looper apply still lets
-        // RenderThread commit translationX on the next vsync and
-        // SurfaceView.updateSurface snaps the punch back — one
-        // refresh of pointer lag vs GlideX. Move-only poses that
-        // already punched skip the UI path. Show/hide/resize/shape
-        // still post so translationX catches up before a layout.
-        val punched = applySurfacePosition(pose)
-        if (punched && pose.visible && pose.bitmap == null) {
-            return
-        }
+        // Punch the overlay plane now. A default main Handler waits
+        // on Choreographer's sync barrier, so translationX landed on
+        // the next vsync and SurfaceView.updateSurface snapped the
+        // punch back. createAsync jumps that barrier: View coords
+        // catch up before traversal, so a HUD/layout cannot snap the
+        // pointer a refresh behind the laptop. Show/hide/resize/shape
+        // still drain applyPose on the same handler.
+        applySurfacePosition(pose)
         if (scheduled.compareAndSet(false, true)) {
             ui.postAtFrontOfQueue(applyOnce)
         }
