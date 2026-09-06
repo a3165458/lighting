@@ -278,7 +278,7 @@ pub fn start_encoder_gdigrab(
         display.y,
         display.width,
         display.height,
-        settings.fps,
+        lighting_host::session_policy::dda_poll_hz(settings.fps),
         settings.draw_mouse,
     ));
     args.extend([

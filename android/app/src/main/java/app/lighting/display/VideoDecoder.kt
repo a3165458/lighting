@@ -92,9 +92,12 @@ class VideoDecoder {
             skipUntilKey.set(false)
             return
         }
-        try {
-            queue.put(pkt)
-        } catch (_: InterruptedException) {
+        // GlideX / Moonlight: never block the TCP reader. One pending P-frame;
+        // keep the latest so a hitch cannot leave 50–80 ms of stale pictures
+        // sitting in the socket buffer.
+        if (!queue.offer(pkt)) {
+            queue.poll()
+            queue.offer(pkt)
         }
     }
 
@@ -208,8 +211,8 @@ class VideoDecoder {
         val software = n.contains("google") || n.contains("c2.android") || n.contains("software")
         // Prefer low-latency configure first on SoCs that tolerate it.
         if (caps.lowLatencySafe && !software) {
-            out.add(buildFormat(width, height, csd, lowLatency = true, operatingRate = true, fps = caps.decoderMaxFps))
-            out.add(buildFormat(width, height, csd, lowLatency = true, operatingRate = false, fps = caps.decoderMaxFps))
+            out.add(buildFormat(width, height, csd, lowLatency = true, operatingRate = true, fps = 120))
+            out.add(buildFormat(width, height, csd, lowLatency = true, operatingRate = false, fps = 120))
         }
         out.add(buildFormat(width, height, csd, lowLatency = false, operatingRate = false, fps = caps.decoderMaxFps))
         return out
@@ -229,7 +232,8 @@ class VideoDecoder {
             try {
                 // 0 = realtime priority for MediaCodec.
                 format.setInteger(MediaFormat.KEY_PRIORITY, 0)
-                format.setInteger(MediaFormat.KEY_OPERATING_RATE, fps.coerceIn(60, 120))
+                // Ahead of realtime. Pinning to 60 made some SoCs hold a frame.
+                format.setInteger(MediaFormat.KEY_OPERATING_RATE, fps.coerceIn(120, 240))
             } catch (_: Throwable) {
             }
         }

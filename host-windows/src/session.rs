@@ -1087,7 +1087,9 @@ async fn handle_client(
                 }
             }
         }
-        match session.rx.recv_timeout(Duration::from_millis(1)) {
+        // std recv_timeout blocks this worker. block_in_place lets the
+        // runtime run the cursor/HID task instead of hitching the pointer.
+        match tokio::task::block_in_place(|| session.rx.recv_timeout(Duration::from_millis(1))) {
             Ok(pkt) => {
                 let mut sent = match write_video_packet(&mut writer, t0, &pkt).await {
                     Ok(bytes) => bytes,
