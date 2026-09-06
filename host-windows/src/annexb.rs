@@ -68,6 +68,35 @@ fn raise_reader_priority() {
         };
         let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
     }
+    enter_mmcss();
+}
+
+/// Register this thread with MMCSS so a foreground game cannot park a
+/// ready AU on a 15.6 ms scheduler tick. Handle is leaked on purpose:
+/// AvRevertMmThreadCharacteristics would drop us off the 1 ms boost.
+pub fn enter_mmcss() {
+    #[cfg(windows)]
+    enter_mmcss_windows();
+}
+
+#[cfg(windows)]
+fn enter_mmcss_windows() {
+    if !crate::session_policy::mmcss_capture_threads() {
+        return;
+    }
+    unsafe {
+        use windows::Win32::System::Threading::{
+            AvSetMmThreadCharacteristicsW, AvSetMmThreadPriority, AVRT_PRIORITY_HIGH,
+        };
+        let mut task_index = 0u32;
+        let handle = AvSetMmThreadCharacteristicsW(windows::core::w!("Games"), &mut task_index)
+            .or_else(|_| {
+                AvSetMmThreadCharacteristicsW(windows::core::w!("Pro Audio"), &mut task_index)
+            });
+        if let Ok(handle) = handle {
+            let _ = AvSetMmThreadPriority(handle, AVRT_PRIORITY_HIGH);
+        }
+    }
 }
 
 
@@ -603,6 +632,11 @@ mod tests {
         let mut v = vec![0, 0, 0, 1, header];
         v.extend_from_slice(payload);
         v
+    }
+
+    #[test]
+    fn enter_mmcss_does_not_panic() {
+        enter_mmcss();
     }
 
     #[test]

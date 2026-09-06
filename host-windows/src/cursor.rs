@@ -39,6 +39,7 @@ pub fn spawn_sampler(
             unsafe {
                 let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
             }
+            lighting_host::annexb::enter_mmcss();
             let mut last_handle = 0isize;
             let mut last_vis = false;
             let mut last_x = i16::MIN;

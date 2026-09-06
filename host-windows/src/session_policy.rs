@@ -380,6 +380,14 @@ pub fn gpu_scheduling_priority_high() -> bool {
     true
 }
 
+/// MMCSS ("Games", then "Pro Audio") on capture / cursor / pipe threads.
+/// THREAD_PRIORITY_HIGHEST still sits on a 15.6 ms quanta when a game owns
+/// the virtual panel; MMCSS is the 1 ms boost. Handle is not reverted:
+/// the thread stays in the task until it exits.
+pub fn mmcss_capture_threads() -> bool {
+    true
+}
+
 /// Anonymous `CreatePipe` default is 4 KB. A 25 Mbps P-frame is ~26 KB, so
 /// ffmpeg stdout used to land as many short `Read`s and PeekNamedPipe went
 /// quiet between them. 256 KB still hid ~10 pictures at 120 Hz after the
@@ -874,6 +882,7 @@ mod tests {
         assert_eq!(ffmpeg_filter_threads(), 1);
         assert_eq!(cursor_sample_interval_ms(), 1);
         assert!(gpu_scheduling_priority_high());
+        assert!(mmcss_capture_threads());
         assert_eq!(hw_extra_frames(), 1);
         assert_eq!(hw_extra_frames_fallback(), 2);
         assert_eq!(nvenc_surfaces(), 1);
