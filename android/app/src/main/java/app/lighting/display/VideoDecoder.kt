@@ -511,9 +511,13 @@ class VideoDecoder {
             latest = idx
         }
         if (latest >= 0) {
-            // 0 ns = present immediately. `true` reuses the input PTS and
-            // some SoCs then wait a vsync as if this were a movie.
-            decoder.releaseOutputBuffer(latest, 0L)
+            // Moonlight FRAME_PACING_MIN_LATENCY (the default): stamp now so
+            // SurfaceFlinger drops this buffer if another picture arrives
+            // before the next vsync. 0L is MAX_SMOOTHNESS — never drop —
+            // and a 60 Hz pad then queued a second picture (one extra
+            // refresh vs the PC monitor). `true` reuses the fake 1 µs PTS
+            // and some SoCs wait a vsync as if this were a movie.
+            decoder.releaseOutputBuffer(latest, System.nanoTime())
             return true
         }
         return false
