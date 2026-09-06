@@ -148,7 +148,7 @@ pub fn start_encoder(
 }
 
 fn spawn_annexb_pump(
-    stdout: impl std::io::Read + Send + 'static,
+    stdout: impl std::io::Read + AsRawHandle + Send + 'static,
     hevc: bool,
 ) -> tokio::sync::mpsc::Receiver<EncodedPacket> {
     // One encoded AU: a deeper queue is glass latency, not a USB cushion.
