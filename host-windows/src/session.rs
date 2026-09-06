@@ -1000,7 +1000,7 @@ fn start_live_encoder(
             };
             match annexb::recv_bootstrap(&session.rx, Duration::from_secs(3), hevc) {
                 Ok(bootstrap) => {
-                    tracing::info!("using encoder {enc} graph={graph} (dda virtual={})", display.is_virtual);
+                    tracing::info!("using encoder {enc} graph={graph} (dda virtual={is_virtual})", is_virtual = display.is_virtual);
                     return Ok((session, bootstrap, CaptureKind::Dda));
                 }
                 Err(err) => {
