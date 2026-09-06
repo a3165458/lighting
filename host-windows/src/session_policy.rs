@@ -319,6 +319,14 @@ pub fn tcp_control_buffer_bytes() -> usize {
     16 * 1024
 }
 
+/// Windows delayed ACK is 200 ms (ACK every two segments). A USB reverse
+/// RTT then parks the next AU in the 1-deep encoded queue. 1 = ACK every
+/// packet (`SIO_TCP_SET_ACK_FREQUENCY`). Tablet already re-arms Linux
+/// TCP_QUICKACK on every read.
+pub fn tcp_ack_every_packet() -> bool {
+    true
+}
+
 /// One LIT1 TCP write. Header then payload as two write_all() on a
 /// TCP_NODELAY USB socket is two packets and an extra reverse RTT.
 pub fn lit1_encode(ty: u8, flags: u8, payload: &[u8]) -> Vec<u8> {
@@ -924,6 +932,7 @@ mod tests {
         assert_eq!(dda_poll_hz(30), 8000);
         assert_eq!(tcp_send_buffer_bytes(), 64 * 1024);
         assert!(tcp_control_buffer_bytes() < tcp_send_buffer_bytes());
+        assert!(tcp_ack_every_packet());
         let frame = lit1_encode(3, 1, &[9, 8, 7]);
         assert_eq!(&frame[..4], b"LIT1");
         assert_eq!(frame[4], 3);

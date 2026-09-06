@@ -35,6 +35,7 @@ windows = { version = "0.58", features = [
     "Win32_Media",
     "Win32_Media_Audio",
     "Win32_Networking_WinSock",
+    "Win32_System_IO",
     "Win32_Security",
     "Win32_System_Com",
     "Win32_System_Registry",
