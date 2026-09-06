@@ -112,7 +112,7 @@ pub fn usb2_can_carry_bitrate_kbps(bitrate_kbps: u32) -> bool {
 
 /// Encoded AU queue. Deep enough to absorb an IDR spike without tearing a GOP.
 pub fn encoded_queue_capacity() -> usize {
-    2
+    1
 }
 
 /// ffmpeg `-thread_queue_size`. One queued capture is ~16 ms at 60 Hz;
@@ -137,7 +137,7 @@ pub fn cursor_sample_interval_ms() -> u64 {
 /// The Android client opens it right after Hello, so this is usually already
 /// queued. Cursor/HID must not sit behind encoder startup.
 pub fn control_attach_wait_ms() -> u64 {
-    400
+    0
 }
 
 /// Bake the OS pointer into the video TCP stream only when the tablet asked
@@ -573,7 +573,7 @@ mod tests {
         assert_eq!(encode_fps(60, 120, 60, false), 45);
         assert_eq!(encode_fps(30, 60, 60, true), 60);
         assert_eq!(audio_packets_per_video_frame(), 1);
-        assert_eq!(control_attach_wait_ms(), 400);
+        assert_eq!(control_attach_wait_ms(), 0);
         assert!(mux_cursor_on_video(true, false));
         assert!(!mux_cursor_on_video(true, true));
         assert!(!mux_cursor_on_video(false, false));
@@ -892,7 +892,7 @@ Current AC Power Setting Index: 0x00000003
     #[test]
     fn encoded_backpressure_does_not_tear_gop() {
         assert!(!drop_encoded_p_on_backpressure());
-        assert_eq!(encoded_queue_capacity(), 2);
+        assert_eq!(encoded_queue_capacity(), 1);
         assert_eq!(capture_thread_queue_size(), 1);
     }
 
