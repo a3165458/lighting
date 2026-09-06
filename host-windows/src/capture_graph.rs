@@ -95,16 +95,18 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
     if encoder.contains("nvenc") {
         // GlideX / Sunshine: ddagrab is already D3D11. scale_d3d11 converts
         // BGRA→NV12 on the same device and NVENC consumes D3D11 frames.
-        // extra_hw_frames on the filter is not in older ffmpeg option tables;
-        // unknown keys used to fail this graph (~3s) and we encoded on CUDA.
-        graphs.push(format!(
-            "{dda},scale_d3d11=width={dst_w}:height={dst_h}:format=nv12"
-        ));
+        // Try extra_hw_frames=1 first. An unkeyed scale_d3d11 still succeeds
+        // on new ffmpeg and then uses the filter default pool (often 16
+        // pictures). Unknown extra_hw_frames on old ffmpeg fails this graph
+        // (~3s); the unkeyed graph below is that fallback.
         for extra in &extras {
             graphs.push(format!(
                 "{dda},scale_d3d11=width={dst_w}:height={dst_h}:format=nv12:extra_hw_frames={extra}"
             ));
         }
+        graphs.push(format!(
+            "{dda},scale_d3d11=width={dst_w}:height={dst_h}:format=nv12"
+        ));
         for extra in &extras {
             if scale {
                 graphs.push(format!(
@@ -133,6 +135,11 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
     }
     if encoder.contains("amf") {
         if scale {
+            for extra in &extras {
+                graphs.push(format!(
+                    "{dda},scale_d3d11=width={dst_w}:height={dst_h}:format=nv12:extra_hw_frames={extra}"
+                ));
+            }
             graphs.push(format!(
                 "{dda},scale_d3d11=width={dst_w}:height={dst_h}:format=nv12"
             ));
@@ -224,9 +231,9 @@ mod tests {
         assert!(graphs.len() >= 4);
         assert!(graphs[0].contains("scale_d3d11"));
         assert!(graphs[0].contains("format=nv12"));
-        assert!(!graphs[0].contains("extra_hw_frames"));
+        assert!(graphs[0].contains("extra_hw_frames=1"));
         assert!(!graphs[0].contains("hwupload_cuda"));
-        assert!(graphs.iter().any(|g| g.contains("scale_d3d11") && g.contains("extra_hw_frames=1")));
+        assert!(graphs.iter().any(|g| g.contains("scale_d3d11") && !g.contains("extra_hw_frames")));
         assert!(graphs.iter().any(|g| g.contains("hwupload_cuda") && g.contains("scale_cuda")));
         assert!(graphs.iter().any(|g| g.contains("extra_hw_frames=2")));
         assert!(graphs.last().unwrap().contains("hwdownload"));
