@@ -298,19 +298,21 @@ class VideoDecoder {
      * Try 0 keeps vendor keys off (they made FEATURE_LowLatency configure()
      * fail). Official Android keys still go on try 0: without operating-rate
      * some Qualcomm C2 decoders accept KEY_LOW_LATENCY then pace at the SPS
-     * timing like a movie.
+     * timing like a movie. Try 1 is KEY_LOW_LATENCY alone, in case
+     * operating-rate made try 0 configure() fail and we would otherwise
+     * fall through to the high-latency format.
      */
     private fun applyLowLatencyOptions(format: MediaFormat, codecName: String, tryNumber: Int) {
         val official = decoderHasFeatureLowLatency(codecName)
         val n = codecName.lowercase()
         val qcom = n.startsWith("omx.qcom") || n.startsWith("c2.qti") || n.contains(".qcom.")
         try {
-            if (tryNumber < 1) {
+            if (tryNumber < 2) {
                 format.setInteger("low-latency", 1)
                 if (Build.VERSION.SDK_INT >= 30) {
                     format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
                 }
-                if (Build.VERSION.SDK_INT >= 23) {
+                if (tryNumber < 1 && Build.VERSION.SDK_INT >= 23) {
                     format.setInteger(MediaFormat.KEY_OPERATING_RATE, 32767)
                     format.setInteger(MediaFormat.KEY_PRIORITY, 0)
                 }
