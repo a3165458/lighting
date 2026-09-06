@@ -131,6 +131,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         statusBar.bringToFront()
         touch.attach(surface, surface)
         if (surface.holder.surface.isValid) {
+            applySurfaceFrameRate(surface.holder.surface)
             bindVideoSurface(surface.holder.surface)
             startSession()
         }
@@ -219,6 +220,9 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {
+        // Hint peak Hz before MediaCodec attaches. Waiting until the first
+        // picture (letterboxSurface) lets SurfaceFlinger lock 60 Hz.
+        applySurfaceFrameRate(holder.surface)
         bindVideoSurface(holder.surface)
         startSession()
     }
@@ -634,6 +638,31 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         )
     }
 
+    /**
+     * Hint the panel refresh, but do not mark the surface as a fixed-rate
+     * movie. FIXED_SOURCE made SurfaceFlinger wait a vsync; GlideX /
+     * Moonlight present as soon as the buffer is released.
+     */
+    private fun applySurfaceFrameRate(surfaceObj: Surface) {
+        if (Build.VERSION.SDK_INT < 30 || !surfaceObj.isValid) return
+        val hz = panelFps.coerceAtLeast(streamFps).toFloat().coerceAtLeast(30f)
+        try {
+            if (Build.VERSION.SDK_INT >= 31) {
+                surfaceObj.setFrameRate(
+                    hz,
+                    Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
+                    Surface.CHANGE_FRAME_RATE_ALWAYS,
+                )
+            } else {
+                surfaceObj.setFrameRate(
+                    hz,
+                    Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
+                )
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
     private fun letterboxSurface(width: Int, height: Int) {
         streamW = width
         streamH = height
@@ -642,28 +671,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
             // explicit pixels (or setFixedSize after MediaCodec.start) makes
             // SurfaceFlinger rebuild the buffer queue and can fire
             // surfaceDestroyed -> stopSession on the first picture.
-            if (Build.VERSION.SDK_INT >= 30) {
-                try {
-                    // Hint the panel refresh, but do not mark the surface as a
-                    // fixed-rate movie. FIXED_SOURCE made SurfaceFlinger wait a
-                    // vsync; GlideX / Moonlight present as soon as the buffer is
-                    // released (releaseOutputBuffer(..., 0)).
-                    val hz = panelFps.coerceAtLeast(streamFps).toFloat()
-                    if (Build.VERSION.SDK_INT >= 31) {
-                        surface.holder.surface.setFrameRate(
-                            hz,
-                            Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
-                            Surface.CHANGE_FRAME_RATE_ALWAYS,
-                        )
-                    } else {
-                        surface.holder.surface.setFrameRate(
-                            hz,
-                            Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
-                        )
-                    }
-                } catch (_: Throwable) {
-                }
-            }
+            applySurfaceFrameRate(surface.holder.surface)
             // Overlay z-order is setZOrderMediaOverlay, set in the view
             // ctor. bringToFront() on that SurfaceView can rebuild it and
             // drop the first picture into surfaceDestroyed.
