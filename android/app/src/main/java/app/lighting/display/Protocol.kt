@@ -164,13 +164,14 @@ class LitSocket(
     host: String,
     port: Int,
     connectTimeoutMs: Int = 1_500,
-    recvBytes: Int = 48 * 1024,
+    recvBytes: Int = 24 * 1024,
     sendBytes: Int = 32 * 1024,
 ) : AutoCloseable {
     val socket: Socket = Socket().apply {
         tcpNoDelay = true
         keepAlive = true
-        // ~1 video frame. A 256 KB socket hid ~80 ms of USB bufferbloat.
+        // One 120 Hz P-frame (~26 KB). 48 KB was two frames of USB
+        // bufferbloat after the host send buffer was already 24 KB.
         try {
             receiveBufferSize = recvBytes
             sendBufferSize = sendBytes
