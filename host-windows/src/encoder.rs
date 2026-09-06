@@ -479,6 +479,12 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "1".into(),
             "-low_delay_brc".into(),
             "1".into(),
+            "-low_power".into(),
+            if lighting_host::session_policy::qsv_low_power() {
+                "1".into()
+            } else {
+                "0".into()
+            },
             "-extbrc".into(),
             "0".into(),
             "-mbbrc".into(),
