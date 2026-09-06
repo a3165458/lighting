@@ -87,14 +87,17 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         }
     }
     override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Moonlight Game: ALLM / skip extra composition before the first
+        // vsync. After super.onCreate the PhoneWindow is already installed
+        // and some pads keep a full post-processing vsync for the session.
         if (Build.VERSION.SDK_INT >= 30) {
             try {
                 window.setPreferMinimalPostProcessing(true)
             } catch (_: Throwable) {
             }
         }
+        super.onCreate(savedInstanceState)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         // Lock peak Hz before the first vsync. After setContentView the
         // compositor has already picked 60 Hz on many pads.
         lockPeakRefresh()
