@@ -87,11 +87,16 @@ class AudioPlayer(sampleRate: Int, channels: Int) {
     }
 }
 
-fun splitPts(payload: ByteArray): Pair<Long, ByteArray> {
-    if (payload.size < 8) return 0L to payload
+fun readPts(payload: ByteArray): Long {
+    if (payload.size < 8) return 0L
     var pts = 0L
     for (i in 0 until 8) {
         pts = (pts shl 8) or (payload[i].toLong() and 0xFF)
     }
-    return pts to payload.copyOfRange(8, payload.size)
+    return pts
+}
+
+fun splitPts(payload: ByteArray): Pair<Long, ByteArray> {
+    if (payload.size < 8) return 0L to payload
+    return readPts(payload) to payload.copyOfRange(8, payload.size)
 }

@@ -84,10 +84,16 @@ class VideoDecoder {
         throw IllegalStateException("解码失败 0xfffffc0e/UNSUPPORTED。${w}x$h $mime。${errors.joinToString(" | ")}")
     }
 
-    fun offer(data: ByteArray, codecConfig: Boolean, keyframe: Boolean, ptsUs: Long) {
-        if (!configured || !running.get() || data.isEmpty()) return
+    fun offer(
+        data: ByteArray,
+        codecConfig: Boolean,
+        keyframe: Boolean,
+        ptsUs: Long,
+        offset: Int = 0,
+    ) {
+        if (!configured || !running.get() || data.size <= offset) return
         if (!codecConfig && skipUntilKey.get() && !keyframe) return
-        val pkt = Packet(data, codecConfig, keyframe, ptsUs)
+        val pkt = Packet(data, offset, codecConfig, keyframe, ptsUs)
         if (codecConfig || keyframe) {
             skipUntilKey.set(false)
         }
@@ -429,7 +435,7 @@ class VideoDecoder {
         // lock so a 4–16 ms retry cannot HOL-stall the next picture.
         synchronized(inputLock) {
             if (!running.get() || codec !== decoder) return false
-            if (enqueue(decoder, pkt.data, flags, pkt.ptsUs, 0L)) return true
+            if (enqueue(decoder, pkt, flags, 0L)) return true
         }
         if (waitUs <= 0L) return false
         // Block inside MediaCodec until an input slot exists. Thread.sleep(1)
@@ -449,39 +455,39 @@ class VideoDecoder {
                 }
                 return false
             }
-            return fillInput(decoder, index, pkt.data, flags)
+            return fillInput(decoder, index, pkt, flags)
         }
     }
 
     private fun enqueue(
         decoder: MediaCodec,
-        data: ByteArray,
+        pkt: Packet,
         flags: Int,
-        @Suppress("UNUSED_PARAMETER") ptsUs: Long,
         waitUs: Long,
     ): Boolean {
         val index = decoder.dequeueInputBuffer(waitUs)
         if (index < 0) return false
-        return fillInput(decoder, index, data, flags)
+        return fillInput(decoder, index, pkt, flags)
     }
 
     private fun fillInput(
         decoder: MediaCodec,
         index: Int,
-        data: ByteArray,
+        pkt: Packet,
         flags: Int,
     ): Boolean {
         val buf = decoder.getInputBuffer(index) ?: return false
-        if (buf.remaining() < data.size) {
+        val size = pkt.data.size - pkt.offset
+        if (size <= 0 || buf.remaining() < size) {
             decoder.queueInputBuffer(index, 0, 0, 0, 0)
             return false
         }
         buf.clear()
-        buf.put(data)
+        buf.put(pkt.data, pkt.offset, size)
         // Moonlight/GlideX: never pace MediaCodec with the host wall clock.
         // Host elapsed-µs as PTS made some SoCs hold frames like a movie.
         fakePtsUs += 1
-        decoder.queueInputBuffer(index, 0, data.size, fakePtsUs, flags)
+        decoder.queueInputBuffer(index, 0, size, fakePtsUs, flags)
         return true
     }
 
@@ -638,6 +644,7 @@ class VideoDecoder {
 
     private data class Packet(
         val data: ByteArray,
+        val offset: Int,
         val codecConfig: Boolean,
         val keyframe: Boolean,
         val ptsUs: Long,

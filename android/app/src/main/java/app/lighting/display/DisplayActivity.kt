@@ -413,11 +413,19 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 val msg = sock.read()
                 when (msg.type) {
                     LitProtocol.MSG_VIDEO -> {
-                        val (pts, data) = splitPts(msg.payload)
+                        val pts = readPts(msg.payload)
                         val isCfg = msg.flags and LitProtocol.FLAG_CODEC_CONFIG != 0
                         val key = msg.flags and LitProtocol.FLAG_KEYFRAME != 0
                         if (!configured || isCfg) {
-                            val canInit = isCfg || isCodecConfigNal(data, hevc)
+                            // CSD is once; strip the 8-byte PTS so SPS/PPS
+                            // parse does not see garbage. Live P-frames keep
+                            // the socket buffer (Moonlight directSubmit).
+                            val nal = if (msg.payload.size > 8) {
+                                msg.payload.copyOfRange(8, msg.payload.size)
+                            } else {
+                                msg.payload
+                            }
+                            val canInit = isCfg || isCodecConfigNal(nal, hevc)
                             if (!canInit) continue
                             // Size the SurfaceView buffers before the codec
                             // attaches. setFixedSize after start() makes
@@ -431,7 +439,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                                 cfg.codec,
                                 cfg.width,
                                 cfg.height,
-                                data,
+                                nal,
                                 (videoSurface ?: surface.holder.surface),
                             )
                             configured = true
@@ -442,11 +450,17 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                             letterboxSurface(cfg.width, cfg.height)
                             setHud("${cfg.codec} ${cfg.width}×${cfg.height}@${cfg.fps}", reason = null, keep = false)
                             if (!isCfg) {
-                                decoder.offer(data, codecConfig = false, keyframe = true, ptsUs = pts)
+                                decoder.offer(nal, codecConfig = false, keyframe = true, ptsUs = pts)
                             }
                             continue
                         }
-                        decoder.offer(data, codecConfig = false, keyframe = key, ptsUs = pts)
+                        decoder.offer(
+                            msg.payload,
+                            codecConfig = false,
+                            keyframe = key,
+                            ptsUs = pts,
+                            offset = 8,
+                        )
                     }
                     LitProtocol.MSG_AUDIO -> {
                         val (pts, pcm) = splitPts(msg.payload)
