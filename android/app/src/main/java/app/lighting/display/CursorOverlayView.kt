@@ -281,23 +281,11 @@ class CursorOverlayView @JvmOverloads constructor(
         return try {
             val sc = surfaceControl
             if (!sc.isValid) return false
-            val tx = SurfaceControl.Transaction().setPosition(sc, x, y)
-            if (Build.VERSION.SDK_INT >= 31) {
-                tx.setFrameRate(
-                    sc,
-                    peakHz,
-                    Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
-                    Surface.CHANGE_FRAME_RATE_ALWAYS,
-                )
-                try {
-                    tx.setFrameRateSelectionStrategy(
-                        sc,
-                        SurfaceControl.FRAME_RATE_SELECTION_STRATEGY_OVERRIDE_CHILDREN,
-                    )
-                } catch (_: Throwable) {
-                }
-            }
-            tx.apply()
+            // Hint peak Hz once in hintOverlayFrameRate. CHANGE_FRAME_RATE_ALWAYS
+            // on every pose made SurfaceFlinger treat a 1 ms move as a refresh
+            // switch — the pointer sat a vsync behind the laptop. GlideX only
+            // punches position here.
+            SurfaceControl.Transaction().setPosition(sc, x, y).apply()
             lastTx = x
             lastTy = y
             true
