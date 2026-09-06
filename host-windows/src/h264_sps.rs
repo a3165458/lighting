@@ -214,9 +214,10 @@ fn rewrite_sps_rbsp(rbsp: &[u8]) -> Option<Vec<u8>> {
     dst.u(8, profile);
     dst.copy_u(&mut src, 8)?;
     let level = src.u(8)?;
-    // 1080p120 is 979200 MB/s; Level 4.2 caps at 522240. NVENC often still
-    // tags 4.2 and some Qualcomm decoders then pace at 60 fps. Floor at 5.1.
-    dst.u(8, level.max(51));
+    // 1080p120 needs 5.1 (979200 MB/s). 1440p120 needs 5.2 (1728000).
+    // If AVC decode covers 2K we never switch to HEVC; a 5.1 tag still
+    // lets some SoCs pace at 60. Floor at 5.2. Higher levels unchanged.
+    dst.u(8, level.max(52));
     dst.copy_ue(&mut src)?;
 
     let mut chroma_format_idc = 1u32;
@@ -654,13 +655,13 @@ mod tests {
     }
 
     #[test]
-    fn floors_level_to_5_1_so_1080p120_is_not_tagged_60fps() {
+    fn floors_level_to_5_2_so_1440p120_is_not_tagged_60fps() {
         let src = baseline_sps(16, false);
         assert_eq!(src[7], 42);
         let out = rewrite_low_latency(src);
-        assert_eq!(out[7], 51);
+        assert_eq!(out[7], 52);
         assert_eq!(parse_dpb(&out), Some((1, Some((0, 1)))));
-        assert_eq!(rewrite_low_latency(out.clone())[7], 51);
+        assert_eq!(rewrite_low_latency(out.clone())[7], 52);
     }
 
     #[test]
