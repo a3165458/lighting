@@ -327,6 +327,14 @@ pub fn qsv_a53cc() -> bool {
     false
 }
 
+/// h264_qsv `-vcm`. Sunshine ULL uses Video Conferencing Mode so the
+/// encoder does not hold a CBR picture. Windows ffmpeg exposes it
+/// (`QSV_HAVE_VCM`); hevc_qsv does not. Unknown-option spawn fails into
+/// the existing encoder fallback chain — do not send this on HEVC.
+pub fn qsv_vcm() -> bool {
+    true
+}
+
 /// Encoder DPB / `num_ref_frames`. NVENC default follows the level (4–16);
 /// Android then holds decoded pictures. Moonlight decoder-errata: 1.
 pub fn encoder_refs() -> u32 {
@@ -1012,6 +1020,7 @@ mod tests {
         assert_eq!(qsv_scenario(), "gamestreaming");
         assert!(qsv_aud());
         assert!(!qsv_a53cc());
+        assert!(qsv_vcm());
         assert_eq!(encoder_refs(), 1);
         assert_eq!(nvenc_dpb_size(), 1);
         assert!(!nvenc_extra_sei());

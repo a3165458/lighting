@@ -652,6 +652,12 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
                 },
                 "-look_ahead".into(),
                 "0".into(),
+                "-vcm".into(),
+                if lighting_host::session_policy::qsv_vcm() {
+                    "1".into()
+                } else {
+                    "0".into()
+                },
                 "-low_delay_brc".into(),
                 "1".into(),
                 "-mbbrc".into(),
