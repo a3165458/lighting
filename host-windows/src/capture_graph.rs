@@ -73,7 +73,8 @@ pub fn dda_capture_graphs_for(
     let Some(dxgi) = dxgi else {
         return Vec::new();
     };
-    let dda = dda_source_filter(dxgi.output_index, fps, draw_mouse);
+    let grab = crate::session_policy::dda_poll_hz(fps);
+    let dda = dda_source_filter(dxgi.output_index, grab, draw_mouse);
     let scale = needs_scale(src_w, src_h, dst_w, dst_h);
     dda_encoder_graphs(&dda, scale, dst_w, dst_h, encoder)
 }
@@ -269,6 +270,8 @@ mod tests {
         );
         assert!(graphs.iter().all(|g| !g.contains("allow_tearing")));
         assert!(graphs.iter().all(|g| g.contains("output_idx=1")));
+        assert!(graphs.iter().all(|g| g.contains("framerate=120")));
+        assert!(graphs.iter().all(|g| g.contains("dup_frames=0")));
     }
 
     #[test]
