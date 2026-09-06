@@ -232,6 +232,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         if (senderRunning) return
         senderRunning = true
         sender = thread(name = "lighting-touch") {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
             while (senderRunning && !Thread.currentThread().isInterrupted) {
                 val payload = try {
                     outbound.poll(200, TimeUnit.MILLISECONDS) ?: continue
@@ -546,7 +547,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private fun applyCursor(update: CursorUpdate?) {
         if (update == null) return
         if (!update.visible) {
-            cursorOverlay.hidePointer()
+            cursorOverlay.post { cursorOverlay.hidePointer() }
             return
         }
         var incoming: Bitmap? = null
