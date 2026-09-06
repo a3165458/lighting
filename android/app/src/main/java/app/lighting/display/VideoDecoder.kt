@@ -53,12 +53,12 @@ class VideoDecoder {
                     decoder = MediaCodec.createByCodecName(name)
                     decoder.configure(format, surface, null, 0)
                     decoder.start()
-                    try {
-                        val p = android.os.Bundle()
-                        p.putInt(MediaFormat.KEY_LOW_LATENCY, 1)
-                        decoder.setParameters(p)
-                    } catch (_: Throwable) {
-                    }
+                    // Try 1–2 are FEATURE-only so a vendor-key reject still
+                    // configures. Qualcomm C2 then advertises LowLatency and
+                    // still paces at SPS (one vsync) unless qti-ext is on.
+                    // setParameters cannot fail configure(); poke the SoC
+                    // keys Moonlight puts on try 0.
+                    applyRuntimeLowLatency(decoder, name)
                     codec = decoder
                     configured = true
                     activeName = decoder.name
@@ -418,6 +418,50 @@ class VideoDecoder {
                 }
             }
         } catch (_: Throwable) {
+        }
+    }
+
+    /**
+     * Vendor low-latency after start(). Configure try 1–2 omit these so a
+     * reject still succeeds; without the poke, FEATURE_LowLatency C2 holds
+     * a decoded picture. Each key is its own bundle: one unknown vendor
+     * extra must not skip qti-ext-dec-low-latency.
+     */
+    private fun applyRuntimeLowLatency(decoder: MediaCodec, codecName: String) {
+        fun poke(key: String, value: Int) {
+            try {
+                val p = android.os.Bundle()
+                p.putInt(key, value)
+                decoder.setParameters(p)
+            } catch (_: Throwable) {
+            }
+        }
+        poke("low-latency", 1)
+        if (Build.VERSION.SDK_INT >= 30) {
+            poke(MediaFormat.KEY_LOW_LATENCY, 1)
+        }
+        if (Build.VERSION.SDK_INT >= 23) {
+            poke(MediaFormat.KEY_PRIORITY, 0)
+        }
+        val n = codecName.lowercase()
+        when {
+            n.startsWith("omx.qcom") || n.startsWith("c2.qti") || n.contains(".qcom.") -> {
+                poke("vendor.qti-ext-dec-picture-order.enable", 1)
+                poke("vendor.qti-ext-dec-low-latency.enable", 1)
+            }
+            n.startsWith("omx.hisi") || n.startsWith("c2.hisi") || n.contains("kirin") -> {
+                poke("vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-req", 1)
+                poke("vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-rdy", -1)
+            }
+            n.startsWith("omx.exynos") || n.startsWith("c2.exynos") || n.contains(".sec.") -> {
+                poke("vendor.rtc-ext-dec-low-latency.enable", 1)
+            }
+            n.startsWith("omx.amlogic") || n.startsWith("c2.amlogic") -> {
+                poke("vendor.low-latency.enable", 1)
+            }
+            n.startsWith("omx.mtk") || n.startsWith("c2.mtk") || n.contains(".mtk.") -> {
+                poke("vendor.mtk.vdec.low.latency", 1)
+            }
         }
     }
 
