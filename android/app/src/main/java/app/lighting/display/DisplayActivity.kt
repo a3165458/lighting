@@ -98,6 +98,9 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
             } catch (_: Throwable) {
             }
         }
+        // Lock peak Hz before the first vsync. After setContentView the
+        // compositor has already picked 60 Hz on many pads.
+        lockPeakRefresh()
         setContentView(R.layout.activity_display)
         hideSystemUi()
         surface = findViewById(R.id.surface)
@@ -133,6 +136,47 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         if (surface.holder.surface.isValid) {
             bindVideoSurface(surface.holder.surface)
             startSession()
+        }
+    }
+
+    /**
+     * GlideX / Moonlight: run the activity at the panel's peak Hz.
+     * `preferredRefreshRate = display.refreshRate` is a no-op when the
+     * system is already sitting at 60 Hz on a 90/120 Hz pad.
+     */
+    private fun lockPeakRefresh(): Int {
+        @Suppress("DEPRECATION")
+        val display = windowManager.defaultDisplay
+        val peak = peakDisplayMode(display)
+        val hz = (peak?.refreshRate ?: display.refreshRate).toInt().coerceIn(30, 120)
+        panelFps = hz
+        if (Build.VERSION.SDK_INT >= 23) {
+            try {
+                val lp = window.attributes
+                if (peak != null) {
+                    lp.preferredDisplayModeId = peak.modeId
+                }
+                lp.preferredRefreshRate = peak?.refreshRate ?: hz.toFloat()
+                window.attributes = lp
+            } catch (_: Throwable) {
+            }
+        }
+        return hz
+    }
+
+    private fun peakDisplayMode(display: android.view.Display): android.view.Display.Mode? {
+        if (Build.VERSION.SDK_INT < 23) return null
+        return try {
+            val cur = display.mode
+            val modes = display.supportedModes
+            val same = modes.filter {
+                it.physicalWidth == cur.physicalWidth && it.physicalHeight == cur.physicalHeight
+            }
+            val pool = if (same.isNotEmpty()) same else modes.toList()
+            val atLeast120 = pool.filter { it.refreshRate >= 119.5f }
+            atLeast120.minByOrNull { it.refreshRate } ?: pool.maxByOrNull { it.refreshRate }
+        } catch (_: Throwable) {
+            null
         }
     }
 
@@ -265,18 +309,8 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         val port = intent.getIntExtra(EXTRA_PORT, LitProtocol.PORT)
         val metrics = DisplayMetrics()
         @Suppress("DEPRECATION")
-        val display = windowManager.defaultDisplay
-        display.getRealMetrics(metrics)
-        val refresh = display.refreshRate.toInt().coerceIn(30, 120)
-        panelFps = refresh
-        if (Build.VERSION.SDK_INT >= 23) {
-            try {
-                val lp = window.attributes
-                lp.preferredRefreshRate = refresh.toFloat()
-                window.attributes = lp
-            } catch (_: Throwable) {
-            }
-        }
+        windowManager.defaultDisplay.getRealMetrics(metrics)
+        val refresh = lockPeakRefresh()
         val caps = DeviceCaps.probe()
         worker = thread(name = "lighting-session") {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
@@ -621,10 +655,18 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     // vsync; GlideX / Moonlight present as soon as the buffer is
                     // released (releaseOutputBuffer(..., 0)).
                     val hz = panelFps.coerceAtLeast(streamFps).toFloat()
-                    surface.holder.surface.setFrameRate(
-                        hz,
-                        Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
-                    )
+                    if (Build.VERSION.SDK_INT >= 31) {
+                        surface.holder.surface.setFrameRate(
+                            hz,
+                            Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
+                            Surface.CHANGE_FRAME_RATE_ALWAYS,
+                        )
+                    } else {
+                        surface.holder.surface.setFrameRate(
+                            hz,
+                            Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
+                        )
+                    }
                 } catch (_: Throwable) {
                 }
             }
