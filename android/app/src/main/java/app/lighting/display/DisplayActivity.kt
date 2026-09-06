@@ -12,6 +12,7 @@ import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
+import android.graphics.PixelFormat
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -65,6 +66,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private var audio: AudioPlayer? = null
     private var streamW = 0
     private var streamH = 0
+    private var streamFps = 60
     private val hideHud = Runnable {
         if (!awaitingManual) {
             statusBar.visibility = View.GONE
@@ -89,6 +91,12 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        if (Build.VERSION.SDK_INT >= 30) {
+            try {
+                window.setPreferMinimalPostProcessing(true)
+            } catch (_: Throwable) {
+            }
+        }
         setContentView(R.layout.activity_display)
         hideSystemUi()
         surface = findViewById(R.id.surface)
@@ -114,6 +122,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         surface.isFocusable = false
         // SurfaceView sits under the overlay; z-order media overlay keeps HUD/touch above.
         surface.setZOrderMediaOverlay(false)
+        surface.holder.setFormat(PixelFormat.RGBX_8888)
         surface.holder.addCallback(this)
         touchLayer.bringToFront()
         reconnectLayer.bringToFront()
@@ -258,6 +267,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         val refresh = display.refreshRate.toInt().coerceIn(30, 120)
         val caps = DeviceCaps.probe()
         worker = thread(name = "lighting-session") {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
             var fails = 0
             var windowStart = 0L
             while (running && sessionGen == gen) {
@@ -327,6 +337,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
             throw IllegalStateException("expected config, got ${cfgMsg.type}")
         }
         val cfg = LitProtocol.parseConfig(cfgMsg.payload)
+        streamFps = cfg.fps.coerceIn(24, 120)
         ConnectHistory.remember(this, cfg.hostName, host, port)
         val hevc = cfg.codec.equals("hevc", true) || cfg.codec.equals("h265", true)
         if (cfg.audioEnabled) {
@@ -494,10 +505,11 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
     private fun openControlPlane(host: String, port: Int, gen: Int) {
         try {
-            val sock = LitSocket(host, port, 800)
+            val sock = LitSocket(host, port, 800, recvBytes = 16 * 1024, sendBytes = 16 * 1024)
             sock.write(LitProtocol.MSG_HELLO, 0, LitProtocol.controlHelloJson())
             controlLit = sock
             controlReader = thread(name = "lighting-cursor") {
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
                 try {
                     while (running && sessionGen == gen) {
                         val msg = sock.read()
@@ -575,6 +587,19 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 gravity = Gravity.CENTER
             }
             surface.layoutParams = lp
+            try {
+                surface.holder.setFixedSize(width, height)
+            } catch (_: Throwable) {
+            }
+            if (Build.VERSION.SDK_INT >= 30) {
+                try {
+                    surface.setFrameRate(
+                        streamFps.toFloat(),
+                        Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE,
+                    )
+                } catch (_: Throwable) {
+                }
+            }
             cursorOverlay.bringToFront()
             touchLayer.bringToFront()
             reconnectLayer.bringToFront()

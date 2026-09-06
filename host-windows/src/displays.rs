@@ -24,6 +24,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::Security::{
     GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
 };
+use windows::Win32::Media::{timeBeginPeriod, timeEndPeriod};
 use windows::Win32::System::Power::{
     SetThreadExecutionState, ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED,
 };
@@ -922,6 +923,7 @@ impl KeepAwakeGuard {
             .name("lighting-keep-awake".into())
             .spawn(move || {
                 unsafe {
+                    let _ = timeBeginPeriod(1);
                     let _ = SetThreadExecutionState(
                         ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED,
                     );
@@ -929,6 +931,7 @@ impl KeepAwakeGuard {
                 let _ = rx.recv();
                 unsafe {
                     let _ = SetThreadExecutionState(ES_CONTINUOUS);
+                    let _ = timeEndPeriod(1);
                 }
             })
             .ok();
