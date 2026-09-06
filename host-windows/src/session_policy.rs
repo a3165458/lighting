@@ -228,18 +228,22 @@ pub fn audio_packets_per_video_frame() -> usize {
     1
 }
 
-/// Encode at least as fast as the tablet refresh so the pad is not waiting
-/// an extra vsync on 60 fps video (GlideX / SuperDisplay do this).
-pub fn encode_fps(req_fps: u32, tablet_max: u32, dec_fps: u32, hw: bool) -> u32 {
-    let tablet = if tablet_max >= 24 { tablet_max } else { req_fps };
-    let mut fps = req_fps.max(tablet).clamp(24, 120);
-    if dec_fps >= 24 {
-        fps = fps.min(dec_fps);
-    }
+/// GlideX / SuperDisplay encode at the virtual panel (120 Hz), not the
+/// tablet vsync. `min(decoder_max_fps)` used to pin a 60 Hz pad to a 16 ms
+/// encode grid even after IddCx was already presenting every 8 ms.
+pub fn encode_fps(_req_fps: u32, _tablet_max: u32, _dec_fps: u32, hw: bool) -> u32 {
     if !hw {
-        fps = fps.min(45);
+        45
+    } else {
+        120
     }
-    fps
+}
+
+/// Anonymous `CreatePipe` default is 4 KB. A 25 Mbps AU is ~20–50 KB, so
+/// ffmpeg stdout used to land as many short `Read`s and PeekNamedPipe went
+/// quiet between them. Ask for ~a few frames; Windows treats this as a hint.
+pub fn ffmpeg_pipe_buffer_bytes() -> u32 {
+    256 * 1024
 }
 
 /// Never drop a P-frame from a live GOP: the decoder would show 1 fps until the
@@ -633,11 +637,13 @@ mod tests {
     }
 
     #[test]
-    fn encode_fps_tracks_tablet_refresh() {
+    fn encode_fps_matches_virtual_120_like_glidex() {
         assert_eq!(encode_fps(60, 120, 120, true), 120);
-        assert_eq!(encode_fps(60, 90, 60, true), 60);
+        assert_eq!(encode_fps(60, 90, 60, true), 120);
         assert_eq!(encode_fps(60, 120, 60, false), 45);
-        assert_eq!(encode_fps(30, 60, 60, true), 60);
+        assert_eq!(encode_fps(30, 60, 60, true), 120);
+        assert_eq!(ffmpeg_pipe_buffer_bytes(), 256 * 1024);
+        assert!(ffmpeg_pipe_buffer_bytes() > 64 * 1024);
         assert_eq!(audio_packets_per_video_frame(), 1);
         assert_eq!(control_attach_wait_ms(), 0);
         assert!(mux_cursor_on_video(true, false));

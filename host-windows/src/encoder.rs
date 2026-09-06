@@ -8,9 +8,12 @@ use std::thread;
 
 use crate::displays::DisplayInfo;
 use lighting_host::annexb;
-use std::os::windows::io::AsRawHandle;
-use windows::Win32::Foundation::HANDLE;
-use windows::Win32::System::Pipes::PeekNamedPipe;
+use std::os::windows::io::{AsRawHandle, FromRawHandle};
+use windows::Win32::Foundation::{
+    HANDLE, HANDLE_FLAGS, HANDLE_FLAG_INHERIT, SetHandleInformation,
+};
+use windows::Win32::Security::SECURITY_ATTRIBUTES;
+use windows::Win32::System::Pipes::{CreatePipe, PeekNamedPipe};
 use windows::Win32::System::Threading::{
     GetCurrentThread, SetPriorityClass, SetThreadPriority, HIGH_PRIORITY_CLASS,
     THREAD_PRIORITY_HIGHEST,
@@ -117,15 +120,15 @@ pub fn start_encoder(
     tracing::info!("ffmpeg {}", args.join(" "));
 
     let mut cmd = Command::new(ffmpeg);
+    let (stdout, write) = ffmpeg_stdout_pipe()?;
     cmd.args(&args)
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
+        .stdout(Stdio::from(write))
         .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW);
 
     let mut child = cmd.spawn().context("spawn ffmpeg")?;
     raise_process_priority(&child);
-    let stdout = child.stdout.take().context("ffmpeg stdout")?;
     let stderr = child.stderr.take().context("ffmpeg stderr")?;
 
     thread::spawn(move || {
@@ -161,6 +164,34 @@ fn spawn_annexb_pump(
         }
     });
     rx
+}
+
+/// Windows default anonymous-pipe buffer is 4 KB. ffmpeg then emits a
+/// 20–50 KB AU as many short writes; PeekNamedPipe goes quiet between them
+/// and we flush a partial picture. Inherit a larger pipe as stdout instead.
+fn ffmpeg_stdout_pipe() -> Result<(std::fs::File, std::fs::File)> {
+    let mut read = HANDLE::default();
+    let mut write = HANDLE::default();
+    let mut sa = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: std::ptr::null_mut(),
+        bInheritHandle: true.into(),
+    };
+    unsafe {
+        CreatePipe(
+            &mut read,
+            &mut write,
+            Some(&sa as *const SECURITY_ATTRIBUTES),
+            lighting_host::session_policy::ffmpeg_pipe_buffer_bytes(),
+        )
+        .context("CreatePipe ffmpeg stdout")?;
+        SetHandleInformation(read, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0))
+            .context("ffmpeg stdout read handle must not be inherited")?;
+        Ok((
+            std::fs::File::from_raw_handle(read.0),
+            std::fs::File::from_raw_handle(write.0),
+        ))
+    }
 }
 
 fn pipe_bytes_available(stdout: &impl AsRawHandle) -> Option<usize> {
@@ -323,14 +354,14 @@ pub fn start_encoder_gdigrab(
 
     tracing::info!("ffmpeg(gdigrab) {}", args.join(" "));
     let mut cmd = Command::new(ffmpeg);
+    let (stdout, write) = ffmpeg_stdout_pipe()?;
     cmd.args(&args)
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
+        .stdout(Stdio::from(write))
         .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW);
     let mut child = cmd.spawn().context("spawn ffmpeg gdigrab")?;
     raise_process_priority(&child);
-    let stdout = child.stdout.take().context("ffmpeg stdout")?;
     let stderr = child.stderr.take().context("ffmpeg stderr")?;
     thread::spawn(move || {
         let mut r = BufReader::new(stderr);
