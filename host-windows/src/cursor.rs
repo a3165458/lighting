@@ -14,6 +14,9 @@ use windows::Win32::Graphics::Gdi::{
     GetObjectW, ReleaseDC, SelectObject, BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
     DIB_RGB_COLORS, HBITMAP, HBRUSH, HDC,
 };
+use windows::Win32::System::Threading::{
+    GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     DrawIconEx, GetCursorInfo, GetIconInfo, CURSORINFO, CURSOR_SHOWING, DI_NORMAL,
     ICONINFO,
@@ -30,6 +33,12 @@ pub fn spawn_sampler(
     let _ = std::thread::Builder::new()
         .name("lighting-cursor".into())
         .spawn(move || {
+            // ffmpeg is HIGH_PRIORITY_CLASS; a default sampler is starved
+            // for 8–15 ms whenever the encoder is busy (pointer lag vs
+            // the laptop). Match Sunshine: this thread stays above encode.
+            unsafe {
+                let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+            }
             let mut last_handle = 0isize;
             let mut last_vis = false;
             let mut last_x = i16::MIN;
