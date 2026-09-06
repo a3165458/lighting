@@ -519,8 +519,43 @@ fn rewrite_vps_rbsp(rbsp: &[u8]) -> Option<Vec<u8>> {
     let ordering = src.u(1)?;
     dst.u(1, ordering);
     rewrite_dpb_loop(&mut src, &mut dst, max_sub_layers, ordering == 1)?;
-    copy_rest_without_trailing(&mut src, &mut dst)?;
+    let tail_bit = src.bit;
+    let tail_dst = dst.clone();
+    if copy_vps_tail_drop_timing(&mut src, &mut dst).is_none() {
+        src.bit = tail_bit;
+        dst = tail_dst;
+        copy_rest_without_trailing(&mut src, &mut dst)?;
+    }
     Some(dst.finish())
+}
+
+fn copy_vps_tail_drop_timing(src: &mut Bits<'_>, dst: &mut Writer) -> Option<()> {
+    let max_layer_id = src.u(6)?;
+    dst.u(6, max_layer_id);
+    let sets_minus1 = dst.copy_ue(src)?;
+    if sets_minus1 > 16 || max_layer_id > 63 {
+        return None;
+    }
+    for _ in 1..=sets_minus1 {
+        for _ in 0..=max_layer_id {
+            dst.copy_u(src, 1)?;
+        }
+    }
+    let timing = src.u(1)?;
+    dst.u(1, 0);
+    if timing == 1 {
+        src.u(32)?;
+        src.u(32)?;
+        let poc = src.u(1)?;
+        if poc == 1 {
+            src.ue()?;
+        }
+        let nhrd = src.ue()?;
+        if nhrd > 0 {
+            return None;
+        }
+    }
+    copy_rest_without_trailing(src, dst)
 }
 
 /// `(max_dec_pic_buffering_minus1, max_num_reorder_pics, max_latency_increase_plus1)`.
@@ -715,6 +750,42 @@ mod tests {
         assert_eq!(parse_dpb(&src), Some((4, 1, 0)));
         let out = rewrite_low_latency(src);
         assert_eq!(parse_dpb(&out), Some((1, 0, 0)));
+    }
+
+    fn nvenc_like_vps(dpb: u32, reorder: u32) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.u(4, 0);
+        w.u(1, 1);
+        w.u(1, 1);
+        w.u(6, 0);
+        w.u(3, 0);
+        w.u(1, 1);
+        w.u(16, 0xffff);
+        write_main_ptl(&mut w);
+        w.u(1, 1);
+        w.ue(dpb);
+        w.ue(reorder);
+        w.ue(0);
+        w.u(6, 0);
+        w.ue(0);
+        w.u(1, 1);
+        w.u(32, 1);
+        w.u(32, 60);
+        w.u(1, 0);
+        w.ue(0);
+        w.u(1, 0);
+        nal_from_rbsp(&[0x40, 0x01], &w.finish())
+    }
+
+    #[test]
+    fn drops_vps_movie_timing_so_decoder_does_not_pace() {
+        let src = nvenc_like_vps(5, 2);
+        assert_eq!(parse_dpb(&src), Some((5, 2, 0)));
+        let out = rewrite_low_latency(src.clone());
+        assert_ne!(out, src);
+        assert_eq!(parse_dpb(&out), Some((1, 0, 0)));
+        assert!(out.len() < src.len(), "vps timing_info should be gone");
+        assert_eq!(rewrite_low_latency(out.clone()), out);
     }
 
     fn nvenc_like_sps(dpb: u32, reorder: u32) -> Vec<u8> {
