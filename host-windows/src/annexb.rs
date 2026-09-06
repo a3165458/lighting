@@ -57,6 +57,20 @@ enum RawMsg {
     Quiet,
 }
 
+fn raise_reader_priority() {
+    // ffmpeg is HIGH_PRIORITY_CLASS. The assembler thread is already
+    // THREAD_PRIORITY_HIGHEST; this reader was NORMAL and could sit a
+    // scheduler slice behind egui while a 64 KB pipe AU waited.
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::System::Threading::{
+            GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
+        };
+        let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    }
+}
+
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedPacket {
     pub data: Vec<u8>,
@@ -313,6 +327,7 @@ where
     let reader = thread::Builder::new()
         .name("lighting-annexb-read".into())
         .spawn(move || {
+            raise_reader_priority();
             let mut buf = vec![0u8; 256 * 1024];
             loop {
                 match stdout.read(&mut buf) {
