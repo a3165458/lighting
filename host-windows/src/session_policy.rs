@@ -135,6 +135,11 @@ pub fn cursor_sample_interval_ms() -> u64 {
 
 /// ffmpeg hwupload/hwmap pool. Default is often 16 frames (~250 ms).
 pub fn hw_extra_frames() -> u32 {
+    1
+}
+
+/// Second CUDA/QSV pool size if a 1-frame pool stalls ffmpeg.
+pub fn hw_extra_frames_fallback() -> u32 {
     2
 }
 
@@ -587,7 +592,8 @@ mod tests {
     fn capture_queue_is_single_frame() {
         assert_eq!(capture_thread_queue_size(), 1);
         assert_eq!(cursor_sample_interval_ms(), 1);
-        assert_eq!(hw_extra_frames(), 2);
+        assert_eq!(hw_extra_frames(), 1);
+        assert_eq!(hw_extra_frames_fallback(), 2);
         assert_eq!(nvenc_surfaces(), 2);
         assert!(!nvenc_spatial_aq());
         assert_eq!(wasapi_buffer_hns(), 200_000);

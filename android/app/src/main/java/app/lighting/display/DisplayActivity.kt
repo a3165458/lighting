@@ -38,7 +38,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         const val EXTRA_ERROR_DETAIL = "error_detail"
         private const val RECONNECT_ATTEMPTS = 7
         private const val RECONNECT_BUDGET_MS = 12_000L
-        private const val HUD_HIDE_MS = 2800L
+        private const val HUD_HIDE_MS = 400L
     }
 
     private lateinit var surface: SurfaceView
@@ -123,7 +123,8 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         surface.isFocusable = false
         // SurfaceView sits under the overlay; z-order media overlay keeps HUD/touch above.
         surface.setZOrderMediaOverlay(false)
-        surface.holder.setFormat(PixelFormat.RGBX_8888)
+        // OPAQUE lets HWC punch the video overlay through. RGBX_8888 forced GPU composition.
+        surface.holder.setFormat(PixelFormat.OPAQUE)
         surface.holder.addCallback(this)
         touchLayer.bringToFront()
         reconnectLayer.bringToFront()
