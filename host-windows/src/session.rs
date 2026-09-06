@@ -978,7 +978,9 @@ async fn handle_client(
     }
     let t0 = std::time::Instant::now();
     let audio_stop = Arc::new(AtomicBool::new(false));
-    let (audio_tx, audio_rx) = std::sync::mpsc::sync_channel::<crate::audio::AudioPacket>(4);
+    let (audio_tx, audio_rx) = std::sync::mpsc::sync_channel::<crate::audio::AudioPacket>(
+        lighting_host::session_policy::audio_capture_queue(),
+    );
     if audio_enabled {
         match crate::audio::start_loopback(audio_tx, audio_stop.clone(), t0) {
             Ok(()) => tracing::info!("audio loopback started"),

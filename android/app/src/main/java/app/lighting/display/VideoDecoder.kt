@@ -9,7 +9,6 @@ import android.util.Log
 import android.view.Surface
 import java.nio.ByteBuffer
 import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 class VideoDecoder {
@@ -84,9 +83,7 @@ class VideoDecoder {
             return
         }
         try {
-            if (!queue.offer(pkt, 2, TimeUnit.MILLISECONDS)) {
-                Log.w(TAG, "decoder queue full; keeping GOP (not skipping to IDR)")
-            }
+            queue.put(pkt)
         } catch (_: InterruptedException) {
         }
     }

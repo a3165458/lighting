@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 class AudioPlayer(sampleRate: Int, channels: Int) {
     private val track: AudioTrack
-    private val queue = ArrayBlockingQueue<ByteArray>(24)
+    private val queue = ArrayBlockingQueue<ByteArray>(2)
     private val running = AtomicBoolean(true)
     val lastPtsUs = AtomicLong(0)
     private val worker: Thread
@@ -20,7 +20,7 @@ class AudioPlayer(sampleRate: Int, channels: Int) {
         val ch = if (channels >= 2) AudioFormat.CHANNEL_OUT_STEREO else AudioFormat.CHANNEL_OUT_MONO
         val min = AudioTrack.getMinBufferSize(sampleRate, ch, AudioFormat.ENCODING_PCM_16BIT)
         val attrs = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setUsage(AudioAttributes.USAGE_GAME)
             .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
             .build()
         val format = AudioFormat.Builder()
@@ -31,7 +31,7 @@ class AudioPlayer(sampleRate: Int, channels: Int) {
         val builder = AudioTrack.Builder()
             .setAudioAttributes(attrs)
             .setAudioFormat(format)
-            .setBufferSizeInBytes((min * 4).coerceAtLeast(sampleRate / 5 * 4))
+            .setBufferSizeInBytes(min.coerceAtLeast(1))
             .setTransferMode(AudioTrack.MODE_STREAM)
         if (Build.VERSION.SDK_INT >= 26) {
             builder.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
@@ -42,7 +42,7 @@ class AudioPlayer(sampleRate: Int, channels: Int) {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO)
             while (running.get()) {
                 val chunk = try {
-                    queue.poll(8, TimeUnit.MILLISECONDS)
+                    queue.poll(4, TimeUnit.MILLISECONDS)
                 } catch (_: InterruptedException) {
                     break
                 } ?: continue

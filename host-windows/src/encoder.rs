@@ -346,6 +346,8 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "ull".into(),
             "-surfaces".into(),
             lighting_host::session_policy::nvenc_surfaces().to_string(),
+            "-multipass".into(),
+            "disabled".into(),
             "-rc".into(),
             "cbr".into(),
             "-b:v".into(),
@@ -423,6 +425,8 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             settings.profile.clone(),
             "-usage".into(),
             "ultralowlatency".into(),
+            "-preanalysis".into(),
+            "0".into(),
         ]
     } else if encoder.contains("x265") || encoder.contains("hevc") {
         vec![

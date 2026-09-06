@@ -135,12 +135,23 @@ pub fn cursor_sample_interval_ms() -> u64 {
 
 /// ffmpeg hwupload/hwmap pool. Default is often 16 frames (~250 ms).
 pub fn hw_extra_frames() -> u32 {
-    3
+    2
 }
 
 /// NVENC concurrent surfaces. Auto/default can be 8–32 frames of encoder delay.
+/// Sunshine native uses 1; ffmpeg stalls at 1 on some GPUs, so keep 2.
 pub fn nvenc_surfaces() -> u32 {
-    3
+    2
+}
+
+/// WASAPI shared-mode loopback buffer, 100-ns units. 50 ms was audible lag.
+pub fn wasapi_buffer_hns() -> i64 {
+    200_000
+}
+
+/// Host audio packets waiting for the next video AU. take_latest keeps one.
+pub fn audio_capture_queue() -> usize {
+    2
 }
 
 /// Wait this long for the tablet's second LIT1 socket before starting ffmpeg.
@@ -571,8 +582,10 @@ mod tests {
     fn capture_queue_is_single_frame() {
         assert_eq!(capture_thread_queue_size(), 1);
         assert_eq!(cursor_sample_interval_ms(), 1);
-        assert_eq!(hw_extra_frames(), 3);
-        assert_eq!(nvenc_surfaces(), 3);
+        assert_eq!(hw_extra_frames(), 2);
+        assert_eq!(nvenc_surfaces(), 2);
+        assert_eq!(wasapi_buffer_hns(), 200_000);
+        assert_eq!(audio_capture_queue(), 2);
         assert!(!ddagrab_duplicate_frames());
         assert_eq!(tcp_send_buffer_bytes(), 48 * 1024);
         assert!(tcp_control_buffer_bytes() < tcp_send_buffer_bytes());
