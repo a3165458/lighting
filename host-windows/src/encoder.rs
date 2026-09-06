@@ -30,6 +30,8 @@ pub struct EncodeSettings {
     pub profile: String, // "main" | "baseline"
     /// False when the tablet paints a local OS pointer overlay.
     pub draw_mouse: bool,
+    /// NVENC `-surfaces`. 1 is Sunshine ULL; 2 if ffmpeg never emits IDR.
+    pub nvenc_surfaces: u32,
 }
 
 pub struct EncoderSession {
@@ -345,7 +347,7 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "-tune".into(),
             "ull".into(),
             "-surfaces".into(),
-            lighting_host::session_policy::nvenc_surfaces().to_string(),
+            settings.nvenc_surfaces.max(1).to_string(),
             "-multipass".into(),
             "disabled".into(),
             "-rc".into(),

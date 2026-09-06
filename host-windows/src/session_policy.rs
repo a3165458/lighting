@@ -144,9 +144,24 @@ pub fn hw_extra_frames_fallback() -> u32 {
 }
 
 /// NVENC concurrent surfaces. Auto/default can be 8–32 frames of encoder delay.
-/// Sunshine native uses 1; ffmpeg stalls at 1 on some GPUs, so keep 2.
+/// Sunshine native uses 1. Try 1 first; ffmpeg on some GPUs needs 2.
 pub fn nvenc_surfaces() -> u32 {
+    1
+}
+
+/// Second NVENC surface count if a 1-surface encoder never emits IDR.
+pub fn nvenc_surfaces_fallback() -> u32 {
     2
+}
+
+pub fn nvenc_surface_attempts() -> Vec<u32> {
+    let a = nvenc_surfaces();
+    let b = nvenc_surfaces_fallback();
+    if a == b {
+        vec![a]
+    } else {
+        vec![a, b]
+    }
 }
 
 /// NVIDIA Spatial AQ is a quality pass. Sunshine keeps it off in ULL.
@@ -594,7 +609,9 @@ mod tests {
         assert_eq!(cursor_sample_interval_ms(), 1);
         assert_eq!(hw_extra_frames(), 1);
         assert_eq!(hw_extra_frames_fallback(), 2);
-        assert_eq!(nvenc_surfaces(), 2);
+        assert_eq!(nvenc_surfaces(), 1);
+        assert_eq!(nvenc_surfaces_fallback(), 2);
+        assert_eq!(nvenc_surface_attempts(), vec![1, 2]);
         assert!(!nvenc_spatial_aq());
         assert_eq!(wasapi_buffer_hns(), 200_000);
         assert_eq!(audio_capture_queue(), 2);

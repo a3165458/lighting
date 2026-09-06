@@ -924,6 +924,7 @@ async fn handle_client(
             "baseline".into()
         },
         draw_mouse: !hello.cursor_overlay,
+        nvenc_surfaces: lighting_host::session_policy::nvenc_surfaces(),
     };
 
     let cursor_slot: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>> =
@@ -1249,24 +1250,37 @@ fn start_live_encoder(
             enc,
             settings.draw_mouse,
         );
+        let surface_tries = if enc.contains("nvenc") {
+            lighting_host::session_policy::nvenc_surface_attempts()
+        } else {
+            vec![settings.nvenc_surfaces.max(1)]
+        };
         for graph in graphs {
-            let session = match encoder::start_encoder(ffmpeg, display, settings, enc, &graph) {
-                Ok(s) => s,
-                Err(err) => {
-                    tracing::warn!("encoder {enc} spawn failed: {err:#}");
-                    last_err = Some(err);
-                    continue;
-                }
-            };
-            match annexb::recv_bootstrap(&session.rx, Duration::from_secs(3), hevc) {
-                Ok(bootstrap) => {
-                    let virtual_output = display.is_virtual;
-                    tracing::info!("using encoder {enc} graph={graph} (dda virtual={virtual_output})");
-                    return Ok((session, bootstrap, CaptureKind::Dda));
-                }
-                Err(err) => {
-                    tracing::warn!("{enc} graph died before codec-config + IDR ({graph}): {err:#}");
-                    last_err = Some(err);
+            for surfaces in &surface_tries {
+                let mut attempt = settings.clone();
+                attempt.nvenc_surfaces = *surfaces;
+                let session = match encoder::start_encoder(ffmpeg, display, &attempt, enc, &graph) {
+                    Ok(s) => s,
+                    Err(err) => {
+                        tracing::warn!("encoder {enc} spawn failed: {err:#}");
+                        last_err = Some(err);
+                        continue;
+                    }
+                };
+                match annexb::recv_bootstrap(&session.rx, Duration::from_secs(3), hevc) {
+                    Ok(bootstrap) => {
+                        let virtual_output = display.is_virtual;
+                        tracing::info!(
+                            "using encoder {enc} graph={graph} surfaces={surfaces} (dda virtual={virtual_output})"
+                        );
+                        return Ok((session, bootstrap, CaptureKind::Dda));
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            "{enc} graph died before codec-config + IDR ({graph} surfaces={surfaces}): {err:#}"
+                        );
+                        last_err = Some(err);
+                    }
                 }
             }
         }
@@ -1285,22 +1299,31 @@ fn restart_encoder_with_bootstrap(
     let mut last_err: Option<anyhow::Error> = None;
     let vendor = display.dxgi.map(|d| d.vendor_id).unwrap_or(0);
     for enc in encoder::encoder_fallback_chain_for(&settings.codec, vendor) {
-        let session = match encoder::start_encoder_gdigrab(ffmpeg, display, settings, enc) {
-            Ok(s) => s,
-            Err(err) => {
-                tracing::warn!("gdigrab encoder {enc} failed: {err:#}");
-                last_err = Some(err);
-                continue;
-            }
+        let surface_tries = if enc.contains("nvenc") {
+            lighting_host::session_policy::nvenc_surface_attempts()
+        } else {
+            vec![settings.nvenc_surfaces.max(1)]
         };
-        match annexb::recv_bootstrap(&session.rx, Duration::from_secs(3), hevc) {
-            Ok(bootstrap) => {
-                tracing::info!("gdigrab bootstrap ok with {enc}");
-                return Ok((session, bootstrap));
-            }
-            Err(err) => {
-                tracing::warn!("{enc} closed before codec-config + IDR: {err:#}");
-                last_err = Some(err);
+        for surfaces in surface_tries {
+            let mut attempt = settings.clone();
+            attempt.nvenc_surfaces = surfaces;
+            let session = match encoder::start_encoder_gdigrab(ffmpeg, display, &attempt, enc) {
+                Ok(s) => s,
+                Err(err) => {
+                    tracing::warn!("gdigrab encoder {enc} failed: {err:#}");
+                    last_err = Some(err);
+                    continue;
+                }
+            };
+            match annexb::recv_bootstrap(&session.rx, Duration::from_secs(3), hevc) {
+                Ok(bootstrap) => {
+                    tracing::info!("gdigrab bootstrap ok with {enc} surfaces={surfaces}");
+                    return Ok((session, bootstrap));
+                }
+                Err(err) => {
+                    tracing::warn!("{enc} closed before codec-config + IDR (surfaces={surfaces}): {err:#}");
+                    last_err = Some(err);
+                }
             }
         }
     }
