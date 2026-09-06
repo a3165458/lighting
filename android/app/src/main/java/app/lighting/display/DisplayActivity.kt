@@ -1,6 +1,8 @@
 package app.lighting.display
 
 import android.app.Activity
+import android.app.GameManager
+import android.app.GameState
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -90,6 +92,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        setGameplayState(true)
         // Lock peak Hz before the first vsync. After setContentView the
         // compositor has already picked 60 Hz on many pads.
         lockPeakRefresh()
@@ -130,6 +133,31 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
             applySurfaceFrameRate(surface.holder.surface)
             bindVideoSurface(surface.holder.surface)
             startSession()
+        }
+    }
+
+    /**
+     * Moonlight UiHelper.notifyStreamConnected: tell GameManager this is
+     * uninterruptible gameplay. Without it (and without isGame / appCategory)
+     * OEM governors keep the pad on the "app" DVFS bin and Android 13+ Game
+     * tools may still cap a 120 Hz panel at 60. game_mode_config.xml turns
+     * PERFORMANCE / FPS-override off so those tools cannot undo lockPeakRefresh.
+     */
+    private fun setGameplayState(streaming: Boolean) {
+        if (Build.VERSION.SDK_INT < 33) return
+        try {
+            val gm = getSystemService(GameManager::class.java) ?: return
+            gm.setGameState(
+                GameState(
+                    false,
+                    if (streaming) {
+                        GameState.MODE_GAMEPLAY_UNINTERRUPTIBLE
+                    } else {
+                        GameState.MODE_NONE
+                    },
+                ),
+            )
+        } catch (_: Throwable) {
         }
     }
 
@@ -251,6 +279,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     }
 
     override fun onDestroy() {
+        setGameplayState(false)
         statusBar.removeCallbacks(hideHud)
         senderRunning = false
         sender?.interrupt()
