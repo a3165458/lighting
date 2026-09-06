@@ -209,6 +209,12 @@ pub fn amf_async_depth() -> u32 {
     1
 }
 
+/// QSV VDENC. Without `-low_power 1`, h264_qsv can keep a GPU frame in
+/// flight even with `async_depth=1` (Sunshine ULL uses VDENC).
+pub fn qsv_low_power() -> bool {
+    true
+}
+
 /// Encoder DPB / `num_ref_frames`. NVENC default follows the level (4–16);
 /// Android then holds decoded pictures. Moonlight decoder-errata: 1.
 pub fn encoder_refs() -> u32 {
@@ -810,6 +816,7 @@ mod tests {
         assert_ne!(nvenc_rc(), "cbr");
         assert_eq!(nvenc_rc_attempts(), vec!["cbr_ld_hq", "cbr"]);
         assert_eq!(amf_async_depth(), 1);
+        assert!(qsv_low_power());
         assert_eq!(encoder_refs(), 1);
         assert!(x265_params(120).contains("rc-lookahead=0"));
         assert!(x265_params(120).contains("bframes=0"));
