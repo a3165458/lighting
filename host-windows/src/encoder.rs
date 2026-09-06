@@ -467,6 +467,10 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "1".into(),
             "-low_delay_brc".into(),
             "1".into(),
+            "-extbrc".into(),
+            "0".into(),
+            "-mbbrc".into(),
+            "0".into(),
         ]
     } else if encoder.contains("amf") {
         vec![
@@ -489,6 +493,14 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "-usage".into(),
             "ultralowlatency".into(),
             "-preanalysis".into(),
+            "0".into(),
+            "-preencode".into(),
+            "0".into(),
+            "-latency".into(),
+            "1".into(),
+            "-async_depth".into(),
+            lighting_host::session_policy::amf_async_depth().to_string(),
+            "-vbaq".into(),
             "0".into(),
         ]
     } else if encoder.contains("x265") || encoder.contains("hevc") {
