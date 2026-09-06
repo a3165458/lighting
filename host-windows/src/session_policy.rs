@@ -288,11 +288,13 @@ pub fn encode_fps(_req_fps: u32, _tablet_max: u32, _dec_fps: u32, hw: bool) -> u
     }
 }
 
-/// Anonymous `CreatePipe` default is 4 KB. A 25 Mbps AU is ~20–50 KB, so
+/// Anonymous `CreatePipe` default is 4 KB. A 25 Mbps P-frame is ~26 KB, so
 /// ffmpeg stdout used to land as many short `Read`s and PeekNamedPipe went
-/// quiet between them. Ask for ~a few frames; Windows treats this as a hint.
+/// quiet between them. 256 KB still hid ~10 pictures at 120 Hz after the
+/// encoded/annexb queues were already 1–2 deep. 64 KB fits one IDR-sized
+/// AU without going back to 4 KB fragments.
 pub fn ffmpeg_pipe_buffer_bytes() -> u32 {
-    256 * 1024
+    64 * 1024
 }
 
 /// Never drop a P-frame from a live GOP: the decoder would show 1 fps until the
@@ -809,8 +811,8 @@ mod tests {
         assert_eq!(encode_fps(60, 90, 60, true), 120);
         assert_eq!(encode_fps(60, 120, 60, false), 45);
         assert_eq!(encode_fps(30, 60, 60, true), 120);
-        assert_eq!(ffmpeg_pipe_buffer_bytes(), 256 * 1024);
-        assert!(ffmpeg_pipe_buffer_bytes() > 64 * 1024);
+        assert_eq!(ffmpeg_pipe_buffer_bytes(), 64 * 1024);
+        assert!(ffmpeg_pipe_buffer_bytes() > 16 * 1024);
         assert_eq!(audio_packets_per_video_frame(), 1);
         assert_eq!(control_attach_wait_ms(), 0);
         assert!(mux_cursor_on_video(true, false));
