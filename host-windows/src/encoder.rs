@@ -775,10 +775,10 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "-vbaq".into(),
             "0".into(),
         ];
-        // h264_amf: AUD lets annexb cut the AU without waiting for Quiet
-        // or the next VCL (NVENC/QSV already pass -aud 1). hevc_amf
-        // rejects the key.
-        if encoder.contains("h264") && lighting_host::session_policy::amf_aud() {
+        // AUD lets annexb cut the AU without waiting for Quiet or the
+        // next VCL (NVENC/QSV already pass -aud 1). h264_amf and
+        // hevc_amf both expose the key (AMF_VIDEO_ENCODER[_HEVC]_INSERT_AUD).
+        if lighting_host::session_policy::amf_aud() {
             amf.extend(["-aud".into(), "1".into()]);
         }
         amf
