@@ -268,12 +268,17 @@ class VideoDecoder {
         // and KEY_PRIORITY=0 ride with KEY_LOW_LATENCY (try 0–2), not
         // FEATURE or operating-rate: C2 that reject 32767 still paced a
         // vsync on the FEATURE+KEY try.
-        if (caps.lowLatencySafe && !software) {
-            for (tryNumber in 0..5) {
-                out.add(buildFormat(width, height, csd, codecName, tryNumber))
+        // Moonlight always tries official KEY_LOW_LATENCY. GSI used to skip
+        // every try and sit on the high-latency format (one vsync of hold).
+        // Vendor keys still crash some GSI / Treble images — those stay
+        // behind lowLatencySafe (try 3–5).
+        if (!software) {
+            val lastTry = if (caps.lowLatencySafe) 5 else 2
+            for (tryNumber in 0..lastTry) {
+                out.add(buildFormat(width, height, csd, codecName, tryNumber, caps.lowLatencySafe))
             }
         }
-        out.add(buildFormat(width, height, csd, codecName, -1))
+        out.add(buildFormat(width, height, csd, codecName, -1, false))
         return out
     }
 
@@ -283,6 +288,7 @@ class VideoDecoder {
         csd: ByteArray?,
         codecName: String,
         tryNumber: Int,
+        allowVendor: Boolean,
     ): MediaFormat {
         val format = MediaFormat.createVideoFormat(mime, width, height)
         format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 8 * 1024 * 1024)
@@ -300,7 +306,7 @@ class VideoDecoder {
             }
         }
         if (tryNumber >= 0) {
-            applyLowLatencyOptions(format, codecName, tryNumber)
+            applyLowLatencyOptions(format, codecName, tryNumber, allowVendor)
         }
         if (csd != null && csd.isNotEmpty()) {
             applyCsd(format, csd)
@@ -332,7 +338,12 @@ class VideoDecoder {
      * returned before the vendor fallback and still waited a vsync.
      * Try 2 is KEY_LOW_LATENCY alone plus the small pool and priority.
      */
-    private fun applyLowLatencyOptions(format: MediaFormat, codecName: String, tryNumber: Int) {
+    private fun applyLowLatencyOptions(
+        format: MediaFormat,
+        codecName: String,
+        tryNumber: Int,
+        allowVendor: Boolean,
+    ) {
         val official = decoderHasFeatureLowLatency(codecName)
         val n = codecName.lowercase()
         val qcom = n.startsWith("omx.qcom") || n.startsWith("c2.qti") || n.contains(".qcom.")
@@ -369,8 +380,10 @@ class VideoDecoder {
                     // still gets the small pool.
                     format.setInteger("max-output-buffers", 2)
                 }
-                // Official low-latency codecs reject extra vendor keys.
-                if (official) return
+                // Official FEATURE codecs reject vendor keys. GSI / Treble
+                // images crash on them even without FEATURE — keep the
+                // Android keys and stop here (Moonlight still sets these).
+                if (official || !allowVendor) return
             }
             if (tryNumber < 2 &&
                 (!android.os.Build.MANUFACTURER.equals("xiaomi", true) ||
