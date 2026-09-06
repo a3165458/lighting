@@ -548,9 +548,75 @@ mod tests {
         assert_eq!(parse_dpb(&out), Some((1, 0, 0)));
     }
 
+    fn nvenc_like_sps(dpb: u32, reorder: u32) -> Vec<u8> {
+        let mut w = Writer::new();
+        w.u(4, 0);
+        w.u(3, 0);
+        w.u(1, 1);
+        write_main_ptl(&mut w);
+        w.ue(0);
+        w.ue(1);
+        w.ue(1920);
+        w.ue(1088);
+        w.u(1, 1);
+        w.ue(0);
+        w.ue(0);
+        w.ue(0);
+        w.ue(8);
+        w.ue(0);
+        w.ue(0);
+        w.ue(4);
+        w.u(1, 1);
+        w.ue(dpb);
+        w.ue(reorder);
+        w.ue(0);
+        w.ue(0); // log2_min_luma_coding_block_size_minus3
+        w.ue(3);
+        w.ue(0);
+        w.ue(3);
+        w.ue(2);
+        w.ue(2);
+        w.u(1, 0); // scaling_list
+        w.u(1, 1); // amp
+        w.u(1, 0); // sao off (ULL)
+        w.u(1, 0); // pcm
+        w.ue(1); // one short-term RPS
+        w.ue(1); // num_negative_pics
+        w.ue(0); // num_positive_pics
+        w.ue(0); // delta_poc_s0_minus1
+        w.u(1, 1); // used_by_curr_pic_s0_flag
+        w.u(1, 0); // long_term_ref_pics_present
+        w.u(1, 1); // temporal_mvp
+        w.u(1, 1); // strong_intra_smoothing
+        w.u(1, 1); // vui
+        w.u(1, 0); // aspect
+        w.u(1, 0); // overscan
+        w.u(1, 0); // video_signal
+        w.u(1, 0); // chroma_loc
+        w.u(1, 1); // timing
+        w.u(32, 1);
+        w.u(32, 120);
+        w.u(1, 0); // poc_proportional
+        w.u(1, 0); // hrd
+        w.u(1, 0); // bitstream_restriction
+        w.u(1, 0); // extension
+        nal_from_rbsp(&[0x42, 0x01], &w.finish())
+    }
+
     #[test]
     fn garbage_sps_is_unchanged() {
         let bad = vec![0, 0, 0, 1, 0x42, 0x01, 0xff];
         assert_eq!(rewrite_low_latency(bad.clone()), bad);
+    }
+
+    #[test]
+    fn nvenc_like_sps_with_rps_still_rewrites() {
+        let src = nvenc_like_sps(5, 2);
+        assert_eq!(parse_dpb(&src), Some((5, 2, 0)));
+        let out = rewrite_low_latency(src.clone());
+        assert_ne!(out, src);
+        assert_eq!(parse_dpb(&out), Some((1, 0, 0)));
+        let again = rewrite_low_latency(out.clone());
+        assert_eq!(parse_dpb(&again), Some((1, 0, 0)));
     }
 }

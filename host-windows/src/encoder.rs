@@ -529,6 +529,8 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             lighting_host::session_policy::encoder_refs().to_string(),
             "-pix_fmt".into(),
             "yuv420p".into(),
+            "-x265-params".into(),
+            lighting_host::session_policy::x265_params(settings.fps.max(30)),
         ]
     } else {
         vec![
