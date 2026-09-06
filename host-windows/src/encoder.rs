@@ -739,7 +739,7 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
         }
         qsv
     } else if encoder.contains("amf") {
-        vec![
+        let mut amf = vec![
             "-quality".into(),
             "speed".into(),
             "-rc".into(),
@@ -774,7 +774,14 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             lighting_host::session_policy::amf_async_depth().to_string(),
             "-vbaq".into(),
             "0".into(),
-        ]
+        ];
+        // h264_amf: AUD lets annexb cut the AU without waiting for Quiet
+        // or the next VCL (NVENC/QSV already pass -aud 1). hevc_amf
+        // rejects the key.
+        if encoder.contains("h264") && lighting_host::session_policy::amf_aud() {
+            amf.extend(["-aud".into(), "1".into()]);
+        }
+        amf
     } else if encoder.contains("x265") || encoder.contains("hevc") {
         vec![
             "-preset".into(),
