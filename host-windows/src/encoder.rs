@@ -418,6 +418,8 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "0".into(),
             "-g".into(),
             gop,
+            "-refs".into(),
+            lighting_host::session_policy::encoder_refs().to_string(),
             "-slices".into(),
             "1".into(),
             "-profile:v".into(),
@@ -459,6 +461,8 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "0".into(),
             "-g".into(),
             gop,
+            "-refs".into(),
+            lighting_host::session_policy::encoder_refs().to_string(),
             "-profile:v".into(),
             settings.profile.clone(),
             "-look_ahead".into(),
@@ -488,6 +492,8 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "0".into(),
             "-g".into(),
             gop,
+            "-refs".into(),
+            lighting_host::session_policy::encoder_refs().to_string(),
             "-profile:v".into(),
             settings.profile.clone(),
             "-usage".into(),
@@ -519,6 +525,8 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "0".into(),
             "-g".into(),
             gop,
+            "-refs".into(),
+            lighting_host::session_policy::encoder_refs().to_string(),
             "-pix_fmt".into(),
             "yuv420p".into(),
         ]
@@ -538,6 +546,8 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "0".into(),
             "-g".into(),
             gop,
+            "-refs".into(),
+            lighting_host::session_policy::encoder_refs().to_string(),
             "-pix_fmt".into(),
             "yuv420p".into(),
             "-profile:v".into(),
@@ -546,7 +556,7 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             level,
             "-x264-params".into(),
             format!(
-                "repeat-headers=1:scenecut=0:sliced-threads=1:sync-lookahead=0:rc-lookahead=0:level={}",
+                "ref=1:repeat-headers=1:scenecut=0:sliced-threads=1:sync-lookahead=0:rc-lookahead=0:level={}",
                 avc_level(settings.width, settings.height, settings.fps)
             )
             .into(),

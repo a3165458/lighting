@@ -1,4 +1,5 @@
 pub mod annexb;
+pub mod h264_sps;
 pub mod cursor_wire;
 pub mod capture_graph;
 pub mod host_ipc;

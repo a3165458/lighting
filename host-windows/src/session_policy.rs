@@ -195,6 +195,12 @@ pub fn amf_async_depth() -> u32 {
     1
 }
 
+/// Encoder DPB / `num_ref_frames`. NVENC default follows the level (4–16);
+/// Android then holds decoded pictures. Moonlight decoder-errata: 1.
+pub fn encoder_refs() -> u32 {
+    1
+}
+
 /// WASAPI shared-mode loopback buffer, 100-ns units. 50 ms was audible lag.
 pub fn wasapi_buffer_hns() -> i64 {
     200_000
@@ -763,6 +769,7 @@ mod tests {
         assert_ne!(nvenc_rc(), "cbr");
         assert_eq!(nvenc_rc_attempts(), vec!["cbr_ld_hq", "cbr"]);
         assert_eq!(amf_async_depth(), 1);
+        assert_eq!(encoder_refs(), 1);
         assert_eq!(nvenc_surface_attempts(), vec![1, 2]);
         assert!(!nvenc_spatial_aq());
         assert_eq!(wasapi_buffer_hns(), 200_000);
