@@ -253,11 +253,12 @@ pub fn mux_cursor_on_video(cursor_overlay: bool, control_attached: bool) -> bool
     cursor_overlay && !control_attached
 }
 
-/// TCP send buffer. One encoded P-frame at 25 Mbps / 120 fps (~26 KB).
-/// 48 KB was sized for 60 fps and sat ~15 ms on USB adb reverse after
-/// annexb/encoded queues were already 1–2 deep.
+/// TCP send buffer. Video+PCM now go in one write (~30 KB P, ~100 KB IDR).
+/// 24 KB was smaller than that coalesced AU, so write_all blocked on a USB
+/// reverse ACK while the next picture sat in the 1-deep encoded queue.
+/// 64 KB fits one picture; encoded_queue=1 still prevents bufferbloat.
 pub fn tcp_send_buffer_bytes() -> usize {
-    24 * 1024
+    64 * 1024
 }
 
 /// TCP recv buffer on the video socket (host side, mostly unused).
@@ -830,7 +831,7 @@ mod tests {
         assert_eq!(dda_poll_hz(120), 8000);
         assert_eq!(dda_poll_hz(144), 8000);
         assert_eq!(dda_poll_hz(30), 8000);
-        assert_eq!(tcp_send_buffer_bytes(), 24 * 1024);
+        assert_eq!(tcp_send_buffer_bytes(), 64 * 1024);
         assert!(tcp_control_buffer_bytes() < tcp_send_buffer_bytes());
         let frame = lit1_encode(3, 1, &[9, 8, 7]);
         assert_eq!(&frame[..4], b"LIT1");
