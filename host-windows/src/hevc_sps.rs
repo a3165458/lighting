@@ -233,7 +233,10 @@ fn copy_ptl(src: &mut Bits<'_>, dst: &mut Writer, max_sub_layers: u32) -> Option
         return None;
     }
     copy_ptl_common(src, dst)?;
-    dst.copy_u(src, 8)?;
+    let level = src.u(8)?;
+    // HEVC 5.1 = 153. Level 4.0/4.1 (120/123) cannot do 1080p120;
+    // 2K tablets pick HEVC and then pace at 30/60.
+    dst.u(8, level.max(153));
     let max_minus1 = max_sub_layers - 1;
     let mut profile_present = [false; 8];
     let mut level_present = [false; 8];
@@ -253,7 +256,8 @@ fn copy_ptl(src: &mut Bits<'_>, dst: &mut Writer, max_sub_layers: u32) -> Option
             copy_ptl_common(src, dst)?;
         }
         if level_present[i as usize] {
-            dst.copy_u(src, 8)?;
+            let lvl = src.u(8)?;
+            dst.u(8, lvl.max(153));
         }
     }
     Some(())
@@ -734,6 +738,28 @@ mod tests {
         assert_eq!(parse_dpb(&out), Some((1, 0, 0)));
         let again = rewrite_low_latency(out.clone());
         assert_eq!(parse_dpb(&again), Some((1, 0, 0)));
+    }
+
+    fn sps_general_level(nal: &[u8]) -> Option<u32> {
+        let prefix = start_code_len(nal);
+        let rbsp = unescape_rbsp(&nal[prefix + 2..]);
+        let mut src = Bits::new(&rbsp);
+        src.u(4)?;
+        src.u(3)?;
+        src.u(1)?;
+        let mut sink = Writer::new();
+        copy_ptl_common(&mut src, &mut sink)?;
+        src.u(8)
+    }
+
+    #[test]
+    fn floors_hevc_level_to_5_1_so_120fps_is_not_tagged_30() {
+        let src = main_sps(5, 2);
+        assert_eq!(sps_general_level(&src), Some(120));
+        let out = rewrite_low_latency(src);
+        assert_eq!(sps_general_level(&out), Some(153));
+        assert_eq!(parse_dpb(&out), Some((1, 0, 0)));
+        assert_eq!(sps_general_level(&rewrite_low_latency(out.clone())), Some(153));
     }
 
     #[test]
