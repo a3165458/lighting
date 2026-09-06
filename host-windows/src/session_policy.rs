@@ -313,6 +313,20 @@ pub fn qsv_scenario() -> &'static str {
     "gamestreaming"
 }
 
+/// QSV `-aud`. Default 0. annexb only flushes a VCL AU on Quiet (PeekNamedPipe
+/// + up to 1 ms idle) or the next VCL. An AUD is the AU start; NVENC already
+/// emits one so the assembler cuts without waiting. Valid on h264_qsv and
+/// hevc_qsv.
+pub fn qsv_aud() -> bool {
+    true
+}
+
+/// h264_qsv `-a53cc`. Default 1 walks A/53 caption SEI on every picture.
+/// ddagrab has none; NVENC already turns this off. Not an hevc_qsv option.
+pub fn qsv_a53cc() -> bool {
+    false
+}
+
 /// Encoder DPB / `num_ref_frames`. NVENC default follows the level (4–16);
 /// Android then holds decoded pictures. Moonlight decoder-errata: 1.
 pub fn encoder_refs() -> u32 {
@@ -996,6 +1010,8 @@ mod tests {
         assert!(!qsv_hevc_private_options("h264_qsv"));
         assert!(!qsv_hevc_private_options("hevc_nvenc"));
         assert_eq!(qsv_scenario(), "gamestreaming");
+        assert!(qsv_aud());
+        assert!(!qsv_a53cc());
         assert_eq!(encoder_refs(), 1);
         assert_eq!(nvenc_dpb_size(), 1);
         assert!(!nvenc_extra_sei());
