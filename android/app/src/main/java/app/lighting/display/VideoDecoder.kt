@@ -200,7 +200,10 @@ class VideoDecoder {
                 // is not woken by the codec and becomes a 1–4 ms scheduler
                 // slice on a loaded pad; Moonlight waits on dequeue instead.
                 // Timeout (not -1) so release() can stop this thread.
-                drain(decoder, 8_000L)
+                // 8 ms is one 120 Hz period: dequeue times out just before
+                // the next picture and the re-enter is that 1–4 ms slice
+                // on every frame. Moonlight direct-submit uses 50 ms.
+                drain(decoder, 50_000L)
             } catch (_: IllegalStateException) {
                 break
             }
