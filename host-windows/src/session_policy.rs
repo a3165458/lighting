@@ -341,10 +341,12 @@ pub fn qsv_aud() -> bool {
     true
 }
 
-/// h264_amf `-aud`. Default unset. Without an AU delimiter the assembler
-/// holds the VCL until Quiet (PeekNamedPipe) or the next picture — up to
-/// IDLE_FLUSH (1 ms) on every AMD frame. NVENC/QSV already insert AUD.
-/// hevc_amf rejects this key (header_insertion_mode instead).
+/// AMF `-aud` (h264_amf and hevc_amf). Default unset. Without an AU
+/// delimiter the assembler holds the VCL until Quiet (PeekNamedPipe) or
+/// the next picture — up to IDLE_FLUSH (1 ms) on every AMD frame.
+/// NVENC/QSV already insert AUD. FFmpeg has accepted this key on
+/// hevc_amf since the original AMF encoder (2017); header_insertion_mode
+/// is VPS/SPS/PPS repeat, not an AU cut.
 pub fn amf_aud() -> bool {
     true
 }
