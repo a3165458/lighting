@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.Lighting.Immersive" parent="Theme.Lighting">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:windowBackground">@android:color/black</item>
+        <!-- Applied when PhoneWindow is created. Runtime setPreferMinimalPostProcessing
+             after super.onCreate is too late on some pads. -->
+        <item name="android:windowPreferMinimalPostProcessing">true</item>
+    </style>
+</resources>
