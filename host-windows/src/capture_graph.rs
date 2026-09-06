@@ -301,7 +301,7 @@ mod tests {
         );
         assert!(graphs.iter().all(|g| !g.contains("allow_tearing")));
         assert!(graphs.iter().all(|g| g.contains("output_idx=1")));
-        assert!(graphs.iter().all(|g| g.contains("framerate=1000")));
+        assert!(graphs.iter().all(|g| g.contains("framerate=8000")));
         assert!(graphs.iter().all(|g| g.contains("dup_frames=0")));
     }
 

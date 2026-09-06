@@ -10,7 +10,6 @@ import android.os.SystemClock
 import android.util.AttributeSet
 import android.util.DisplayMetrics
 import android.util.Log
-import android.view.Gravity
 import android.view.MotionEvent
 import android.graphics.PixelFormat
 import android.view.Surface
@@ -20,7 +19,6 @@ import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
-import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.nio.ByteBuffer
@@ -641,29 +639,10 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         streamW = width
         streamH = height
         runOnUiThread {
-            val parent = surface.parent as? View
-            val pw = parent?.width?.takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
-            val ph = parent?.height?.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
-            val w: Int
-            val h: Int
-            if (width <= pw && height <= ph) {
-                w = width
-                h = height
-            } else {
-                val scale = minOf(pw.toFloat() / width, ph.toFloat() / height)
-                w = (width * scale).toInt().coerceAtLeast(2) and 1.inv()
-                h = (height * scale).toInt().coerceAtLeast(2) and 1.inv()
-            }
-            val lp = (surface.layoutParams as FrameLayout.LayoutParams).apply {
-                this.width = w
-                this.height = h
-                gravity = Gravity.CENTER
-            }
-            surface.layoutParams = lp
-            try {
-                surface.holder.setFixedSize(width, height)
-            } catch (_: Throwable) {
-            }
+            // Keep MATCH_PARENT. Switching layoutParams from match_parent to
+            // explicit pixels (or setFixedSize after MediaCodec.start) makes
+            // SurfaceFlinger rebuild the buffer queue and can fire
+            // surfaceDestroyed -> stopSession on the first picture.
             if (Build.VERSION.SDK_INT >= 30) {
                 try {
                     // Hint the panel refresh, but do not mark the surface as a

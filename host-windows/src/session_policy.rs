@@ -216,10 +216,11 @@ pub fn ddagrab_duplicate_frames() -> bool {
 }
 
 /// ffmpeg `ddagrab` sleeps to 1/framerate *before* AcquireNextFrame
-/// (`vsrc_ddagrab.c`). 120 Hz parked a ready DXGI frame on an 8 ms grid.
-/// 1000 Hz ≈ 1 ms, like Sunshine. Do not pass this to gdigrab (BitBlt).
+/// (`vsrc_ddagrab.c`). 120 Hz parked a ready DXGI frame on an 8 ms grid;
+/// 1000 Hz still sat every unique frame on a 1 ms tick. 8000 Hz ≈ 125 µs.
+/// `dup_frames=0` so this is poll rate, not encode rate. Not for gdigrab.
 pub fn dda_poll_hz(_encode_fps: u32) -> u32 {
-    1000
+    8000
 }
 
 /// Audio must never drain ahead of a video AU on the same TCP writer.
@@ -738,10 +739,10 @@ mod tests {
         assert_eq!(wasapi_buffer_hns(), 200_000);
         assert_eq!(audio_capture_queue(), 2);
         assert!(!ddagrab_duplicate_frames());
-        assert_eq!(dda_poll_hz(60), 1000);
-        assert_eq!(dda_poll_hz(120), 1000);
-        assert_eq!(dda_poll_hz(144), 1000);
-        assert_eq!(dda_poll_hz(30), 1000);
+        assert_eq!(dda_poll_hz(60), 8000);
+        assert_eq!(dda_poll_hz(120), 8000);
+        assert_eq!(dda_poll_hz(144), 8000);
+        assert_eq!(dda_poll_hz(30), 8000);
         assert_eq!(tcp_send_buffer_bytes(), 48 * 1024);
         assert!(tcp_control_buffer_bytes() < tcp_send_buffer_bytes());
     }
