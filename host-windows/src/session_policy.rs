@@ -444,12 +444,14 @@ pub fn mux_cursor_on_video(cursor_overlay: bool, control_attached: bool) -> bool
     cursor_overlay && !control_attached
 }
 
-/// TCP send buffer. Video+PCM now go in one write (~30 KB P, ~100 KB IDR).
-/// 24 KB was smaller than that coalesced AU, so write_all blocked on a USB
-/// reverse ACK while the next picture sat in the 1-deep encoded queue.
-/// 64 KB fits one picture; encoded_queue=1 still prevents bufferbloat.
+/// TCP send buffer. Video+PCM now go in one write (~30 KB P at 25 Mbps/120 Hz,
+/// ~44 KB at the UI max 40 Mbps). 24 KB was smaller than that coalesced AU,
+/// so write_all blocked on a USB reverse ACK while the next picture sat in
+/// the 1-deep encoded queue. 64 KB still hid a second default P-frame
+/// (~26 KB) — one extra refresh next to the laptop. 48 KB fits one picture
+/// up to 40 Mbps, not two at 25 Mbps. IDR still write_all's in chunks.
 pub fn tcp_send_buffer_bytes() -> usize {
-    64 * 1024
+    48 * 1024
 }
 
 /// TCP recv buffer on the video socket (host side, mostly unused).
@@ -1097,8 +1099,15 @@ mod tests {
         assert_eq!(dda_poll_hz(120), 8000);
         assert_eq!(dda_poll_hz(144), 8000);
         assert_eq!(dda_poll_hz(30), 8000);
-        assert_eq!(tcp_send_buffer_bytes(), 64 * 1024);
+        assert_eq!(tcp_send_buffer_bytes(), 48 * 1024);
         assert!(tcp_control_buffer_bytes() < tcp_send_buffer_bytes());
+        // One default P+PCM (~28 KB) and one 40 Mbps P (~42 KB) fit;
+        // two default P-frames (~52 KB) do not.
+        let p25 = 25_000 * 1000 / 8 / 120;
+        let p40 = 40_000 * 1000 / 8 / 120;
+        assert!(tcp_send_buffer_bytes() > p25 + 8 * 1024);
+        assert!(tcp_send_buffer_bytes() > p40);
+        assert!(tcp_send_buffer_bytes() < 2 * p25);
         assert!(tcp_ack_every_packet());
         let frame = lit1_encode(3, 1, &[9, 8, 7]);
         assert_eq!(&frame[..4], b"LIT1");
