@@ -18,7 +18,7 @@ class VideoDecoder {
     private var mime: String = MediaFormat.MIMETYPE_VIDEO_AVC
     private val running = AtomicBoolean(false)
     private val skipUntilKey = AtomicBoolean(false)
-    private val queue = ArrayBlockingQueue<Packet>(2)
+    private val queue = ArrayBlockingQueue<Packet>(1)
     private var worker: Thread? = null
     @Volatile var activeName: String = ""
         private set
@@ -84,7 +84,7 @@ class VideoDecoder {
             return
         }
         try {
-            if (!queue.offer(pkt, 4, TimeUnit.MILLISECONDS)) {
+            if (!queue.offer(pkt, 8, TimeUnit.MILLISECONDS)) {
                 Log.w(TAG, "decoder queue full; keeping GOP (not skipping to IDR)")
             }
         } catch (_: InterruptedException) {

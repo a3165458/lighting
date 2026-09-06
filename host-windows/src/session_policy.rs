@@ -133,6 +133,42 @@ pub fn cursor_sample_interval_ms() -> u64 {
     4
 }
 
+/// TCP send buffer. ~2 encoded frames at 25 Mbps / 60 fps (~52 KB each).
+/// 256 KB used to hide ~80 ms of bufferbloat on USB adb reverse.
+pub fn tcp_send_buffer_bytes() -> usize {
+    96 * 1024
+}
+
+/// TCP recv buffer on the video socket (host side, mostly unused).
+pub fn tcp_recv_buffer_bytes() -> usize {
+    64 * 1024
+}
+
+/// Control-plane socket: cursor packets are tens of bytes.
+pub fn tcp_control_buffer_bytes() -> usize {
+    16 * 1024
+}
+
+/// ffmpeg `ddagrab` `dup_frames`. Duplicating up to the timer adds a wait that
+/// a real monitor does not have. Unique desktop frames only.
+pub fn ddagrab_duplicate_frames() -> bool {
+    false
+}
+
+/// Encode at least as fast as the tablet refresh so the pad is not waiting
+/// an extra vsync on 60 fps video (GlideX / SuperDisplay do this).
+pub fn encode_fps(req_fps: u32, tablet_max: u32, dec_fps: u32, hw: bool) -> u32 {
+    let tablet = if tablet_max >= 24 { tablet_max } else { req_fps };
+    let mut fps = req_fps.max(tablet).clamp(24, 120);
+    if dec_fps >= 24 {
+        fps = fps.min(dec_fps);
+    }
+    if !hw {
+        fps = fps.min(45);
+    }
+    fps
+}
+
 /// Never drop a P-frame from a live GOP: the decoder would show 1 fps until the
 /// next IDR. Block the encoder instead so ffmpeg skips *input* frames.
 pub fn drop_encoded_p_on_backpressure() -> bool {
@@ -506,6 +542,17 @@ mod tests {
     fn capture_queue_is_single_frame() {
         assert_eq!(capture_thread_queue_size(), 1);
         assert_eq!(cursor_sample_interval_ms(), 4);
+        assert!(!ddagrab_duplicate_frames());
+        assert_eq!(tcp_send_buffer_bytes(), 96 * 1024);
+        assert!(tcp_control_buffer_bytes() < tcp_send_buffer_bytes());
+    }
+
+    #[test]
+    fn encode_fps_tracks_tablet_refresh() {
+        assert_eq!(encode_fps(60, 120, 120, true), 120);
+        assert_eq!(encode_fps(60, 90, 60, true), 60);
+        assert_eq!(encode_fps(60, 120, 60, false), 45);
+        assert_eq!(encode_fps(30, 60, 60, true), 60);
     }
 
     #[test]

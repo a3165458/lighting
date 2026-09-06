@@ -158,14 +158,20 @@ data class StreamConfig(
     val hostName: String = "",
 )
 
-class LitSocket(host: String, port: Int, connectTimeoutMs: Int = 1_500) : AutoCloseable {
+class LitSocket(
+    host: String,
+    port: Int,
+    connectTimeoutMs: Int = 1_500,
+    recvBytes: Int = 96 * 1024,
+    sendBytes: Int = 32 * 1024,
+) : AutoCloseable {
     val socket: Socket = Socket().apply {
         tcpNoDelay = true
         keepAlive = true
-        // Smaller buffers cut socket-level queuing on USB localhost reverse.
+        // ~2 video frames. 256 KB used to hide ~80 ms of USB bufferbloat.
         try {
-            receiveBufferSize = 256 * 1024
-            sendBufferSize = 256 * 1024
+            receiveBufferSize = recvBytes
+            sendBufferSize = sendBytes
         } catch (_: Exception) {
         }
         try {

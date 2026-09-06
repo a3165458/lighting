@@ -118,13 +118,26 @@ struct ClassifiedStream {
     addr: std::net::SocketAddr,
 }
 
+fn apply_socket_buffers(stream: &TcpStream, send: usize, recv: usize) {
+    use std::os::windows::io::AsRawSocket;
+    use windows::Win32::Networking::WinSock::{
+        setsockopt, SOCKET, SOL_SOCKET, SO_RCVBUF, SO_SNDBUF,
+    };
+    unsafe {
+        let s = SOCKET(stream.as_raw_socket() as usize);
+        let snd = (send as i32).to_le_bytes();
+        let rcv = (recv as i32).to_le_bytes();
+        let _ = setsockopt(s, SOL_SOCKET, SO_SNDBUF, Some(&snd));
+        let _ = setsockopt(s, SOL_SOCKET, SO_RCVBUF, Some(&rcv));
+    }
+}
+
 async fn classify_incoming(
-    stream: TcpStream,
+    mut stream: TcpStream,
     addr: std::net::SocketAddr,
 ) -> Result<ClassifiedStream> {
     stream.set_nodelay(true)?;
-    let (mut reader, writer) = stream.into_split();
-    let hello_msg = tokio::time::timeout(Duration::from_secs(3), protocol::read_message(&mut reader))
+    let hello_msg = tokio::time::timeout(Duration::from_secs(3), protocol::read_message(&mut stream))
         .await
         .context("Hello 超时")?
         .context("读 Hello")?;
@@ -132,6 +145,19 @@ async fn classify_incoming(
         anyhow::bail!("首包不是 Hello");
     }
     let hello: Hello = serde_json::from_slice(&hello_msg.payload).context("解析 Hello")?;
+    // Video AUs need ~1–2 frames of buffer; control stays tiny so cursor
+    // cannot sit behind 80 ms of TCP bufferbloat.
+    let (send, recv) = if session_policy::hello_is_control_plane(&hello.role) {
+        let n = session_policy::tcp_control_buffer_bytes();
+        (n, n)
+    } else {
+        (
+            session_policy::tcp_send_buffer_bytes(),
+            session_policy::tcp_recv_buffer_bytes(),
+        )
+    };
+    apply_socket_buffers(&stream, send, recv);
+    let (reader, writer) = stream.into_split();
     Ok(ClassifiedStream {
         reader,
         writer,
@@ -161,7 +187,7 @@ fn spawn_cursor_control(
         while !stop.load(Ordering::Relaxed) {
             tokio::select! {
                 _ = notify.notified() => {}
-                _ = tokio::time::sleep(Duration::from_millis(8)) => {}
+                _ = tokio::time::sleep(Duration::from_millis(2)) => {}
             }
             let payload = slot.lock().ok().and_then(|mut g| g.take());
             if let Some(payload) = payload {
@@ -1295,14 +1321,7 @@ fn codec_score(limit: Option<&crate::protocol::CodecLimit>, fw: u32, fh: u32, ff
 }
 
 fn adapted_fps(req_fps: u32, hello_max: u32, dec_fps: u32, hw: bool) -> u32 {
-    let mut fps = req_fps.min(hello_max.max(24)).min(120).max(24);
-    if dec_fps >= 24 {
-        fps = fps.min(dec_fps);
-    }
-    if !hw {
-        fps = fps.min(45);
-    }
-    fps
+    session_policy::encode_fps(req_fps, hello_max, dec_fps, hw)
 }
 
 fn fit_to_device(

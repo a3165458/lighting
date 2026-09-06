@@ -50,7 +50,12 @@ pub fn dda_capture_graphs(
 /// baked into the 50–100 ms video path.
 pub fn dda_source_filter(output_idx: u32, fps: u32, draw_mouse: bool) -> String {
     let mouse = if draw_mouse { 1 } else { 0 };
-    format!("ddagrab=output_idx={output_idx}:framerate={fps}:draw_mouse={mouse}")
+    let dup = if crate::session_policy::ddagrab_duplicate_frames() {
+        1
+    } else {
+        0
+    };
+    format!("ddagrab=output_idx={output_idx}:framerate={fps}:draw_mouse={mouse}:dup_frames={dup}")
 }
 
 pub fn dda_capture_graphs_for(
@@ -217,6 +222,7 @@ mod tests {
         let filter = dda_source_filter(1, 60, true);
         assert!(filter.contains("output_idx=1"));
         assert!(filter.contains("draw_mouse=1"));
+        assert!(filter.contains("dup_frames=0"));
         assert!(dda_source_filter(1, 60, false).contains("draw_mouse=0"));
         assert!(!filter.contains("allow_tearing"));
         let graphs = dda_capture_graphs_for(

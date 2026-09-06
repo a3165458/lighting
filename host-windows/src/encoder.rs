@@ -9,6 +9,11 @@ use std::thread;
 
 use crate::displays::DisplayInfo;
 use lighting_host::annexb;
+use windows::Win32::Foundation::HANDLE;
+use windows::Win32::System::Threading::{
+    GetCurrentThread, SetPriorityClass, SetThreadPriority, HIGH_PRIORITY_CLASS,
+    THREAD_PRIORITY_HIGHEST,
+};
 
 pub use lighting_host::annexb::EncodedPacket;
 
@@ -116,6 +121,7 @@ pub fn start_encoder(
         .creation_flags(CREATE_NO_WINDOW);
 
     let mut child = cmd.spawn().context("spawn ffmpeg")?;
+    raise_process_priority(&child);
     let stdout = child.stdout.take().context("ffmpeg stdout")?;
     let stderr = child.stderr.take().context("ffmpeg stderr")?;
 
@@ -135,6 +141,7 @@ pub fn start_encoder(
     let (tx, rx) = mpsc::sync_channel(lighting_host::session_policy::encoded_queue_capacity());
     let hevc = is_hevc(&settings.codec);
     thread::spawn(move || {
+        raise_thread_priority();
         if let Err(err) = annexb::pump_annexb(stdout, tx, hevc) {
             tracing::warn!("encoder pump ended: {err:#}");
         }
@@ -144,6 +151,19 @@ pub fn start_encoder(
         child: Some(child),
         rx,
     })
+}
+
+fn raise_thread_priority() {
+    unsafe {
+        let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    }
+}
+
+fn raise_process_priority(child: &std::process::Child) {
+    use std::os::windows::io::AsRawHandle;
+    unsafe {
+        let _ = SetPriorityClass(HANDLE(child.as_raw_handle()), HIGH_PRIORITY_CLASS);
+    }
 }
 
 fn is_hevc(codec: &str) -> bool {
@@ -182,6 +202,8 @@ fn build_args(
         "0".into(),
         "-thread_queue_size".into(),
         lighting_host::session_policy::capture_thread_queue_size().to_string(),
+        "-avioflags".into(),
+        "direct".into(),
     ];
 
     args.extend(capture.device_args());
@@ -243,6 +265,8 @@ pub fn start_encoder_gdigrab(
         "0".into(),
         "-thread_queue_size".into(),
         lighting_host::session_policy::capture_thread_queue_size().to_string(),
+        "-avioflags".into(),
+        "direct".into(),
     ];
     args.extend(lighting_host::capture_graph::gdigrab_input_args(
         display.x,
@@ -275,6 +299,7 @@ pub fn start_encoder_gdigrab(
         .stderr(Stdio::piped())
         .creation_flags(CREATE_NO_WINDOW);
     let mut child = cmd.spawn().context("spawn ffmpeg gdigrab")?;
+    raise_process_priority(&child);
     let stdout = child.stdout.take().context("ffmpeg stdout")?;
     let stderr = child.stderr.take().context("ffmpeg stderr")?;
     thread::spawn(move || {
@@ -287,6 +312,7 @@ pub fn start_encoder_gdigrab(
     let (tx, rx) = mpsc::sync_channel(lighting_host::session_policy::encoded_queue_capacity());
     let hevc = is_hevc(&settings.codec);
     thread::spawn(move || {
+        raise_thread_priority();
         if let Err(err) = annexb::pump_annexb(stdout, tx, hevc) {
             tracing::warn!("encoder pump ended: {err:#}");
         }
@@ -341,6 +367,8 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "0".into(),
             "-zerolatency".into(),
             "1".into(),
+            "-b_ref_mode".into(),
+            "0".into(),
             // Spatial AQ improves detail at the same bitrate with negligible latency cost.
             "-spatial-aq".into(),
             "1".into(),
