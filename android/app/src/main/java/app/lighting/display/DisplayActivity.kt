@@ -88,15 +88,6 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         }
     }
     override fun onCreate(savedInstanceState: Bundle?) {
-        // Moonlight Game: ALLM / skip extra composition before the first
-        // vsync. After super.onCreate the PhoneWindow is already installed
-        // and some pads keep a full post-processing vsync for the session.
-        if (Build.VERSION.SDK_INT >= 30) {
-            try {
-                window.setPreferMinimalPostProcessing(true)
-            } catch (_: Throwable) {
-            }
-        }
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         // Lock peak Hz before the first vsync. After setContentView the
@@ -169,6 +160,13 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     }
                 }
                 window.attributes = lp
+                // AppCompat PhoneWindow exists only after super.onCreate.
+                // Writing attributes here dropped ALLM (manifest/theme) on
+                // some pads, so SurfaceFlinger kept a post-processing vsync
+                // GlideX / Moonlight do not pay. Re-assert after every write.
+                if (Build.VERSION.SDK_INT >= 30) {
+                    window.setPreferMinimalPostProcessing(true)
+                }
             } catch (_: Throwable) {
             }
         }
