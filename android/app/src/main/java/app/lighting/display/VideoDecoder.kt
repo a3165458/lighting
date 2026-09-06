@@ -18,6 +18,7 @@ class VideoDecoder {
     private val running = AtomicBoolean(false)
     private val skipUntilKey = AtomicBoolean(false)
     private val queue = ArrayBlockingQueue<Packet>(1)
+    private val inputLock = Any()
     private var worker: Thread? = null
     private var presentWorker: Thread? = null
     private var fakePtsUs = 0L
@@ -87,14 +88,20 @@ class VideoDecoder {
         if (!codecConfig && skipUntilKey.get() && !keyframe) return
         val pkt = Packet(data, codecConfig, keyframe, ptsUs)
         if (codecConfig || keyframe) {
-            queue.clear()
-            queue.offer(pkt)
             skipUntilKey.set(false)
+        }
+        // Moonlight directSubmit: feed MediaCodec from the TCP reader.
+        // The extra decode-thread hop used to sit every picture on a
+        // scheduler wakeup (often a full vsync on a loaded pad).
+        if (enqueueLocked(pkt, 0L)) {
             return
         }
-        // GlideX / Moonlight: never block the TCP reader. One pending P-frame;
-        // keep the latest so a hitch cannot leave 50–80 ms of stale pictures
-        // sitting in the socket buffer.
+        if (codecConfig || keyframe) {
+            queue.clear()
+            queue.offer(pkt)
+            return
+        }
+        // Never block the TCP reader. One pending P-frame; keep the latest.
         if (!queue.offer(pkt)) {
             queue.poll()
             queue.offer(pkt)
@@ -116,23 +123,21 @@ class VideoDecoder {
             } catch (_: InterruptedException) {
                 break
             }
-            val decoder = codec ?: continue
-            if (!configured) continue
+            if (codec == null || !configured) continue
             if (pkt.codecConfig) {
-                enqueue(decoder, pkt.data, MediaCodec.BUFFER_FLAG_CODEC_CONFIG, pkt.ptsUs, waitUs = 4_000)
+                enqueueLocked(pkt, 4_000L)
                 continue
             }
             if (skipUntilKey.get() && !pkt.keyframe) {
                 skips++
                 continue
             }
-            val flags = if (pkt.keyframe) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
             val wait = if (pkt.keyframe) 4_000L else 0L
-            if (!enqueue(decoder, pkt.data, flags, pkt.ptsUs, wait)) {
+            if (!enqueueLocked(pkt, wait)) {
                 // Present thread owns dequeueOutputBuffer. Wait for it to
                 // free an input slot instead of draining here (that raced).
                 val retry = if (pkt.keyframe) 16_000L else 8_000L
-                if (!enqueue(decoder, pkt.data, flags, pkt.ptsUs, retry)) {
+                if (!enqueueLocked(pkt, retry)) {
                     if (pkt.keyframe) skipUntilKey.set(true)
                     skips++
                     continue
@@ -311,6 +316,36 @@ class VideoDecoder {
             }
         } catch (_: Throwable) {
         }
+    }
+
+    private fun enqueueLocked(pkt: Packet, waitUs: Long): Boolean {
+        val decoder = codec ?: return false
+        val flags = when {
+            pkt.codecConfig -> MediaCodec.BUFFER_FLAG_CODEC_CONFIG
+            pkt.keyframe -> MediaCodec.BUFFER_FLAG_KEY_FRAME
+            else -> 0
+        }
+        // Never block the TCP reader on dequeueInputBuffer. Wait outside the
+        // lock so a 4–16 ms retry cannot HOL-stall the next picture.
+        synchronized(inputLock) {
+            if (!running.get() || codec !== decoder) return false
+            if (enqueue(decoder, pkt.data, flags, pkt.ptsUs, 0L)) return true
+        }
+        if (waitUs <= 0L) return false
+        var left = waitUs
+        while (left > 0 && running.get()) {
+            try {
+                Thread.sleep(1)
+            } catch (_: InterruptedException) {
+                return false
+            }
+            left -= 1_000L
+            synchronized(inputLock) {
+                if (!running.get() || codec !== decoder) return false
+                if (enqueue(decoder, pkt.data, flags, pkt.ptsUs, 0L)) return true
+            }
+        }
+        return false
     }
 
     private fun enqueue(
