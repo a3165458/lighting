@@ -54,6 +54,9 @@ pub struct Hello {
     /// Tablet will paint the OS pointer locally; host should omit draw_mouse.
     #[serde(default)]
     pub cursor_overlay: bool,
+    /// `control` = pointer/HID socket. Empty / `stream` = video session.
+    #[serde(default)]
+    pub role: String,
     #[serde(default)]
     pub avc_limit: Option<CodecLimit>,
     #[serde(default)]

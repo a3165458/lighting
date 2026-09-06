@@ -98,11 +98,11 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
     if encoder.contains("amf") {
         if scale {
             graphs.push(format!(
-                "{dda},hwupload=extra_hw_frames=2,scale_d3d11={dst_w}:{dst_h}:format=nv12"
+                "{dda},hwupload=extra_hw_frames=1,scale_d3d11={dst_w}:{dst_h}:format=nv12"
             ));
         } else {
             graphs.push(format!(
-                "{dda},hwupload=extra_hw_frames=2,format=d3d11,hwdownload,format=nv12"
+                "{dda},hwupload=extra_hw_frames=1,format=d3d11,hwdownload,format=nv12"
             ));
         }
     }

@@ -95,6 +95,21 @@ object LitProtocol {
         putLimit("avcLimit", caps.avc)
         putLimit("hevcLimit", caps.hevc)
         obj.put("cursorOverlay", true)
+        obj.put("role", "stream")
+        return obj.toString().toByteArray(Charsets.UTF_8)
+    }
+
+    /** Second TCP on the same port: pointer only, never behind a video AU. */
+    fun controlHelloJson(): ByteArray {
+        val obj = JSONObject()
+        obj.put("protocol", 1)
+        obj.put("role", "control")
+        obj.put("device", "control")
+        obj.put("screenWidth", 0)
+        obj.put("screenHeight", 0)
+        obj.put("maxFps", 0)
+        obj.put("codecs", JSONArray())
+        obj.put("cursorOverlay", true)
         return obj.toString().toByteArray(Charsets.UTF_8)
     }
 

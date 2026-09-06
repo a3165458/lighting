@@ -14,13 +14,12 @@
         android:clickable="false"
         android:focusable="false" />
 
-    <ImageView
+    <app.lighting.display.CursorOverlayView
         android:id="@+id/cursorOverlay"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
         android:clickable="false"
         android:focusable="false"
-        android:scaleType="fitXY"
         android:visibility="gone" />
 
     <View

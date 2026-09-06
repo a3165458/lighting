@@ -2,9 +2,9 @@ use anyhow::{Context, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Notify};
 
 use crate::adb;
 use crate::displays::{self, DisplayInfo};
@@ -110,6 +110,73 @@ fn set_bitrate(status: &Arc<Mutex<SessionStatus>>, bitrate_kbps: u32) {
 }
 
 const HEADER_BYTES: usize = 12;
+
+struct ClassifiedStream {
+    reader: tokio::net::tcp::OwnedReadHalf,
+    writer: tokio::net::tcp::OwnedWriteHalf,
+    hello: Hello,
+    addr: std::net::SocketAddr,
+}
+
+async fn classify_incoming(
+    stream: TcpStream,
+    addr: std::net::SocketAddr,
+) -> Result<ClassifiedStream> {
+    stream.set_nodelay(true)?;
+    let (mut reader, writer) = stream.into_split();
+    let hello_msg = tokio::time::timeout(Duration::from_secs(3), protocol::read_message(&mut reader))
+        .await
+        .context("Hello 超时")?
+        .context("读 Hello")?;
+    if hello_msg.ty != protocol::MSG_HELLO {
+        anyhow::bail!("首包不是 Hello");
+    }
+    let hello: Hello = serde_json::from_slice(&hello_msg.payload).context("解析 Hello")?;
+    Ok(ClassifiedStream {
+        reader,
+        writer,
+        hello,
+        addr,
+    })
+}
+
+fn spawn_cursor_control(
+    incoming: ClassifiedStream,
+    slot: Arc<Mutex<Option<Vec<u8>>>>,
+    notify: Arc<Notify>,
+    stop: Arc<AtomicBool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut writer = incoming.writer;
+        let mut reader = incoming.reader;
+        let drain = tokio::spawn(async move {
+            let mut buf = [0u8; 128];
+            loop {
+                match reader.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
+        });
+        while !stop.load(Ordering::Relaxed) {
+            tokio::select! {
+                _ = notify.notified() => {}
+                _ = tokio::time::sleep(Duration::from_millis(8)) => {}
+            }
+            let payload = slot.lock().ok().and_then(|mut g| g.take());
+            if let Some(payload) = payload {
+                if protocol::write_message(&mut writer, protocol::MSG_CURSOR, 0, &payload)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }
+        drain.abort();
+        let _ = writer.shutdown().await;
+    })
+}
 
 fn add_wire_bytes(status: &Arc<Mutex<SessionStatus>>, bytes: usize) {
     if let Ok(mut s) = status.lock() {
@@ -296,7 +363,10 @@ async fn run_session_inner(
 
     // Accept never stops while the share is running. Incoming reconnects are
     // parked here during the previous client's teardown (ffmpeg wait / adb).
-    let (conn_tx, mut conn_rx) = mpsc::channel(1);
+    // Hello.role == "control" is a GlideX-style pointer plane on the same port;
+    // it must not enter the video session channel or it HOL-blocks the pointer.
+    let (video_tx, mut video_rx) = mpsc::channel::<ClassifiedStream>(1);
+    let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<ClassifiedStream>(4);
     let mut accept_stop = stop_rx.clone();
     tokio::spawn(async move {
         loop {
@@ -304,15 +374,23 @@ async fn run_session_inner(
                 _ = accept_stop.changed() => break,
                 accepted = listener.accept() => {
                     match accepted {
-                        Ok(pair) => {
-                            tokio::select! {
-                                _ = accept_stop.changed() => break,
-                                sent = conn_tx.send(pair) => {
-                                    if sent.is_err() {
-                                        break;
+                        Ok((stream, addr)) => {
+                            let video_tx = video_tx.clone();
+                            let ctrl_tx = ctrl_tx.clone();
+                            tokio::spawn(async move {
+                                match classify_incoming(stream, addr).await {
+                                    Ok(c) if session_policy::hello_is_control_plane(&c.hello.role) => {
+                                        tracing::info!("control plane from {addr}");
+                                        let _ = ctrl_tx.send(c).await;
+                                    }
+                                    Ok(c) => {
+                                        let _ = video_tx.send(c).await;
+                                    }
+                                    Err(err) => {
+                                        tracing::warn!("hello classify failed from {addr}: {err:#}");
                                     }
                                 }
-                            }
+                            });
                         }
                         Err(err) => {
                             tracing::warn!("accept failed: {err:#}");
@@ -331,27 +409,28 @@ async fn run_session_inner(
             return Ok(());
         }
 
-        let stream = tokio::select! {
+        let incoming = tokio::select! {
             _ = stop_rx.changed() => {
                 cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref()).await;
                 return Ok(());
             }
-            incoming = conn_rx.recv() => {
-                let Some((s, addr)) = incoming else {
+            incoming = video_rx.recv() => {
+                let Some(c) = incoming else {
                     cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref()).await;
                     anyhow::bail!("listen loop ended");
                 };
                 if let Ok(mut st) = status.lock() {
                     clear_peer_metrics(&mut st);
-                    st.client_addr = addr.to_string();
+                    st.client_addr = c.addr.to_string();
                 }
-                set_status(&status, "已连接", format!("{addr}"));
-                s
+                set_status(&status, "已连接", format!("{}", c.addr));
+                c
             }
         };
 
         match handle_client(
-            stream,
+            incoming,
+            &mut ctrl_rx,
             display.clone(),
             ffmpeg.clone(),
             req.clone(),
@@ -451,7 +530,8 @@ impl Drop for TabletOnlyRestoreGuard {
 }
 
 async fn handle_client(
-    stream: TcpStream,
+    incoming: ClassifiedStream,
+    ctrl_rx: &mut mpsc::Receiver<ClassifiedStream>,
     mut display: DisplayInfo,
     ffmpeg: std::path::PathBuf,
     req: SessionRequest,
@@ -461,17 +541,13 @@ async fn handle_client(
     tablet_only: Arc<AtomicBool>,
     preserve: Option<displays::PrimarySnapshot>,
 ) -> Result<()> {
-    stream.set_nodelay(true)?;
-    let (mut reader, mut writer) = stream.into_split();
-
-    let hello_msg = protocol::read_message(&mut reader)
-        .await
-        .context("读 Hello")?;
-    if hello_msg.ty != protocol::MSG_HELLO {
-        anyhow::bail!("首包不是 Hello");
-    }
-    let hello: Hello = serde_json::from_slice(&hello_msg.payload).context("解析 Hello")?;
-    tracing::info!("hello: {:?}", hello);
+    let ClassifiedStream {
+        mut reader,
+        mut writer,
+        hello,
+        addr,
+    } = incoming;
+    tracing::info!("hello from {addr}: {:?}", hello);
     if let Ok(mut s) = status.lock() {
         s.client_name = hello.device.trim().to_string();
     }
@@ -782,10 +858,18 @@ async fn handle_client(
     let cursor_slot: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>> =
         std::sync::Arc::new(std::sync::Mutex::new(None));
     let cursor_stop = std::sync::Arc::new(AtomicBool::new(false));
+    let cursor_notify = Arc::new(Notify::new());
     if hello.cursor_overlay {
-        crate::cursor::spawn_sampler(display.clone(), cursor_slot.clone(), cursor_stop.clone());
+        crate::cursor::spawn_sampler(
+            display.clone(),
+            cursor_slot.clone(),
+            cursor_stop.clone(),
+            cursor_notify.clone(),
+        );
         tracing::info!("tablet cursor overlay on; video will not bake the OS pointer");
     }
+    let mut control_task: Option<tokio::task::JoinHandle<()>> = None;
+    let mut mux_cursor_on_video = hello.cursor_overlay;
 
     let display_for_input = display.clone();
     let (touch_tx, touch_rx) = std::sync::mpsc::channel::<protocol::TouchEvent>();
@@ -847,13 +931,27 @@ async fn handle_client(
 
     let mut last_ping = std::time::Instant::now();
     while !stop.load(Ordering::Relaxed) {
-        let cursor_payload = cursor_slot.lock().ok().and_then(|mut slot| slot.take());
-        if let Some(payload) = cursor_payload {
-            if protocol::write_message(&mut writer, protocol::MSG_CURSOR, 0, &payload)
-                .await
-                .is_err()
-            {
-                break;
+        if control_task.is_none() {
+            if let Ok(ctrl) = ctrl_rx.try_recv() {
+                control_task = Some(spawn_cursor_control(
+                    ctrl,
+                    cursor_slot.clone(),
+                    cursor_notify.clone(),
+                    cursor_stop.clone(),
+                ));
+                mux_cursor_on_video = false;
+                tracing::info!("cursor on dedicated control socket (GlideX-style)");
+            }
+        }
+        if mux_cursor_on_video {
+            let cursor_payload = cursor_slot.lock().ok().and_then(|mut slot| slot.take());
+            if let Some(payload) = cursor_payload {
+                if protocol::write_message(&mut writer, protocol::MSG_CURSOR, 0, &payload)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
             }
         }
         while let Ok(pkt) = audio_rx.try_recv() {
@@ -959,6 +1057,10 @@ async fn handle_client(
 
     cursor_stop.store(true, Ordering::Relaxed);
     audio_stop.store(true, Ordering::Relaxed);
+    if let Some(task) = control_task.take() {
+        task.abort();
+    }
+    while ctrl_rx.try_recv().is_ok() {}
     reader_task.abort();
     let _ = writer.shutdown().await;
     // Must wait for ffmpeg to release DXGI before any topology restore.
@@ -1258,6 +1360,7 @@ mod tests {
             gsi: true,
             brand: "lineage".into(),
             cursor_overlay: false,
+            role: String::new(),
             avc_limit: Some(CodecLimit {
                 width: 1920,
                 height: 1088,
