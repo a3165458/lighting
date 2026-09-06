@@ -15,8 +15,10 @@ use windows::Win32::Foundation::{
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::System::Pipes::{CreatePipe, PeekNamedPipe};
 use windows::Win32::System::Threading::{
-    GetCurrentThread, SetPriorityClass, SetThreadPriority, HIGH_PRIORITY_CLASS,
-    THREAD_PRIORITY_HIGHEST,
+    GetCurrentThread, SetPriorityClass, SetProcessInformation, SetThreadPriority,
+    HIGH_PRIORITY_CLASS, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+    PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+    PROCESS_POWER_THROTTLING_STATE, ProcessPowerThrottling, THREAD_PRIORITY_HIGHEST,
 };
 
 pub use lighting_host::annexb::EncodedPacket;
@@ -221,7 +223,39 @@ fn raise_thread_priority() {
 fn raise_process_priority(child: &std::process::Child) {
     use std::os::windows::io::AsRawHandle;
     unsafe {
-        let _ = SetPriorityClass(HANDLE(child.as_raw_handle()), HIGH_PRIORITY_CLASS);
+        let handle = HANDLE(child.as_raw_handle());
+        let _ = SetPriorityClass(handle, HIGH_PRIORITY_CLASS);
+        disable_power_throttling(handle);
+    }
+}
+
+/// Same EcoQoS / timer-resolution opt-out as the host process. ffmpeg is a
+/// child: Windows 11 would otherwise park it on E-cores while the game has
+/// focus on the virtual panel.
+fn disable_power_throttling(handle: HANDLE) {
+    unsafe {
+        let mut state = PROCESS_POWER_THROTTLING_STATE {
+            Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+                | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+            StateMask: 0,
+        };
+        if SetProcessInformation(
+            handle,
+            ProcessPowerThrottling,
+            &state as *const _ as *const core::ffi::c_void,
+            std::mem::size_of_val(&state) as u32,
+        )
+        .is_err()
+        {
+            state.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+            let _ = SetProcessInformation(
+                handle,
+                ProcessPowerThrottling,
+                &state as *const _ as *const core::ffi::c_void,
+                std::mem::size_of_val(&state) as u32,
+            );
+        }
     }
 }
 
