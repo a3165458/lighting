@@ -269,12 +269,11 @@ pub fn qsv_forced_idr() -> bool {
     true
 }
 
-/// H.264-only QSV private options (`max_dec_frame_buffering`, `look_ahead`,
-/// `p_strategy`). `hevc_qsv` rejects the first two and ffmpeg then falls
-/// through to libx265 (45 fps software — a GOP of glass). HEVC DPB is
-/// already capped in `hevc_sps::rewrite_low_latency`. HEVC-valid latency
-/// flags (`rdo`, `mbbrc`, `adaptive_i`, `low_delay_brc`, `pic_timing_sei`)
-/// go through `qsv_hevc_private_options`.
+/// H.264-only QSV private options (`max_dec_frame_buffering`, `look_ahead`).
+/// `hevc_qsv` rejects those two and ffmpeg then falls through to libx265
+/// (45 fps software — a GOP of glass). HEVC DPB is already capped in
+/// `hevc_sps::rewrite_low_latency`. `p_strategy` is HEVC-valid
+/// (`QSV_OPTION_P_STRATEGY` in ffmpeg `qsvenc_hevc.c`).
 pub fn qsv_h264_private_options(encoder: &str) -> bool {
     encoder.contains("qsv") && encoder.contains("h264")
 }
@@ -299,9 +298,9 @@ pub fn qsv_mbbrc() -> bool {
 }
 
 /// hevc_qsv accepts `gpb` / `pic_timing_sei` / `rdo` / `mbbrc` /
-/// `adaptive_i` / `low_delay_brc` (see ffmpeg `qsvenc_hevc.c`). Default
-/// `pic_timing_sei=1` inserts movie-timing SEI every picture; Qualcomm
-/// C2 then paces like a movie even after the SPS VUI rewrite.
+/// `adaptive_i` / `low_delay_brc` / `p_strategy` (ffmpeg `qsvenc_hevc.c`).
+/// Default `p_strategy=0` is MSDK P-pyramid (looks at a future picture —
+/// one refresh of encode delay). Sunshine ULL sets SIMPLE (`1`).
 pub fn qsv_hevc_private_options(encoder: &str) -> bool {
     encoder.contains("qsv") && encoder.contains("hevc")
 }
