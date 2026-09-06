@@ -12,6 +12,7 @@ pub const MSG_TOUCH: u8 = 4;
 pub const MSG_HEARTBEAT: u8 = 5;
 pub const MSG_ERROR: u8 = 6;
 pub const MSG_AUDIO: u8 = 7;
+pub const MSG_CURSOR: u8 = lighting_host::cursor_wire::MSG_CURSOR;
 
 pub const FLAG_KEYFRAME: u8 = 1 << 0;
 pub const FLAG_CODEC_CONFIG: u8 = 1 << 1;
@@ -50,6 +51,9 @@ pub struct Hello {
     pub gsi: bool,
     #[serde(default)]
     pub brand: String,
+    /// Tablet will paint the OS pointer locally; host should omit draw_mouse.
+    #[serde(default)]
+    pub cursor_overlay: bool,
     #[serde(default)]
     pub avc_limit: Option<CodecLimit>,
     #[serde(default)]

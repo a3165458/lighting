@@ -3,6 +3,7 @@ package app.lighting.display
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -19,8 +20,10 @@ import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import java.nio.ByteBuffer
 import androidx.appcompat.app.AppCompatActivity
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -45,6 +48,10 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private lateinit var statusBar: PassThroughBar
     private lateinit var touchLayer: View
     private lateinit var reconnectLayer: View
+    private lateinit var cursorOverlay: ImageView
+    private var cursorBitmap: Bitmap? = null
+    private var cursorHotX = 0
+    private var cursorHotY = 0
     private var worker: Thread? = null
     @Volatile private var running = false
     @Volatile private var sessionGen = 0
@@ -73,7 +80,6 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
             return@TouchMapper
         }
         val payload = LitProtocol.touchPayload(action, x, y)
-        android.util.Log.i("LightingTouch", "queue action=" + action + " x=" + x + " y=" + y + " lit=" + (lit != null))
         if (!outbound.offer(payload)) {
             outbound.poll()
             outbound.offer(payload)
@@ -90,6 +96,9 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         statusBar = findViewById(R.id.statusBar)
         touchLayer = findViewById(R.id.touchLayer)
         reconnectLayer = findViewById(R.id.reconnectLayer)
+        cursorOverlay = findViewById(R.id.cursorOverlay)
+        cursorOverlay.isClickable = false
+        cursorOverlay.isFocusable = false
         status.isClickable = false
         status.isFocusable = false
         statusReason.isClickable = false
@@ -226,7 +235,6 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 }
                 try {
                     sock.write(LitProtocol.MSG_TOUCH, 0, payload)
-                    android.util.Log.i("LightingTouch", "wrote bytes=" + payload.size)
                 } catch (t: Exception) {
                     android.util.Log.w("LightingTouch", "send failed", t)
                 }
@@ -361,6 +369,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                         val (pts, pcm) = splitPts(msg.payload)
                         audio?.offer(pcm, pts)
                     }
+                    LitProtocol.MSG_CURSOR -> applyCursor(parseCursor(msg.payload))
                     LitProtocol.MSG_HEARTBEAT -> sock.write(LitProtocol.MSG_HEARTBEAT)
                     LitProtocol.MSG_ERROR -> {
                         val remote = String(msg.payload, Charsets.UTF_8)
@@ -391,6 +400,11 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         decoder.release()
         audio?.release()
         audio = null
+        runOnUiThread {
+            if (!isFinishing && !isDestroyed) {
+                cursorOverlay.visibility = View.GONE
+            }
+        }
         try {
             lit?.close()
         } catch (_: Exception) {
@@ -453,6 +467,68 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         }
     }
 
+    private fun defaultCursorBitmap(): Bitmap {
+        val w = 24
+        val h = 24
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val px = IntArray(w * h)
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val on = x <= y && x + y <= 22 && x < 10
+                val edge = on && (x == 0 || x == y || x + y == 22 || x == 9)
+                px[y * w + x] = when {
+                    edge -> 0xFF111111.toInt()
+                    on -> 0xFFFFFFFF.toInt()
+                    else -> 0
+                }
+            }
+        }
+        bmp.setPixels(px, 0, w, 0, 0, w, h)
+        return bmp
+    }
+
+    private fun applyCursor(update: CursorUpdate?) {
+        if (update == null) return
+        runOnUiThread {
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            if (!update.visible) {
+                cursorOverlay.visibility = View.GONE
+                return@runOnUiThread
+            }
+            val shape = update.bgra
+            if (shape != null && update.width > 0 && update.height > 0) {
+                val bmp = Bitmap.createBitmap(update.width, update.height, Bitmap.Config.ARGB_8888)
+                bmp.copyPixelsFromBuffer(ByteBuffer.wrap(shape))
+                cursorBitmap?.recycle()
+                cursorBitmap = bmp
+                cursorHotX = update.hotspotX
+                cursorHotY = update.hotspotY
+                cursorOverlay.setImageBitmap(bmp)
+            }
+            val bmp: Bitmap = cursorBitmap ?: defaultCursorBitmap().also {
+                cursorBitmap = it
+                cursorHotX = 1
+                cursorHotY = 1
+                cursorOverlay.setImageBitmap(it)
+            }
+            val sw = surface.width.coerceAtLeast(1)
+            val sh = surface.height.coerceAtLeast(1)
+            val srcW = streamW.coerceAtLeast(1)
+            val srcH = streamH.coerceAtLeast(1)
+            val scaleX = sw.toFloat() / srcW
+            val scaleY = sh.toFloat() / srcH
+            val lp = (cursorOverlay.layoutParams as FrameLayout.LayoutParams).apply {
+                width = (bmp.width * scaleX).toInt().coerceAtLeast(1)
+                height = (bmp.height * scaleY).toInt().coerceAtLeast(1)
+                gravity = Gravity.TOP or Gravity.START
+            }
+            cursorOverlay.layoutParams = lp
+            cursorOverlay.translationX = surface.left + update.x * scaleX - cursorHotX * scaleX
+            cursorOverlay.translationY = surface.top + update.y * scaleY - cursorHotY * scaleY
+            cursorOverlay.visibility = View.VISIBLE
+        }
+    }
+
     private fun letterboxSurface(width: Int, height: Int) {
         streamW = width
         streamH = height
@@ -476,6 +552,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 gravity = Gravity.CENTER
             }
             surface.layoutParams = lp
+            cursorOverlay.bringToFront()
             touchLayer.bringToFront()
             reconnectLayer.bringToFront()
             statusBar.bringToFront()

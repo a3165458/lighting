@@ -752,6 +752,7 @@ async fn handle_client(
         } else {
             "baseline".into()
         },
+        draw_mouse: !hello.cursor_overlay,
     };
 
     let hevc = codec.eq_ignore_ascii_case("hevc") || codec.eq_ignore_ascii_case("h265");
@@ -776,6 +777,14 @@ async fn handle_client(
                 tracing::warn!("audio loopback unavailable: {err:#}");
             }
         }
+    }
+
+    let cursor_slot: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+    let cursor_stop = std::sync::Arc::new(AtomicBool::new(false));
+    if hello.cursor_overlay {
+        crate::cursor::spawn_sampler(display.clone(), cursor_slot.clone(), cursor_stop.clone());
+        tracing::info!("tablet cursor overlay on; video will not bake the OS pointer");
     }
 
     let display_for_input = display.clone();
@@ -807,7 +816,7 @@ async fn handle_client(
                     }
                     match protocol::TouchEvent::parse(&msg.payload) {
                         Ok(ev) => {
-                            tracing::info!("host got touch action={} x={} y={}", ev.action, ev.x, ev.y);
+                            tracing::debug!("host got touch action={} x={} y={}", ev.action, ev.x, ev.y);
                             if touch_tx.send(ev).is_err() {
                                 tracing::warn!("touch queue closed");
                             }
@@ -838,6 +847,17 @@ async fn handle_client(
 
     let mut last_ping = std::time::Instant::now();
     while !stop.load(Ordering::Relaxed) {
+        if let Ok(mut slot) = cursor_slot.lock() {
+            if let Some(payload) = slot.take() {
+                drop(slot);
+                if protocol::write_message(&mut writer, protocol::MSG_CURSOR, 0, &payload)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }
         while let Ok(pkt) = audio_rx.try_recv() {
             let payload = protocol::with_pts(pkt.pts_us, &pkt.pcm);
             if let Err(err) =
@@ -939,6 +959,7 @@ async fn handle_client(
         }
     }
 
+    cursor_stop.store(true, Ordering::Relaxed);
     audio_stop.store(true, Ordering::Relaxed);
     reader_task.abort();
     let _ = writer.shutdown().await;
@@ -1017,7 +1038,7 @@ fn start_live_encoder(
             settings.width,
             settings.height,
             enc,
-            display.is_virtual,
+            settings.draw_mouse,
         );
         for graph in graphs {
             let session = match encoder::start_encoder(ffmpeg, display, settings, enc, &graph) {

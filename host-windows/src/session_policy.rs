@@ -112,7 +112,12 @@ pub fn usb2_can_carry_bitrate_kbps(bitrate_kbps: u32) -> bool {
 
 /// Encoded AU queue. Deep enough to absorb an IDR spike without tearing a GOP.
 pub fn encoded_queue_capacity() -> usize {
-    8
+    2
+}
+
+/// ffmpeg `-thread_queue_size`. 8 captured frames is ~130 ms of glass delay.
+pub fn capture_thread_queue_size() -> u32 {
+    2
 }
 
 /// Never drop a P-frame from a live GOP: the decoder would show 1 fps until the
@@ -174,10 +179,10 @@ pub fn smooth_latency_ms(prev: u32, sample: u32) -> u32 {
     }
 }
 
-/// ~4-frame VBV: low latency without the quality swings of a 1–2 frame budget.
+/// ~2-frame VBV so the encoder does not hold a 60–80 ms buffer of mouse motion.
 pub fn vbv_bufsize_kb(bitrate_kbps: u32, fps: u32) -> u32 {
     let fps = fps.max(24);
-    ((bitrate_kbps * 4) / fps).clamp(1_200, bitrate_kbps.max(1_200))
+    ((bitrate_kbps * 2) / fps).clamp(800, bitrate_kbps.max(800))
 }
 
 /// I/O / pipe failures from a dropped tablet must not tear down the share.
@@ -470,8 +475,8 @@ mod tests {
     #[test]
     fn vbv_targets_about_four_frames() {
         // 25 Mbps @ 60fps → ~1666 kb for 4 frames
-        assert_eq!(vbv_bufsize_kb(25_000, 60), 1_666);
-        assert!(vbv_bufsize_kb(8_000, 120) >= 1_200);
+        assert_eq!(vbv_bufsize_kb(25_000, 60), 833);
+        assert!(vbv_bufsize_kb(8_000, 120) >= 800);
         assert!(vbv_bufsize_kb(40_000, 30) <= 40_000);
         // Old formula used bitrate/2; keep the new budget far below that.
         assert!(vbv_bufsize_kb(25_000, 60) < 25_000 / 2);
@@ -790,7 +795,8 @@ Current AC Power Setting Index: 0x00000003
     #[test]
     fn encoded_backpressure_does_not_tear_gop() {
         assert!(!drop_encoded_p_on_backpressure());
-        assert!(encoded_queue_capacity() >= 4);
+        assert_eq!(encoded_queue_capacity(), 2);
+        assert_eq!(capture_thread_queue_size(), 2);
     }
 
     #[test]

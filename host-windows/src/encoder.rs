@@ -23,6 +23,8 @@ pub struct EncodeSettings {
     pub codec: String, // "avc" | "hevc"
     pub encoder: String,
     pub profile: String, // "main" | "baseline"
+    /// False when the tablet paints a local OS pointer overlay.
+    pub draw_mouse: bool,
 }
 
 pub struct EncoderSession {
@@ -179,7 +181,7 @@ fn build_args(
         "-analyzeduration".into(),
         "0".into(),
         "-thread_queue_size".into(),
-        "8".into(),
+        lighting_host::session_policy::capture_thread_queue_size().to_string(),
     ];
 
     args.extend(capture.device_args());
@@ -236,7 +238,7 @@ pub fn start_encoder_gdigrab(
         "-analyzeduration".into(),
         "0".into(),
         "-thread_queue_size".into(),
-        "8".into(),
+        lighting_host::session_policy::capture_thread_queue_size().to_string(),
     ];
     args.extend(lighting_host::capture_graph::gdigrab_input_args(
         display.x,
@@ -244,6 +246,7 @@ pub fn start_encoder_gdigrab(
         display.width,
         display.height,
         settings.fps,
+        settings.draw_mouse,
     ));
     args.extend([
         "-an".into(),

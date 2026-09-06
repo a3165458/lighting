@@ -17,6 +17,7 @@ object LitProtocol {
     const val MSG_HEARTBEAT: Byte = 5
     const val MSG_ERROR: Byte = 6
     const val MSG_AUDIO: Byte = 7
+    const val MSG_CURSOR: Byte = 8
     const val FLAG_KEYFRAME: Int = 1
     const val FLAG_CODEC_CONFIG: Int = 2
     private val MAGIC = byteArrayOf('L'.code.toByte(), 'I'.code.toByte(), 'T'.code.toByte(), '1'.code.toByte())
@@ -93,6 +94,7 @@ object LitProtocol {
         }
         putLimit("avcLimit", caps.avc)
         putLimit("hevcLimit", caps.hevc)
+        obj.put("cursorOverlay", true)
         return obj.toString().toByteArray(Charsets.UTF_8)
     }
 
@@ -178,6 +180,42 @@ class LitSocket(host: String, port: Int, connectTimeoutMs: Int = 1_500) : AutoCl
         } catch (_: Exception) {
         }
     }
+}
+
+data class CursorUpdate(
+    val visible: Boolean,
+    val x: Int,
+    val y: Int,
+    val hotspotX: Int,
+    val hotspotY: Int,
+    val width: Int,
+    val height: Int,
+    val bgra: ByteArray?,
+)
+
+fun parseCursor(payload: ByteArray): CursorUpdate? {
+    if (payload.size < 14) return null
+    val visible = payload[0].toInt() and 1 != 0
+    val hasShape = payload[0].toInt() and 2 != 0
+    fun u16(o: Int) = ((payload[o].toInt() and 0xFF) shl 8) or (payload[o + 1].toInt() and 0xFF)
+    fun i16(o: Int): Int {
+        val v = u16(o)
+        return if (v >= 0x8000) v - 0x10000 else v
+    }
+    val x = i16(2)
+    val y = i16(4)
+    val hx = u16(6)
+    val hy = u16(8)
+    val w = u16(10)
+    val h = u16(12)
+    val bgra = if (hasShape) {
+        val n = w * h * 4
+        if (n <= 0 || payload.size < 14 + n) return null
+        payload.copyOfRange(14, 14 + n)
+    } else {
+        null
+    }
+    return CursorUpdate(visible, x, y, hx, hy, w, h, bgra)
 }
 
 fun isEof(t: Throwable): Boolean = t is EOFException || t.message?.contains("Broken pipe", true) == true
