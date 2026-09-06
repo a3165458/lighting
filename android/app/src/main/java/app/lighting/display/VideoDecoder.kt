@@ -295,7 +295,10 @@ class VideoDecoder {
 
     /**
      * Moonlight MediaCodecHelper.setDecoderLowLatencyOptions(tryNumber).
-     * Try 0 on a FEATURE_LowLatency decoder is KEY_LOW_LATENCY alone.
+     * Try 0 keeps vendor keys off (they made FEATURE_LowLatency configure()
+     * fail). Official Android keys still go on try 0: without operating-rate
+     * some Qualcomm C2 decoders accept KEY_LOW_LATENCY then pace at the SPS
+     * timing like a movie.
      */
     private fun applyLowLatencyOptions(format: MediaFormat, codecName: String, tryNumber: Int) {
         val official = decoderHasFeatureLowLatency(codecName)
@@ -306,6 +309,10 @@ class VideoDecoder {
                 format.setInteger("low-latency", 1)
                 if (Build.VERSION.SDK_INT >= 30) {
                     format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+                }
+                if (Build.VERSION.SDK_INT >= 23) {
+                    format.setInteger(MediaFormat.KEY_OPERATING_RATE, 32767)
+                    format.setInteger(MediaFormat.KEY_PRIORITY, 0)
                 }
                 // Official low-latency codecs reject extra vendor keys.
                 if (official) return
