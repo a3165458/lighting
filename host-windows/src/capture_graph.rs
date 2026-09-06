@@ -110,13 +110,18 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
         for extra in &extras {
             if scale {
                 graphs.push(format!(
-                    "{dda},hwupload_cuda=extra_hw_frames={extra},scale_cuda={dst_w}:{dst_h}:format=nv12"
+                    "{dda},hwupload_cuda=extra_hw_frames={extra},scale_cuda={dst_w}:{dst_h}:format=nv12:extra_hw_frames={extra}"
                 ));
             } else {
                 graphs.push(format!(
-                    "{dda},hwupload_cuda=extra_hw_frames={extra},scale_cuda=format=nv12"
+                    "{dda},hwupload_cuda=extra_hw_frames={extra},scale_cuda=format=nv12:extra_hw_frames={extra}"
                 ));
             }
+        }
+        for extra in &extras {
+            graphs.push(format!(
+                "{dda},hwmap=derive_device=cuda:mode=direct:extra_hw_frames={extra},scale_cuda={dst_w}:{dst_h}:format=nv12:extra_hw_frames={extra}"
+            ));
         }
         graphs.push(format!(
             "{dda},hwmap=derive_device=cuda:mode=direct,scale_cuda={dst_w}:{dst_h}:format=nv12"
@@ -152,7 +157,7 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
             ));
             for extra in &extras {
                 graphs.push(format!(
-                    "{dda},hwupload=extra_hw_frames={extra},scale_d3d11={dst_w}:{dst_h}:format=nv12"
+                    "{dda},hwupload=extra_hw_frames={extra},scale_d3d11={dst_w}:{dst_h}:format=nv12:extra_hw_frames={extra}"
                 ));
             }
         } else {
@@ -246,7 +251,9 @@ mod tests {
         assert!(graphs[0].contains("extra_hw_frames=1"));
         assert!(!graphs[0].contains("hwupload_cuda"));
         assert!(graphs.iter().any(|g| g.contains("scale_d3d11") && !g.contains("extra_hw_frames")));
-        assert!(graphs.iter().any(|g| g.contains("hwupload_cuda") && g.contains("scale_cuda")));
+        assert!(graphs.iter().any(|g| g.contains("hwupload_cuda") && g.contains("scale_cuda") && g.contains("extra_hw_frames=1")));
+        assert!(graphs.iter().any(|g| g.contains("hwmap=derive_device=cuda:mode=direct:extra_hw_frames=1")));
+        assert!(graphs.iter().any(|g| g.contains("hwmap=derive_device=cuda:mode=direct,") && !g.contains("extra_hw_frames")));
         assert!(graphs.iter().any(|g| g.contains("extra_hw_frames=2")));
         assert!(graphs.last().unwrap().contains("hwdownload"));
         // Same bitrate path — graphs must not embed bitrate/fps quality knobs.
