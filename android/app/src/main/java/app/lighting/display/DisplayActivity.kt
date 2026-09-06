@@ -156,7 +156,15 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 if (peak != null) {
                     lp.preferredDisplayModeId = peak.modeId
                 }
-                lp.preferredRefreshRate = peak?.refreshRate ?: hz.toFloat()
+                val peakHz = peak?.refreshRate ?: hz.toFloat()
+                lp.preferredRefreshRate = peakHz
+                if (Build.VERSION.SDK_INT >= 31) {
+                    try {
+                        lp.preferredMinRefreshRate = peakHz
+                        lp.preferredMaxRefreshRate = peakHz
+                    } catch (_: Throwable) {
+                    }
+                }
                 window.attributes = lp
             } catch (_: Throwable) {
             }
@@ -407,6 +415,14 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                         if (!configured || isCfg) {
                             val canInit = isCfg || isCodecConfigNal(data, hevc)
                             if (!canInit) continue
+                            // Size the SurfaceView buffers before the codec
+                            // attaches. setFixedSize after start() makes
+                            // SurfaceFlinger rebuild the queue (one extra
+                            // glass frame; Moonlight does this first).
+                            try {
+                                surface.holder.setFixedSize(cfg.width, cfg.height)
+                            } catch (_: Throwable) {
+                            }
                             decoder.configure(
                                 cfg.codec,
                                 cfg.width,
