@@ -210,11 +210,8 @@ fn spawn_cursor_control(
                     }
                 }
                 _ = notify.notified() => {
-                    if flush_cursor(&mut writer, &slot).await.is_err() {
-                        break;
-                    }
-                }
-                _ = tokio::time::sleep(Duration::from_millis(1)) => {
+                    // tokio Notify stores a permit if this fires before we wait.
+                    // A 1 ms poll here added a tick of pointer delay for no reason.
                     if flush_cursor(&mut writer, &slot).await.is_err() {
                         break;
                     }
