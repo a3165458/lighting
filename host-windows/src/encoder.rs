@@ -378,7 +378,7 @@ pub fn start_encoder_gdigrab(
     })
 }
 
-/// ~2-frame VBV so rate control does not hold frames for half a second.
+/// One-frame VBV (Sunshine ULL). A 400 kb floor was ~2 frames at 120 Hz.
 fn vbv_bufsize_kb(bitrate_kbps: u32, fps: u32) -> u32 {
     lighting_host::session_policy::vbv_bufsize_kb(bitrate_kbps, fps)
 }

@@ -51,6 +51,10 @@ pub fn spawn_sampler(
                         *slot = Some(encode_cursor(&sample));
                     }
                     notify.notify_one();
+                    // GlideX: while the pointer is moving, sample the next
+                    // pose immediately. Sleeping 1 ms here sat every update
+                    // on a timer tick next to a 120 Hz panel.
+                    continue;
                 }
                 std::thread::sleep(Duration::from_millis(
                     lighting_host::session_policy::cursor_sample_interval_ms(),

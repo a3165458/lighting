@@ -474,6 +474,12 @@ pub fn configure_virtual_for_tablet(
     let hz = lighting_host::session_policy::virtual_target_hz(fps, 120);
     let primary_name = preserve.map(|p| p.device.as_str());
 
+    // Advertise 120 Hz in vdd_settings.xml so ChangeDisplaySettingsEx can
+    // pick it. Do not InitAdapter: that promotes the virtual panel and drops DDA.
+    if let Err(err) = prepare_vdd_settings(w, h, hz) {
+        tracing::warn!("prepare VDD 120 Hz modes: {err:#}");
+    }
+
     // Never reload the IddCx adapter here: InitAdapter makes Windows promote
     // the virtual panel and drops Desktop Duplication (black host screen).
     let list = list_displays()?;
@@ -614,19 +620,7 @@ fn prepare_vdd_settings(width: u32, height: u32, fps: u32) -> Result<()> {
     if xml.is_empty() || !xml.contains("<vdd_settings>") {
         xml = default_vdd_settings_xml_with(width, height, fps);
     }
-
-    let marker = format!("<width>{width}</width>");
-    let height_tag = format!("<height>{height}</height>");
-    if !(xml.contains(&marker) && xml.contains(&height_tag)) {
-        let entry = format!(
-            "        <resolution>\n            <width>{width}</width>\n            <height>{height}</height>\n            <refresh_rate>{fps}</refresh_rate>\n        </resolution>\n"
-        );
-        if let Some(idx) = xml.find("</resolutions>") {
-            xml.insert_str(idx, &entry);
-        } else {
-            xml = default_vdd_settings_xml_with(width, height, fps);
-        }
-    }
+    xml = lighting_host::session_policy::ensure_vdd_xml_high_refresh(&xml, width, height);
 
     if xml.contains("<count>0</count>") {
         xml = xml.replace("<count>0</count>", "<count>1</count>");
