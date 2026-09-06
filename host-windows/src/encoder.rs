@@ -503,6 +503,14 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             },
             "-adaptive_b".into(),
             "0".into(),
+            "-p_strategy".into(),
+            lighting_host::session_policy::qsv_p_strategy().to_string(),
+            "-pic_timing_sei".into(),
+            if lighting_host::session_policy::qsv_pic_timing_sei() {
+                "1".into()
+            } else {
+                "0".into()
+            },
         ]
     } else if encoder.contains("amf") {
         vec![

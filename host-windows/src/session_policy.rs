@@ -230,6 +230,20 @@ pub fn qsv_adaptive_i() -> bool {
     false
 }
 
+/// QSV P-reference. `0` leaves MSDK default, which is often P-pyramid
+/// (looks at future pictures — a frame of encode delay). Sunshine ULL
+/// sets SIMPLE. `1` = simple, `2` = pyramid.
+pub fn qsv_p_strategy() -> u32 {
+    1
+}
+
+/// QSV picture-timing SEI. Default on; it is the movie-timing payload
+/// annexb then drops. Generating it is extra encode work every picture.
+/// Sunshine ffmpeg `h264_qsv` sets `pic_timing_sei=0`.
+pub fn qsv_pic_timing_sei() -> bool {
+    false
+}
+
 /// Encoder DPB / `num_ref_frames`. NVENC default follows the level (4–16);
 /// Android then holds decoded pictures. Moonlight decoder-errata: 1.
 pub fn encoder_refs() -> u32 {
@@ -835,6 +849,8 @@ mod tests {
         assert!(qsv_low_power());
         assert!(!qsv_rdo());
         assert!(!qsv_adaptive_i());
+        assert_eq!(qsv_p_strategy(), 1);
+        assert!(!qsv_pic_timing_sei());
         assert_eq!(encoder_refs(), 1);
         assert!(x265_params(120).contains("rc-lookahead=0"));
         assert!(x265_params(120).contains("bframes=0"));
