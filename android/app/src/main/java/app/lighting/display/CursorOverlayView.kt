@@ -42,12 +42,14 @@ class CursorOverlayView @JvmOverloads constructor(
 
     private val pending = AtomicReference<Pose?>()
     private val scheduled = AtomicBoolean(false)
-    private val applyOnce = Runnable {
+    private val applyOnce: Runnable = Runnable { drainPose() }
+
+    private fun drainPose() {
         scheduled.set(false)
-        val pose = pending.getAndSet(null) ?: return@Runnable
+        val pose = pending.getAndSet(null) ?: return
         applyPose(pose)
         if (pending.get() != null && scheduled.compareAndSet(false, true)) {
-            postOnAnimation(this.applyOnce)
+            postOnAnimation(applyOnce)
         }
     }
 
