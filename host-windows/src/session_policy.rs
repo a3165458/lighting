@@ -250,6 +250,25 @@ pub fn encoder_refs() -> u32 {
     1
 }
 
+/// ffmpeg `h264_nvenc`/`hevc_nvenc` `-dpb_size`. Default 0 is "hardware
+/// auto" and writes `maxNumRefFrames=0`, which NVENC fills from the level
+/// (4–16) even when `-refs 1`. That reconstructed-frame pool is a frame of
+/// encode delay Sunshine ULL does not pay. 1 matches `encoder_refs`.
+pub fn nvenc_dpb_size() -> u32 {
+    1
+}
+
+/// ffmpeg nvenc `-extra_sei`. Default 1 walks A/53 / extra SEI on every
+/// picture. ddagrab has none; skip the scan.
+pub fn nvenc_extra_sei() -> bool {
+    false
+}
+
+/// ffmpeg nvenc `-a53cc`. Default 1. Desktop Duplication has no captions.
+pub fn nvenc_a53cc() -> bool {
+    false
+}
+
 /// libx265 still look-aheads unless these are explicit. `-tune zerolatency`
 /// is not enough on some builds (rc-lookahead stays ~20 → a GOP of glass wait).
 pub fn x265_params(gop: u32) -> String {
@@ -852,6 +871,9 @@ mod tests {
         assert_eq!(qsv_p_strategy(), 1);
         assert!(!qsv_pic_timing_sei());
         assert_eq!(encoder_refs(), 1);
+        assert_eq!(nvenc_dpb_size(), 1);
+        assert!(!nvenc_extra_sei());
+        assert!(!nvenc_a53cc());
         assert!(x265_params(120).contains("rc-lookahead=0"));
         assert!(x265_params(120).contains("bframes=0"));
         assert!(x265_params(120).contains("keyint=120"));

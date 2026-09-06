@@ -428,6 +428,20 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             gop,
             "-refs".into(),
             lighting_host::session_policy::encoder_refs().to_string(),
+            "-dpb_size".into(),
+            lighting_host::session_policy::nvenc_dpb_size().to_string(),
+            "-extra_sei".into(),
+            if lighting_host::session_policy::nvenc_extra_sei() {
+                "1".into()
+            } else {
+                "0".into()
+            },
+            "-a53cc".into(),
+            if lighting_host::session_policy::nvenc_a53cc() {
+                "1".into()
+            } else {
+                "0".into()
+            },
             "-slices".into(),
             "1".into(),
             "-profile:v".into(),
