@@ -148,14 +148,26 @@ pub fn cursor_sample_interval_ms() -> u64 {
     1
 }
 
-/// ffmpeg hwupload/hwmap pool. Default is often 16 frames (~250 ms).
+/// ffmpeg hwupload/hwmap extra pool. Default is often 16 frames (~250 ms).
+/// 0 = no extra (Sunshine native DDA has none). 1 then 2 if the graph
+/// never emits IDR. Unkeyed filters still keep the 16-frame default.
 pub fn hw_extra_frames() -> u32 {
+    0
+}
+
+/// Second pool size if extra=0 stalls ffmpeg before IDR.
+pub fn hw_extra_frames_fallback() -> u32 {
     1
 }
 
-/// Second CUDA/QSV pool size if a 1-frame pool stalls ffmpeg.
-pub fn hw_extra_frames_fallback() -> u32 {
-    2
+pub fn hw_extra_frame_attempts() -> Vec<u32> {
+    let mut out = Vec::new();
+    for n in [hw_extra_frames(), hw_extra_frames_fallback(), 2] {
+        if !out.contains(&n) {
+            out.push(n);
+        }
+    }
+    out
 }
 
 /// NVENC concurrent surfaces. Auto/default can be 8–32 frames of encoder delay.
@@ -901,8 +913,9 @@ mod tests {
         assert!(gpu_scheduling_priority_high());
         assert!(mmcss_capture_threads());
         assert!(boost_ffmpeg_child_threads());
-        assert_eq!(hw_extra_frames(), 1);
-        assert_eq!(hw_extra_frames_fallback(), 2);
+        assert_eq!(hw_extra_frames(), 0);
+        assert_eq!(hw_extra_frames_fallback(), 1);
+        assert_eq!(hw_extra_frame_attempts(), vec![0, 1, 2]);
         assert_eq!(nvenc_surfaces(), 1);
         assert_eq!(nvenc_surfaces_fallback(), 2);
         assert_eq!(nvenc_rc(), "cbr_ld_hq");
