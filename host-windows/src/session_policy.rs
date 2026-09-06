@@ -116,6 +116,13 @@ pub fn encoded_queue_capacity() -> usize {
     1
 }
 
+/// Raw annexb reader→assembler queue. 8 held ~8 AUs (60–130 ms at 120 Hz)
+/// so ffmpeg never saw backpressure and `encoded_queue_capacity(1)` could
+/// not make it skip *input* frames. 2 fits one Data+Quiet burst.
+pub fn annexb_raw_queue_capacity() -> usize {
+    2
+}
+
 /// ffmpeg `-thread_queue_size`. One queued capture is ~16 ms at 60 Hz;
 /// two was still a visible glass delay next to a real monitor.
 pub fn capture_thread_queue_size() -> u32 {
@@ -1124,6 +1131,7 @@ Current AC Power Setting Index: 0x00000003
     fn encoded_backpressure_does_not_tear_gop() {
         assert!(!drop_encoded_p_on_backpressure());
         assert_eq!(encoded_queue_capacity(), 1);
+        assert_eq!(annexb_raw_queue_capacity(), 2);
         assert_eq!(capture_thread_queue_size(), 1);
     }
 
