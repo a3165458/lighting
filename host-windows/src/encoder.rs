@@ -8,7 +8,9 @@ use std::thread;
 
 use crate::displays::DisplayInfo;
 use lighting_host::annexb;
+use std::os::windows::io::AsRawHandle;
 use windows::Win32::Foundation::HANDLE;
+use windows::Win32::System::Pipes::PeekNamedPipe;
 use windows::Win32::System::Threading::{
     GetCurrentThread, SetPriorityClass, SetThreadPriority, HIGH_PRIORITY_CLASS,
     THREAD_PRIORITY_HIGHEST,
@@ -154,11 +156,27 @@ fn spawn_annexb_pump(
     let (tx, rx) = tokio::sync::mpsc::channel(cap);
     thread::spawn(move || {
         raise_thread_priority();
-        if let Err(err) = annexb::pump_annexb(stdout, tx, hevc) {
+        if let Err(err) = annexb::pump_annexb_with_available(stdout, tx, hevc, |s| pipe_bytes_available(s)) {
             tracing::warn!("encoder pump ended: {err:#}");
         }
     });
     rx
+}
+
+fn pipe_bytes_available(stdout: &impl AsRawHandle) -> Option<usize> {
+    let mut n = 0u32;
+    unsafe {
+        PeekNamedPipe(
+            HANDLE(stdout.as_raw_handle()),
+            None,
+            0,
+            None,
+            Some(&mut n),
+            None,
+        )
+        .ok()?;
+    }
+    Some(n as usize)
 }
 
 fn raise_thread_priority() {

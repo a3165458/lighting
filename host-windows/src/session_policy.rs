@@ -36,11 +36,12 @@ pub fn client_drop_desktop_action(
     }
 }
 
-/// Virtual monitors must present at >=60 Hz or DDA/games look like 15-20 fps
-/// even when the encoder is asked for 60. Never go above 120: IddCx mode
-/// tables get sparse, and higher values used to retime the laptop panel.
-pub fn virtual_target_hz(requested: u32, tablet_max: u32) -> u32 {
-    requested.max(tablet_max).clamp(60, 120)
+/// GlideX / SuperDisplay run the virtual panel at 120 Hz even when the tablet
+/// is 60 Hz. A 60 Hz IddCx mode makes DWM/DDA wait a 16 ms vsync; 120 Hz
+/// cuts that wait in half. Never above 120: IddCx mode tables get sparse, and
+/// higher values used to retime the laptop panel.
+pub fn virtual_target_hz(_requested: u32, _tablet_max: u32) -> u32 {
+    120
 }
 
 /// The PC panel must never be the target of a virtual-display mode change.
@@ -842,10 +843,10 @@ mod tests {
     }
 
     #[test]
-    fn virtual_refresh_is_at_least_60() {
-        assert_eq!(virtual_target_hz(30, 60), 60);
-        assert_eq!(virtual_target_hz(60, 60), 60);
-        assert_eq!(virtual_target_hz(45, 30), 60);
+    fn virtual_refresh_is_120_like_glidex() {
+        assert_eq!(virtual_target_hz(30, 60), 120);
+        assert_eq!(virtual_target_hz(60, 60), 120);
+        assert_eq!(virtual_target_hz(45, 30), 120);
         assert_eq!(virtual_target_hz(120, 90), 120);
         assert_eq!(virtual_target_hz(240, 144), 120);
     }
