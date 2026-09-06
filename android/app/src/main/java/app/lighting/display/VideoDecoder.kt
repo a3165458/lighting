@@ -166,9 +166,9 @@ class VideoDecoder {
         while (running.get()) {
             val decoder = codec ?: break
             try {
-                // 16 ms sat every picture on the next vsync. 1 ms matches
-                // timeBeginPeriod(1) on the host and is how Moonlight waits.
-                drain(decoder, 1_000)
+                // 16 ms sat every picture on the next vsync. 200 µs is a
+                // MediaCodec poll, not a vsync wait.
+                drain(decoder, 200)
             } catch (_: IllegalStateException) {
                 break
             }

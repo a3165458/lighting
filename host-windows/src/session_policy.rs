@@ -305,10 +305,96 @@ pub fn smooth_latency_ms(prev: u32, sample: u32) -> u32 {
     }
 }
 
-/// ~1-frame VBV so rate control does not hold a 30–80 ms buffer of motion.
+/// One picture of VBV, like Sunshine `nvenc_vbv_increase = 0`.
+/// The old 400 kb floor was ~2 frames at 25 Mbps / 120 Hz (~16 ms).
 pub fn vbv_bufsize_kb(bitrate_kbps: u32, fps: u32) -> u32 {
     let fps = fps.max(24);
-    (bitrate_kbps / fps).clamp(400, bitrate_kbps.max(400))
+    (bitrate_kbps / fps).max(1)
+}
+
+/// MttVDD per-resolution refresh tags. 120 first (GlideX); 90/60 if the
+/// tablet / IddCx table cannot lock 120.
+pub fn vdd_refresh_rates() -> &'static [u32] {
+    &[120, 90, 60]
+}
+
+pub fn vdd_resolution_xml(width: u32, height: u32) -> String {
+    let mut block = format!(
+        "        <resolution>
+            <width>{width}</width>
+            <height>{height}</height>
+"
+    );
+    for hz in vdd_refresh_rates() {
+        block.push_str(&format!("            <refresh_rate>{hz}</refresh_rate>
+"));
+    }
+    block.push_str("        </resolution>
+");
+    block
+}
+
+/// Official schema allows several `<refresh_rate>` tags per size. Stock XML
+/// often lists only 60, so ChangeDisplaySettingsEx(120) fails and DWM stays
+/// on a 16 ms grid.
+pub fn ensure_vdd_xml_high_refresh(xml: &str, width: u32, height: u32) -> String {
+    let mut xml = xml.to_string();
+    if let Some(start) = xml.find("<global>") {
+        if let Some(rel_end) = xml[start..].find("</global>") {
+            let end = start + rel_end + "</global>".len();
+            xml.replace_range(
+                start..end,
+                "<global>
+        <g_refresh_rate>120</g_refresh_rate>
+        <g_refresh_rate>90</g_refresh_rate>
+        <g_refresh_rate>60</g_refresh_rate>
+        <g_refresh_rate>144</g_refresh_rate>
+    </global>",
+            );
+        }
+    }
+    xml = ensure_vdd_resolution_blocks_have_120(&xml);
+    let w_tag = format!("<width>{width}</width>");
+    let h_tag = format!("<height>{height}</height>");
+    if !(xml.contains(&w_tag) && xml.contains(&h_tag)) {
+        let entry = vdd_resolution_xml(width, height);
+        if let Some(idx) = xml.find("</resolutions>") {
+            xml.insert_str(idx, &entry);
+        }
+    }
+    xml
+}
+
+fn ensure_vdd_resolution_blocks_have_120(xml: &str) -> String {
+    let mut out = String::with_capacity(xml.len() + 256);
+    let mut rest = xml;
+    while let Some(res_start) = rest.find("<resolution>") {
+        out.push_str(&rest[..res_start]);
+        let after = &rest[res_start..];
+        let Some(rel_end) = after.find("</resolution>") else {
+            out.push_str(rest);
+            return out;
+        };
+        let block_end = rel_end + "</resolution>".len();
+        out.push_str(&ensure_vdd_resolution_block_120(&after[..block_end]));
+        rest = &after[block_end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn ensure_vdd_resolution_block_120(block: &str) -> String {
+    if block.contains("<refresh_rate>120</refresh_rate>") {
+        return block.to_string();
+    }
+    let Some(idx) = block.find("</height>") else {
+        return block.to_string();
+    };
+    let at = idx + "</height>".len();
+    let extra = "
+            <refresh_rate>120</refresh_rate>
+            <refresh_rate>90</refresh_rate>";
+    format!("{}{}{}", &block[..at], extra, &block[at..])
 }
 
 /// I/O / pipe failures from a dropped tablet must not tear down the share.
@@ -600,11 +686,35 @@ mod tests {
 
     #[test]
     fn vbv_targets_about_one_frame() {
-        // 25 Mbps @ 60fps → ~416 kb for 1 frame
+        // 25 Mbps @ 60fps → ~416 kb for 1 frame; @120 → 208 kb, not the old 400 kb floor.
         assert_eq!(vbv_bufsize_kb(25_000, 60), 416);
-        assert!(vbv_bufsize_kb(8_000, 120) >= 400);
+        assert_eq!(vbv_bufsize_kb(25_000, 120), 208);
+        assert_eq!(vbv_bufsize_kb(8_000, 120), 66);
         assert!(vbv_bufsize_kb(40_000, 30) <= 40_000);
         assert!(vbv_bufsize_kb(25_000, 60) < 25_000 / 2);
+    }
+
+    #[test]
+    fn vdd_xml_adds_120hz_to_60hz_stock_modes() {
+        let xml = r#"<vdd_settings>
+    <global>
+        <g_refresh_rate>60</g_refresh_rate>
+    </global>
+    <resolutions>
+        <resolution>
+            <width>1920</width>
+            <height>1080</height>
+            <refresh_rate>60</refresh_rate>
+        </resolution>
+    </resolutions>
+</vdd_settings>"#;
+        let out = ensure_vdd_xml_high_refresh(xml, 2560, 1600);
+        assert!(out.contains("<g_refresh_rate>120</g_refresh_rate>"));
+        assert!(out.contains("<width>1920</width>"));
+        assert!(out.contains("<refresh_rate>120</refresh_rate>"));
+        assert!(out.contains("<width>2560</width>"));
+        assert!(out.contains("<height>1600</height>"));
+        assert_eq!(vdd_refresh_rates(), &[120, 90, 60]);
     }
 
     #[test]
