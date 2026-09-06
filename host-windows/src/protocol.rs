@@ -164,15 +164,8 @@ pub async fn write_message<W: AsyncWrite + Unpin>(
     if payload.len() > MAX_PAYLOAD {
         bail!("payload too large");
     }
-    let mut hdr = [0u8; 12];
-    hdr[0..4].copy_from_slice(MAGIC);
-    hdr[4] = ty;
-    hdr[5] = flags;
-    hdr[8..12].copy_from_slice(&(payload.len() as u32).to_be_bytes());
-    writer.write_all(&hdr).await?;
-    if !payload.is_empty() {
-        writer.write_all(payload).await?;
-    }
+    let buf = lighting_host::session_policy::lit1_encode(ty, flags, payload);
+    writer.write_all(&buf).await?;
     writer.flush().await?;
     Ok(())
 }
