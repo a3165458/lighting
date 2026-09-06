@@ -1105,6 +1105,22 @@ async fn handle_client(
                         break;
                     }
                 };
+                // Encoded queue is 1 deep. Flush extra pictures before PCM so
+                // an 8 KB audio write cannot stall ffmpeg on the USB RTT.
+                let mut video_ok = true;
+                while let Ok(more) = session.rx.try_recv() {
+                    match write_video_packet(&mut writer, t0, &more).await {
+                        Ok(bytes) => sent += bytes,
+                        Err(err) => {
+                            tracing::warn!("send video failed: {err:#}");
+                            video_ok = false;
+                            break;
+                        }
+                    }
+                }
+                if !video_ok {
+                    break;
+                }
                 if session_policy::audio_packets_per_video_frame() > 0 {
                     if let Some(ap) = take_latest_audio(&audio_rx) {
                         let audio_payload = protocol::with_pts(ap.pts_us, &ap.pcm);

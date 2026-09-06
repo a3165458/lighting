@@ -306,7 +306,7 @@ where
     let reader = thread::Builder::new()
         .name("lighting-annexb-read".into())
         .spawn(move || {
-            let mut buf = vec![0u8; 64 * 1024];
+            let mut buf = vec![0u8; 256 * 1024];
             loop {
                 match stdout.read(&mut buf) {
                     Ok(0) | Err(_) => break,
@@ -317,10 +317,16 @@ where
                         let Some(mut avail) = available(&stdout) else {
                             continue;
                         };
-                        let spin = Instant::now();
-                        while avail == 0 && spin.elapsed() < PIPE_QUIET {
-                            std::hint::spin_loop();
-                            avail = available(&stdout).unwrap_or(0);
+                        // A short read + empty pipe is the end of this AU.
+                        // Spinning 250 µs here sat every 120 Hz picture on a
+                        // timer that GlideX does not pay. Only wait if the
+                        // buffer was full (the AU may still be arriving).
+                        if n == buf.len() {
+                            let spin = Instant::now();
+                            while avail == 0 && spin.elapsed() < PIPE_QUIET {
+                                std::hint::spin_loop();
+                                avail = available(&stdout).unwrap_or(0);
+                            }
                         }
                         if avail == 0 {
                             let _ = raw_tx.send(RawMsg::Quiet);
