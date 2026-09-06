@@ -118,9 +118,13 @@ pub fn encoded_queue_capacity() -> usize {
 
 /// Raw annexb reader→assembler queue. 8 held ~8 AUs (60–130 ms at 120 Hz)
 /// so ffmpeg never saw backpressure and `encoded_queue_capacity(1)` could
-/// not make it skip *input* frames. 2 fits one Data+Quiet burst.
+/// not make it skip *input* frames. 2 still parked the next AU's
+/// Data+Quiet while `push_blocking` waited on the 1-deep encoded
+/// channel — one extra refresh next to the laptop. 1 makes Quiet
+/// (and the following picture) wait until the assembler is free, so
+/// ffmpeg sees a full pipe and skips *input* frames instead.
 pub fn annexb_raw_queue_capacity() -> usize {
-    2
+    1
 }
 
 /// ffmpeg `-thread_queue_size`. One queued capture is ~16 ms at 60 Hz;
@@ -1437,7 +1441,7 @@ Current AC Power Setting Index: 0x00000003
     fn encoded_backpressure_does_not_tear_gop() {
         assert!(!drop_encoded_p_on_backpressure());
         assert_eq!(encoded_queue_capacity(), 1);
-        assert_eq!(annexb_raw_queue_capacity(), 2);
+        assert_eq!(annexb_raw_queue_capacity(), 1);
         assert_eq!(capture_thread_queue_size(), 1);
     }
 
