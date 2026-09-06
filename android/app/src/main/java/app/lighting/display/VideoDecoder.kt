@@ -264,7 +264,8 @@ class VideoDecoder {
         // Moonlight setDecoderLowLatencyOptions(tryNumber): most-to-least
         // risky. Try 0 is official + matching SoC vendor key. Dumping every
         // vendor key on try 0 used to fail FEATURE_LowLatency configure().
-        // Try 1–2 stay FEATURE-only so that reject still configures.
+        // Try 1 still has the SoC key (no operating-rate). Try 2 is KEY-only
+        // so a vendor reject still configures.
         // max-output-buffers=2 and KEY_PRIORITY=0 ride with KEY_LOW_LATENCY
         // (try 0–2). GSI / Treble crash on vendor keys — those stay behind
         // lowLatencySafe (try 3–5).
@@ -319,6 +320,9 @@ class VideoDecoder {
      * FEATURE-only so a vendor reject still configures. max-output-buffers=2
      * and KEY_PRIORITY=0 (Moonlight realtime) are try 0–2. Try 2 is
      * KEY_LOW_LATENCY alone plus the small pool and priority.
+     * Try 1 still carries the matching SoC key (Moonlight keeps qti-ext
+     * past try 0): setParameters after start is often ignored, so a
+     * FEATURE-only try 1 used to win and C2 paced at SPS.
      */
     private fun applyLowLatencyOptions(
         format: MediaFormat,
@@ -361,26 +365,19 @@ class VideoDecoder {
                     // still gets the small pool.
                     format.setInteger("max-output-buffers", 2)
                 }
-                // GSI / Treble crash on a dump of every vendor key. Matching
-                // SoC keys still belong on try 0: Qualcomm C2 advertises
-                // FEATURE_LowLatency, accepts KEY_LOW_LATENCY, then paces
-                // at SPS like a movie unless qti-ext-dec-low-latency is on
-                // the format that succeeded. Moonlight sets the SoC key on
-                // try 0. Try 1–2 stay FEATURE-only so a reject falls back.
-                if (tryNumber >= 1 || !allowVendor) return
+                // GSI / Treble crash on a dump of every vendor key.
+                // Matching SoC keys must be on the format that actually
+                // succeeds. Try 0 is official + vendor; try 1 is the same
+                // without operating-rate (the usual try-0 reject). Try 2
+                // stays KEY-only so a vendor-key reject still configures.
+                // setParameters after start cannot replace configure().
+                if (tryNumber >= 2 || !allowVendor) return
             }
             if (tryNumber < 2 &&
                 (!android.os.Build.MANUFACTURER.equals("xiaomi", true) ||
                     Build.VERSION.SDK_INT > 23)
             ) {
                 format.setInteger("vdec-lowlatency", 1)
-            }
-            if (tryNumber < 3) {
-                if (qcom) {
-                    format.setInteger(MediaFormat.KEY_OPERATING_RATE, 32767)
-                } else if (Build.VERSION.SDK_INT >= 23) {
-                    format.setInteger(MediaFormat.KEY_PRIORITY, 0)
-                }
             }
         } catch (_: Throwable) {
         }
