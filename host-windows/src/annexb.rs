@@ -64,7 +64,7 @@ enum RawMsg {
 fn raise_reader_priority() {
     // ffmpeg is HIGH_PRIORITY_CLASS. The assembler thread is already
     // THREAD_PRIORITY_HIGHEST; this reader was NORMAL and could sit a
-    // scheduler slice behind egui while a 64 KB pipe AU waited.
+    // scheduler slice behind egui while a 32 KB pipe AU waited.
     #[cfg(windows)]
     unsafe {
         use windows::Win32::System::Threading::{
@@ -361,10 +361,10 @@ where
         .name("lighting-annexb-read".into())
         .spawn(move || {
             raise_reader_priority();
-            // Same size as CreatePipe. A 256 KB vec never filled because the
-            // pipe is 64 KB, so n == buf.len() was dead and a full-pipe IDR
-            // looked like a short AU: Quiet truncated the slice and the
-            // tablet waited until the next keyframe.
+            // Same size as CreatePipe. A vec larger than the pipe never
+            // fills, so n == buf.len() is dead and a full-pipe IDR looks
+            // like a short AU: Quiet truncated the slice and the tablet
+            // waited until the next keyframe.
             let mut buf = vec![0u8; read_buffer_bytes()];
             loop {
                 match stdout.read(&mut buf) {

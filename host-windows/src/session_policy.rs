@@ -550,11 +550,13 @@ pub fn boost_ffmpeg_child_threads() -> bool {
 
 /// Anonymous `CreatePipe` default is 4 KB. A 25 Mbps P-frame is ~26 KB, so
 /// ffmpeg stdout used to land as many short `Read`s and PeekNamedPipe went
-/// quiet between them. 256 KB still hid ~10 pictures at 120 Hz after the
-/// encoded/annexb queues were already 1–2 deep. 64 KB fits one IDR-sized
-/// AU without going back to 4 KB fragments.
+/// quiet between them. 256 KB hid ~10 pictures at 120 Hz; 64 KB still hid
+/// a second P-frame after encoded/annexb queues were already 1-deep —
+/// one extra refresh next to the laptop. 32 KB is one P-frame. IDR still
+/// uses the n==buf.len() spin (it never fit in 64 KB either); 4 KB
+/// fragments every picture and Quiet-truncates the AU.
 pub fn ffmpeg_pipe_buffer_bytes() -> u32 {
-    64 * 1024
+    32 * 1024
 }
 
 /// Never drop a P-frame from a live GOP: the decoder would show 1 fps until the
@@ -1116,7 +1118,7 @@ mod tests {
         assert_eq!(ffmpeg_output_fps(encode_fps(60, 60, 60, true)), 120);
         assert_ne!(ffmpeg_output_fps(120), dda_poll_hz(120));
         assert_eq!(ffmpeg_output_fps(45), 45);
-        assert_eq!(ffmpeg_pipe_buffer_bytes(), 64 * 1024);
+        assert_eq!(ffmpeg_pipe_buffer_bytes(), 32 * 1024);
         assert!(ffmpeg_pipe_buffer_bytes() > 16 * 1024);
         // annexb read vec must be this size: larger and n==buf.len() never
         // fires, so a full-pipe IDR Quiet-flushes a truncated slice.
