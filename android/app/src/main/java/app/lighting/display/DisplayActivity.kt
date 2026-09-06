@@ -67,6 +67,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private var streamW = 0
     private var streamH = 0
     private var streamFps = 60
+    private var panelFps = 60
     private val hideHud = Runnable {
         if (!awaitingManual) {
             statusBar.visibility = View.GONE
@@ -265,6 +266,15 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         val display = windowManager.defaultDisplay
         display.getRealMetrics(metrics)
         val refresh = display.refreshRate.toInt().coerceIn(30, 120)
+        panelFps = refresh
+        if (Build.VERSION.SDK_INT >= 23) {
+            try {
+                val lp = window.attributes
+                lp.preferredRefreshRate = refresh.toFloat()
+                window.attributes = lp
+            } catch (_: Throwable) {
+            }
+        }
         val caps = DeviceCaps.probe()
         worker = thread(name = "lighting-session") {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
@@ -535,37 +545,51 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
     private fun applyCursor(update: CursorUpdate?) {
         if (update == null) return
-        if (isFinishing || isDestroyed) return
         if (!update.visible) {
             cursorOverlay.hidePointer()
             return
         }
+        var incoming: Bitmap? = null
+        var hotX = cursorHotX
+        var hotY = cursorHotY
         val shape = update.bgra
         if (shape != null && update.width > 0 && update.height > 0) {
-            val bmp = Bitmap.createBitmap(update.width, update.height, Bitmap.Config.ARGB_8888)
-            bmp.copyPixelsFromBuffer(ByteBuffer.wrap(shape))
-            cursorBitmap?.recycle()
-            cursorBitmap = bmp
-            cursorHotX = update.hotspotX
-            cursorHotY = update.hotspotY
-            cursorOverlay.setShape(bmp, cursorHotX, cursorHotY)
+            incoming = Bitmap.createBitmap(update.width, update.height, Bitmap.Config.ARGB_8888)
+            incoming.copyPixelsFromBuffer(ByteBuffer.wrap(shape))
+            hotX = update.hotspotX
+            hotY = update.hotspotY
         } else if (cursorBitmap == null) {
-            val bmp = defaultCursorBitmap()
-            cursorBitmap = bmp
-            cursorHotX = 1
-            cursorHotY = 1
-            cursorOverlay.setShape(bmp, cursorHotX, cursorHotY)
+            incoming = defaultCursorBitmap()
+            hotX = 1
+            hotY = 1
         }
-        cursorOverlay.showAt(
-            update.x,
-            update.y,
-            streamW.coerceAtLeast(1),
-            streamH.coerceAtLeast(1),
-            surface.left,
-            surface.top,
-            surface.width.coerceAtLeast(1),
-            surface.height.coerceAtLeast(1),
-        )
+        val x = update.x
+        val y = update.y
+        val sw = streamW.coerceAtLeast(1)
+        val sh = streamH.coerceAtLeast(1)
+        cursorOverlay.post {
+            if (isFinishing || isDestroyed) {
+                incoming?.recycle()
+                return@post
+            }
+            if (incoming != null) {
+                cursorBitmap?.recycle()
+                cursorBitmap = incoming
+                cursorHotX = hotX
+                cursorHotY = hotY
+                cursorOverlay.setShape(incoming, hotX, hotY)
+            }
+            cursorOverlay.showAt(
+                x,
+                y,
+                sw,
+                sh,
+                surface.left,
+                surface.top,
+                surface.width.coerceAtLeast(1),
+                surface.height.coerceAtLeast(1),
+            )
+        }
     }
 
     private fun letterboxSurface(width: Int, height: Int) {
@@ -597,10 +621,21 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
             }
             if (Build.VERSION.SDK_INT >= 30) {
                 try {
-                    surface.holder.surface.setFrameRate(
-                        streamFps.toFloat(),
-                        Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE,
-                    )
+                    // Present on the tablet's vsync. Pinning to streamFps used to
+                    // drop a 120 Hz panel to 60 and add a frame of glass delay.
+                    val hz = panelFps.coerceAtLeast(streamFps).toFloat()
+                    if (Build.VERSION.SDK_INT >= 31) {
+                        surface.holder.surface.setFrameRate(
+                            hz,
+                            Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE,
+                            Surface.CHANGE_FRAME_RATE_ALWAYS,
+                        )
+                    } else {
+                        surface.holder.surface.setFrameRate(
+                            hz,
+                            Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE,
+                        )
+                    }
                 } catch (_: Throwable) {
                 }
             }
