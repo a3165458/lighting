@@ -470,7 +470,7 @@ pub fn configure_virtual_for_tablet(
 ) -> Result<DisplayInfo> {
     let w = (width.max(16) & !1).max(16);
     let h = (height.max(16) & !1).max(16);
-    let _fps = fps.clamp(30, 120);
+    let hz = lighting_host::session_policy::virtual_target_hz(fps, 60);
     let primary_name = preserve.map(|p| p.device.as_str());
 
     // Never reload the IddCx adapter here: InitAdapter makes Windows promote
@@ -487,12 +487,19 @@ pub fn configure_virtual_for_tablet(
         target.name
     );
 
-    if target.width != w || target.height != h {
-        // Size only — setting refresh on the virtual path retimes the whole
-        // desktop and is what followed the tablet Hz onto the laptop panel.
-        if let Err(err) = change_display_mode(&target.name, w, h, None, None, false) {
-            tracing::warn!("set virtual mode {w}×{h} failed: {err:#}");
+    let current_hz = current_display_mode(&target.name).map(|m| m.fps).unwrap_or(0);
+    if target.width != w || target.height != h || current_hz < hz {
+        // Size + refresh on the virtual device only. Immediately reassert the
+        // laptop snapshot below so a CCD side-effect cannot keep the panel at 60.
+        if let Err(err) = change_display_mode(&target.name, w, h, Some(hz), None, false) {
+            tracing::warn!("set virtual mode {w}×{h}@{hz} failed: {err:#}");
+            if target.width != w || target.height != h {
+                if let Err(err) = change_display_mode(&target.name, w, h, None, None, false) {
+                    tracing::warn!("set virtual size {w}×{h} failed: {err:#}");
+                }
+            }
         } else {
+            tracing::info!("virtual display mode {w}×{h}@{hz} (was {}×{}@{} )", target.width, target.height, current_hz);
             std::thread::sleep(Duration::from_millis(400));
         }
     }
@@ -771,20 +778,38 @@ pub fn reassert_primary(snap: &PrimarySnapshot) -> Result<()> {
 }
 
 pub fn restore_desktop(snap: &PrimarySnapshot) -> Result<()> {
-    if let Err(err) = restore_primary(snap) {
-        tracing::warn!("restore_primary failed: {err:#}");
-    }
     let list = list_displays().unwrap_or_default();
     let present = list
         .iter()
         .any(|d| d.name.eq_ignore_ascii_case(&snap.device));
     if !present {
         let _ = restore_pc_monitor();
+        std::thread::sleep(Duration::from_millis(400));
+    }
+    reassert_primary(snap)?;
+    let list = list_displays().unwrap_or_default();
+    let still_primary = list
+        .iter()
+        .find(|d| d.name.eq_ignore_ascii_case(&snap.device))
+        .map(|d| d.primary)
+        .unwrap_or(false);
+    if !still_primary {
         restore_primary(snap)?;
-    } else if let Err(err) = restore_primary(snap) {
-        tracing::warn!("second restore_primary failed: {err:#}");
     }
     Ok(())
+}
+
+/// Tablet sleep / disconnect while Win+P external is active: put the laptop
+/// back on an extend desktop before any CDS_SET_PRIMARY. Doing SET_PRIMARY
+/// against a detached internal panel (with ffmpeg still holding DDA) is what
+/// hung the GPU and required Win+Ctrl+Shift+B.
+pub fn restore_after_tablet_only(snap: &PrimarySnapshot) -> Result<()> {
+    if let Err(err) = apply_project_mode(ShareMode::Extend) {
+        tracing::warn!("extend after tablet-only failed: {err:#}");
+        let _ = restore_pc_monitor();
+        std::thread::sleep(Duration::from_millis(400));
+    }
+    restore_desktop(snap)
 }
 
 /// RAII: always restore the host panel, including after a mid-share interrupt.

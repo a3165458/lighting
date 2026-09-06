@@ -371,12 +371,35 @@ async fn run_session_inner(
             }
         }
 
-        // Tablet drop / capture interrupt: put the laptop back as primary with
-        // its original Hz so the user is not stuck on a blank panel + CAD.
+        // Tablet sleep / drop: ffmpeg is already dead (handle_client waits).
+        // "仅平板" must undo Win+P external *before* any SET_PRIMARY, otherwise
+        // the internal panel stays detached and the GPU hangs until
+        // Win+Ctrl+Shift+B.
+        let was_tablet_only = tablet_only.swap(false, Ordering::SeqCst);
         if let Some(snap) = preserve.clone() {
+            let action = lighting_host::session_policy::client_drop_desktop_action(
+                was_tablet_only,
+                if was_tablet_only {
+                    lighting_host::session_policy::PrimaryRestoreAction::SetPrimary
+                } else {
+                    lighting_host::session_policy::PrimaryRestoreAction::TimingOnly
+                },
+            );
             let _ = tokio::task::spawn_blocking(move || {
-                if let Err(err) = displays::reassert_primary(&snap) {
-                    tracing::warn!("reassert primary after tablet drop: {err:#}");
+                match action {
+                    lighting_host::session_policy::ClientDropDesktopAction::UndoExternal => {
+                        if let Err(err) = displays::restore_after_tablet_only(&snap) {
+                            tracing::warn!("restore after tablet-only disconnect: {err:#}");
+                        } else {
+                            tracing::info!("restored laptop after tablet sleep/disconnect");
+                        }
+                    }
+                    lighting_host::session_policy::ClientDropDesktopAction::ReassertPrimary => {
+                        if let Err(err) = displays::reassert_primary(&snap) {
+                            tracing::warn!("reassert primary after tablet drop: {err:#}");
+                        }
+                    }
+                    lighting_host::session_policy::ClientDropDesktopAction::None => {}
                 }
             })
             .await;
@@ -711,8 +734,9 @@ async fn handle_client(
     };
 
     let hevc = codec.eq_ignore_ascii_case("hevc") || codec.eq_ignore_ascii_case("h265");
-    let (mut session, bootstrap) =
+    let (mut session, bootstrap, mut capture_kind) =
         start_live_encoder(&ffmpeg, &display, &settings, hevc)?;
+    let mut dda_retries = 0u8;
     let t0 = std::time::Instant::now();
     let audio_stop = Arc::new(AtomicBool::new(false));
     let (audio_tx, audio_rx) = std::sync::mpsc::sync_channel::<crate::audio::AudioPacket>(4);
@@ -837,12 +861,26 @@ async fn handle_client(
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                tracing::warn!("encoder pipe closed, trying gdigrab once");
-                set_status(&status, "回退", "改用 gdigrab 抓屏");
                 session.stop();
-                match restart_encoder_with_bootstrap(&ffmpeg, &display, &settings, hevc) {
-                    Ok((new_session, bootstrap)) => {
+                let retry_dda = capture_kind == CaptureKind::Dda && dda_retries < 1;
+                dda_retries = dda_retries.saturating_add(1);
+                if retry_dda {
+                    tracing::warn!("encoder pipe closed, retrying Desktop Duplication");
+                    set_status(&status, "抓屏恢复", "Desktop Duplication 中断，正在重连…");
+                } else {
+                    tracing::warn!("encoder pipe closed, falling back to gdigrab");
+                    set_status(&status, "回退", "改用 gdigrab 抓屏");
+                }
+                let restarted = if retry_dda {
+                    start_live_encoder(&ffmpeg, &display, &settings, hevc)
+                } else {
+                    restart_encoder_with_bootstrap(&ffmpeg, &display, &settings, hevc)
+                        .map(|(s, b)| (s, b, CaptureKind::Gdi))
+                };
+                match restarted {
+                    Ok((new_session, bootstrap, kind)) => {
                         session = new_session;
+                        capture_kind = kind;
                         match write_bootstrap(&mut writer, t0, &bootstrap).await {
                             Ok(sent) => add_wire_bytes(&status, sent),
                             Err(err) => {
@@ -852,11 +890,19 @@ async fn handle_client(
                                 break;
                             }
                         }
-                        set_status(&status, "编码", "gdigrab 已重发 codec-config + IDR");
+                        set_status(
+                            &status,
+                            "编码",
+                            if kind == CaptureKind::Dda {
+                                "Desktop Duplication 已重发 codec-config + IDR"
+                            } else {
+                                "gdigrab 已重发 codec-config + IDR"
+                            },
+                        );
                     }
                     Err(err) => {
-                        tracing::warn!("gdigrab 回退失败: {err:#}");
-                        set_status(&status, "错误", "gdigrab 回退也失败，请查看日志");
+                        tracing::warn!("encoder restart failed: {err:#}");
+                        set_status(&status, "错误", "抓屏重启失败，请查看日志");
                         break;
                     }
                 }
@@ -867,8 +913,11 @@ async fn handle_client(
     audio_stop.store(true, Ordering::Relaxed);
     reader_task.abort();
     let _ = writer.shutdown().await;
-    session.stop_in_background();
-    // Restore PC resolution after capture stops so DXGI isn't mid-grab.
+    // Must wait for ffmpeg to release DXGI before any topology restore.
+    // Killing it in the background and immediately CCD-ing is the GPU hang
+    // that only Win+Ctrl+Shift+B could clear after the tablet slept.
+    session.stop();
+    tokio::time::sleep(Duration::from_millis(200)).await;
     drop(mode_guard);
     Ok(())
 }
@@ -907,24 +956,30 @@ async fn write_bootstrap<W: tokio::io::AsyncWrite + Unpin>(
     Ok(sent)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CaptureKind {
+    Dda,
+    Gdi,
+}
+
 fn start_live_encoder(
     ffmpeg: &std::path::PathBuf,
     display: &DisplayInfo,
     settings: &EncodeSettings,
     hevc: bool,
-) -> Result<(encoder::EncoderSession, Vec<EncodedPacket>)> {
+) -> Result<(encoder::EncoderSession, Vec<EncodedPacket>, CaptureKind)> {
     if lighting_host::session_policy::prefer_gdigrab_capture(
         display.is_virtual,
         display.dxgi.is_some(),
     ) {
         match restart_encoder_with_bootstrap(ffmpeg, display, settings, hevc) {
-            Ok(ok) => return Ok(ok),
-            Err(err) => tracing::warn!("gdigrab-first for virtual display failed: {err:#}"),
+            Ok((session, bootstrap)) => return Ok((session, bootstrap, CaptureKind::Gdi)),
+            Err(err) => tracing::warn!("gdigrab-first for GDI-only display failed: {err:#}"),
         }
     }
     let mut last_err: Option<anyhow::Error> = None;
     for enc in encoder::encoder_fallback_chain(&settings.codec) {
-        let graphs = lighting_host::capture_graph::dda_capture_graphs(
+        let graphs = lighting_host::capture_graph::dda_capture_graphs_for(
             display.dxgi,
             settings.fps,
             display.width,
@@ -932,6 +987,7 @@ fn start_live_encoder(
             settings.width,
             settings.height,
             enc,
+            display.is_virtual,
         );
         for graph in graphs {
             let session = match encoder::start_encoder(ffmpeg, display, settings, enc, &graph) {
@@ -944,8 +1000,8 @@ fn start_live_encoder(
             };
             match annexb::recv_bootstrap(&session.rx, Duration::from_secs(3), hevc) {
                 Ok(bootstrap) => {
-                    tracing::info!("using encoder {enc} graph={graph}");
-                    return Ok((session, bootstrap));
+                    tracing::info!("using encoder {enc} graph={graph} (dda virtual={})", display.is_virtual);
+                    return Ok((session, bootstrap, CaptureKind::Dda));
                 }
                 Err(err) => {
                     tracing::warn!("{enc} graph died before codec-config + IDR ({graph}): {err:#}");
@@ -956,6 +1012,7 @@ fn start_live_encoder(
     }
     tracing::warn!("desktop duplication encoders failed, trying gdigrab: {:?}", last_err);
     restart_encoder_with_bootstrap(ffmpeg, display, settings, hevc)
+        .map(|(session, bootstrap)| (session, bootstrap, CaptureKind::Gdi))
 }
 
 fn restart_encoder_with_bootstrap(
