@@ -346,20 +346,34 @@ class CursorOverlayView @JvmOverloads constructor(
         val w = (b.width * scaleX).toInt().coerceAtLeast(1)
         val h = (b.height * scaleY).toInt().coerceAtLeast(1)
         val lp = layoutParams ?: FrameLayout.LayoutParams(w, h)
-        if (lp.width != w || lp.height != h) {
+        val sizeChanged = lp.width != w || lp.height != h
+        if (sizeChanged) {
             lp.width = w
             lp.height = h
             layoutParams = lp
         }
         val tx = pose.surfaceLeft + pose.x * scaleX - hotX * scaleX
         val ty = pose.surfaceTop + pose.y * scaleY - hotY * scaleY
-        // Keep View translation in lockstep with SurfaceControl so the next
-        // SurfaceView.updateSurface does not snap back. Skip requestLayout
-        // on a move-only pose (layoutParams already matched above).
-        translationX = tx
-        translationY = ty
-        lastTx = tx
-        lastTy = ty
+        // Punch owns lastTx on API 29+. A stale applyPose used to write
+        // translationX from an older pose after submit had already punched
+        // a newer one — SurfaceView.updateSurface snapped the pointer a
+        // refresh behind the laptop. Move-only + unchanged size: sync View
+        // to the punched coords. Show / hide / resize / shape still assign.
+        if (Build.VERSION.SDK_INT >= 29 &&
+            !sizeChanged &&
+            pose.bitmap == null &&
+            showing &&
+            !lastTx.isNaN() &&
+            !lastTy.isNaN()
+        ) {
+            if (translationX != lastTx) translationX = lastTx
+            if (translationY != lastTy) translationY = lastTy
+        } else {
+            translationX = tx
+            translationY = ty
+            lastTx = tx
+            lastTy = ty
+        }
         showing = true
         if (visibility != VISIBLE) {
             visibility = VISIBLE
