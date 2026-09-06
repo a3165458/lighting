@@ -19,6 +19,7 @@ class VideoDecoder {
     private val skipUntilKey = AtomicBoolean(false)
     private val queue = ArrayBlockingQueue<Packet>(1)
     private var worker: Thread? = null
+    private var presentWorker: Thread? = null
     private var fakePtsUs = 0L
     @Volatile var activeName: String = ""
         private set
@@ -64,6 +65,7 @@ class VideoDecoder {
                     fakePtsUs = 0L
                     running.set(true)
                     worker = Thread({ loop() }, "lighting-decode").apply { start() }
+                    presentWorker = Thread({ presentLoop() }, "lighting-present").apply { start() }
                     Log.i(TAG, "decoder ok: ${decoder.name} ${w}x$h $mime soc=${caps.soc} gsi=${caps.gsi}")
                     return
                 } catch (t: Throwable) {
@@ -115,7 +117,6 @@ class VideoDecoder {
             if (!configured) continue
             if (pkt.codecConfig) {
                 enqueue(decoder, pkt.data, MediaCodec.BUFFER_FLAG_CODEC_CONFIG, pkt.ptsUs, waitUs = 4_000)
-                drain(decoder, 4_000)
                 continue
             }
             if (skipUntilKey.get() && !pkt.keyframe) {
@@ -125,8 +126,9 @@ class VideoDecoder {
             val flags = if (pkt.keyframe) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
             val wait = if (pkt.keyframe) 4_000L else 0L
             if (!enqueue(decoder, pkt.data, flags, pkt.ptsUs, wait)) {
-                drain(decoder, 2_000)
-                val retry = if (pkt.keyframe) 8_000L else 2_000L
+                // Present thread owns dequeueOutputBuffer. Wait for it to
+                // free an input slot instead of draining here (that raced).
+                val retry = if (pkt.keyframe) 16_000L else 8_000L
                 if (!enqueue(decoder, pkt.data, flags, pkt.ptsUs, retry)) {
                     if (pkt.keyframe) skipUntilKey.set(true)
                     skips++
@@ -134,9 +136,6 @@ class VideoDecoder {
                 }
             }
             if (pkt.keyframe) skipUntilKey.set(false)
-            // Moonlight sync path: wait for THIS frame's output instead of
-            // returning to queue.take() and presenting it a packet later.
-            drain(decoder, if (pkt.keyframe) 16_000 else 8_000)
             frames++
             if (pkt.ptsUs > 0) {
                 val now = System.nanoTime() / 1000
@@ -151,6 +150,22 @@ class VideoDecoder {
                 skips = 0
                 lagSum = 0
                 frames = 0
+            }
+        }
+    }
+
+    /**
+     * Moonlight/GlideX: present on its own thread. Waiting for output on the
+     * input thread meant a decode slower than 8 ms sat until the next AU.
+     */
+    private fun presentLoop() {
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
+        while (running.get()) {
+            val decoder = codec ?: break
+            try {
+                drain(decoder, 16_000)
+            } catch (_: IllegalStateException) {
+                break
             }
         }
     }
@@ -297,17 +312,23 @@ class VideoDecoder {
         running.set(false)
         queue.clear()
         worker?.interrupt()
-        try {
-            worker?.join(300)
-        } catch (_: Exception) {
-        }
-        worker = null
+        presentWorker?.interrupt()
         configured = false
         activeName = ""
         try {
             codec?.stop()
         } catch (_: Exception) {
         }
+        try {
+            worker?.join(300)
+        } catch (_: Exception) {
+        }
+        try {
+            presentWorker?.join(300)
+        } catch (_: Exception) {
+        }
+        worker = null
+        presentWorker = null
         try {
             codec?.release()
         } catch (_: Exception) {
