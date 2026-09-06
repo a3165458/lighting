@@ -115,7 +115,7 @@ class VideoDecoder {
             if (!configured) continue
             if (pkt.codecConfig) {
                 enqueue(decoder, pkt.data, MediaCodec.BUFFER_FLAG_CODEC_CONFIG, pkt.ptsUs, waitUs = 4_000)
-                drain(decoder)
+                drain(decoder, 4_000)
                 continue
             }
             if (skipUntilKey.get() && !pkt.keyframe) {
@@ -125,7 +125,7 @@ class VideoDecoder {
             val flags = if (pkt.keyframe) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
             val wait = if (pkt.keyframe) 4_000L else 0L
             if (!enqueue(decoder, pkt.data, flags, pkt.ptsUs, wait)) {
-                drain(decoder)
+                drain(decoder, 2_000)
                 val retry = if (pkt.keyframe) 8_000L else 2_000L
                 if (!enqueue(decoder, pkt.data, flags, pkt.ptsUs, retry)) {
                     if (pkt.keyframe) skipUntilKey.set(true)
@@ -134,7 +134,9 @@ class VideoDecoder {
                 }
             }
             if (pkt.keyframe) skipUntilKey.set(false)
-            drain(decoder)
+            // Moonlight sync path: wait for THIS frame's output instead of
+            // returning to queue.take() and presenting it a packet later.
+            drain(decoder, if (pkt.keyframe) 16_000 else 8_000)
             frames++
             if (pkt.ptsUs > 0) {
                 val now = System.nanoTime() / 1000
@@ -259,11 +261,13 @@ class VideoDecoder {
         return true
     }
 
-    private fun drain(decoder: MediaCodec) {
+    private fun drain(decoder: MediaCodec, waitUs: Long) {
         val info = MediaCodec.BufferInfo()
         var latest = -1
+        var wait = waitUs
         while (true) {
-            val idx = decoder.dequeueOutputBuffer(info, 0)
+            val idx = decoder.dequeueOutputBuffer(info, wait)
+            wait = 0
             if (idx == MediaCodec.INFO_TRY_AGAIN_LATER) {
                 break
             }
