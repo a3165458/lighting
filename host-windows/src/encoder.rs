@@ -204,8 +204,6 @@ fn build_args(
         lighting_host::session_policy::capture_thread_queue_size().to_string(),
         "-avioflags".into(),
         "direct".into(),
-        "-fps_mode".into(),
-        "passthrough".into(),
     ];
 
     args.extend(capture.device_args());
@@ -232,6 +230,8 @@ fn output_mux_args(encoder: &str) -> Vec<String> {
         "0".into(),
         "-muxpreload".into(),
         "0".into(),
+        "-fps_mode".into(),
+        "passthrough".into(),
         "-bsf:v".into(),
         "dump_extra".into(),
         "-f".into(),
@@ -269,8 +269,6 @@ pub fn start_encoder_gdigrab(
         lighting_host::session_policy::capture_thread_queue_size().to_string(),
         "-avioflags".into(),
         "direct".into(),
-        "-fps_mode".into(),
-        "passthrough".into(),
     ];
     args.extend(lighting_host::capture_graph::gdigrab_input_args(
         display.x,
@@ -344,7 +342,7 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "-preset".into(),
             "p1".into(),
             "-tune".into(),
-            "ll".into(),
+            "ull".into(),
             "-rc".into(),
             "cbr".into(),
             "-b:v".into(),

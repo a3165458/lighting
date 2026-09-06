@@ -958,7 +958,7 @@ async fn handle_client(
         cursor_stop.clone(),
         touch_for_control.clone(),
         controls.clone(),
-        hello.cursor_overlay,
+        false,
     )
     .await;
     let mut mux_cursor_on_video =

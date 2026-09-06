@@ -84,7 +84,7 @@ class VideoDecoder {
             return
         }
         try {
-            if (!queue.offer(pkt, 8, TimeUnit.MILLISECONDS)) {
+            if (!queue.offer(pkt, 2, TimeUnit.MILLISECONDS)) {
                 Log.w(TAG, "decoder queue full; keeping GOP (not skipping to IDR)")
             }
         } catch (_: InterruptedException) {
