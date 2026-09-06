@@ -1,5 +1,6 @@
 package app.lighting.display
 
+import android.os.ParcelFileDescriptor
 import android.system.Os
 import android.system.OsConstants
 import org.json.JSONArray
@@ -192,14 +193,24 @@ class LitSocket(
         // Android ignores TCP_NODELAY set *before* connect on some pads
         // (Moonlight/scrcpy re-apply after connect). Delayed ACK then
         // parks the host write_all behind 40–200 ms once the 64 KB send
-        // buffer fills (~two P-frames).
+        // buffer fills (~two P-frames). Os.setsockoptInt on the public
+        // ParcelFileDescriptor runs in init — hidden getFileDescriptor$
+        // is greylisted on API 28+.
         tcpNoDelay = true
-        applyTcpQuickAck(this)
     }
     val input = DataInputStream(socket.getInputStream())
     val output = DataOutputStream(socket.getOutputStream())
     private val writeLock = Any()
-    private val tcpFd: FileDescriptor? = socketFileDescriptor(socket)
+    // Keep the dup fd for the socket lifetime. Hidden getFileDescriptor$
+    // is greylisted on API 28+ so QUICKACK used to silently no-op and
+    // delayed ACK still parked host write_all 40–200 ms.
+    private val tcpPfd: ParcelFileDescriptor? = parcelSocketFd(socket)
+    private val tcpFd: FileDescriptor? = tcpPfd?.fileDescriptor?.takeIf { it.valid() }
+        ?: socketFileDescriptor(socket)
+
+    init {
+        applyTcpLowDelay(tcpFd)
+    }
 
     fun read(): LitProtocol.Message {
         val msg = LitProtocol.read(input)
@@ -216,6 +227,10 @@ class LitSocket(
 
     override fun close() {
         try {
+            tcpPfd?.close()
+        } catch (_: Exception) {
+        }
+        try {
             socket.close()
         } catch (_: Exception) {
         }
@@ -225,8 +240,21 @@ class LitSocket(
 /** linux/tcp.h; not always present on OsConstants. */
 private const val TCP_QUICKACK = 12
 
-private fun applyTcpQuickAck(socket: Socket) {
-    applyTcpQuickAck(socketFileDescriptor(socket))
+private fun parcelSocketFd(socket: Socket): ParcelFileDescriptor? {
+    return try {
+        ParcelFileDescriptor.fromSocket(socket)
+    } catch (_: Throwable) {
+        null
+    }
+}
+
+private fun applyTcpLowDelay(fd: FileDescriptor?) {
+    if (fd == null || !fd.valid()) return
+    try {
+        Os.setsockoptInt(fd, OsConstants.IPPROTO_TCP, OsConstants.TCP_NODELAY, 1)
+    } catch (_: Throwable) {
+    }
+    applyTcpQuickAck(fd)
 }
 
 private fun applyTcpQuickAck(fd: FileDescriptor?) {
