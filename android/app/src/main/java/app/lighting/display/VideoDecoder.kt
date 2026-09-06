@@ -291,6 +291,9 @@ class VideoDecoder {
             format.setInteger("latency", 0)
             // MediaTek / Fire TV: ACodec "vdec-lowlatency", not the vendor.mtk.* alias.
             format.setInteger("vdec-lowlatency", 1)
+            // Moonlight: OMX/C2 default output pools are 4-8 pictures.
+            // Cap at 2 (decode + present) so the SoC cannot hold a vsync.
+            format.setInteger("max-output-buffers", 2)
         } catch (_: Throwable) {
         }
         val n = codecName.lowercase()
