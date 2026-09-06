@@ -31,6 +31,7 @@ windows = { version = "0.58", features = [
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Dwm",
+    "Wdk_Graphics_Direct3D",
     "Win32_Media",
     "Win32_Media_Audio",
     "Win32_Networking_WinSock",

@@ -372,6 +372,14 @@ pub fn ffmpeg_output_fps(encode_fps: u32) -> u32 {
     encode_fps.max(1)
 }
 
+/// Sunshine `D3DKMTSetProcessSchedulingPriorityClass(HIGH)`.
+/// A foreground game otherwise starves Desktop Duplication / NVENC on the
+/// same GPU, so the tablet sits a refresh behind the laptop. REALTIME can
+/// freeze NVIDIA + HAGS; HIGH is the safe class.
+pub fn gpu_scheduling_priority_high() -> bool {
+    true
+}
+
 /// Anonymous `CreatePipe` default is 4 KB. A 25 Mbps P-frame is ~26 KB, so
 /// ffmpeg stdout used to land as many short `Read`s and PeekNamedPipe went
 /// quiet between them. 256 KB still hid ~10 pictures at 120 Hz after the
@@ -865,6 +873,7 @@ mod tests {
         assert_eq!(capture_thread_queue_size(), 1);
         assert_eq!(ffmpeg_filter_threads(), 1);
         assert_eq!(cursor_sample_interval_ms(), 1);
+        assert!(gpu_scheduling_priority_high());
         assert_eq!(hw_extra_frames(), 1);
         assert_eq!(hw_extra_frames_fallback(), 2);
         assert_eq!(nvenc_surfaces(), 1);
