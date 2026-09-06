@@ -155,6 +155,12 @@ pub fn ddagrab_duplicate_frames() -> bool {
     false
 }
 
+/// Audio must never drain ahead of a video AU on the same TCP writer.
+/// Keep the latest packet only so loopback cannot HOL-block the desktop.
+pub fn audio_packets_per_video_frame() -> usize {
+    1
+}
+
 /// Encode at least as fast as the tablet refresh so the pad is not waiting
 /// an extra vsync on 60 fps video (GlideX / SuperDisplay do this).
 pub fn encode_fps(req_fps: u32, tablet_max: u32, dec_fps: u32, hw: bool) -> u32 {
@@ -553,6 +559,7 @@ mod tests {
         assert_eq!(encode_fps(60, 90, 60, true), 60);
         assert_eq!(encode_fps(60, 120, 60, false), 45);
         assert_eq!(encode_fps(30, 60, 60, true), 60);
+        assert_eq!(audio_packets_per_video_frame(), 1);
     }
 
     #[test]

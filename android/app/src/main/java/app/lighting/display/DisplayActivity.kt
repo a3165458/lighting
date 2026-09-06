@@ -237,7 +237,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 } catch (_: InterruptedException) {
                     break
                 }
-                val sock = lit
+                val sock = controlLit ?: lit
                 if (sock == null) {
                     Thread.sleep(20)
                     outbound.offer(payload)

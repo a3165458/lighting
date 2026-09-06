@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch, Notify};
 
@@ -166,42 +166,73 @@ async fn classify_incoming(
     })
 }
 
+async fn flush_cursor(
+    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+    slot: &Arc<Mutex<Option<Vec<u8>>>>,
+) -> Result<()> {
+    let payload = slot.lock().ok().and_then(|mut g| g.take());
+    if let Some(payload) = payload {
+        protocol::write_message(writer, protocol::MSG_CURSOR, 0, &payload).await?;
+    }
+    Ok(())
+}
+
 fn spawn_cursor_control(
     incoming: ClassifiedStream,
     slot: Arc<Mutex<Option<Vec<u8>>>>,
     notify: Arc<Notify>,
     stop: Arc<AtomicBool>,
+    touch_tx: std::sync::mpsc::Sender<protocol::TouchEvent>,
+    controls: Arc<Controls>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut writer = incoming.writer;
         let mut reader = incoming.reader;
-        let drain = tokio::spawn(async move {
-            let mut buf = [0u8; 128];
-            loop {
-                match reader.read(&mut buf).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => {}
-                }
-            }
-        });
         while !stop.load(Ordering::Relaxed) {
             tokio::select! {
-                _ = notify.notified() => {}
-                _ = tokio::time::sleep(Duration::from_millis(2)) => {}
-            }
-            let payload = slot.lock().ok().and_then(|mut g| g.take());
-            if let Some(payload) = payload {
-                if protocol::write_message(&mut writer, protocol::MSG_CURSOR, 0, &payload)
-                    .await
-                    .is_err()
-                {
-                    break;
+                msg = protocol::read_message(&mut reader) => {
+                    match msg {
+                        Ok(m) if m.ty == protocol::MSG_TOUCH => {
+                            if !controls.touch.load(Ordering::Relaxed) {
+                                continue;
+                            }
+                            match protocol::TouchEvent::parse(&m.payload) {
+                                Ok(ev) => {
+                                    if touch_tx.send(ev).is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(err) => tracing::warn!("bad control touch: {err:#}"),
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(_) => break,
+                    }
+                }
+                _ = notify.notified() => {
+                    if flush_cursor(&mut writer, &slot).await.is_err() {
+                        break;
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_millis(2)) => {
+                    if flush_cursor(&mut writer, &slot).await.is_err() {
+                        break;
+                    }
                 }
             }
         }
-        drain.abort();
         let _ = writer.shutdown().await;
     })
+}
+
+fn take_latest_audio(
+    rx: &std::sync::mpsc::Receiver<crate::audio::AudioPacket>,
+) -> Option<crate::audio::AudioPacket> {
+    let mut last = None;
+    while let Ok(pkt) = rx.try_recv() {
+        last = Some(pkt);
+    }
+    last
 }
 
 fn add_wire_bytes(status: &Arc<Mutex<SessionStatus>>, bytes: usize) {
@@ -913,6 +944,7 @@ async fn handle_client(
     let ping_reply = ping_sent.clone();
     let status_read = status.clone();
     let controls_read = controls.clone();
+    let touch_for_control = touch_tx.clone();
     let reader_task = tokio::spawn(async move {
         loop {
             if stop_read.load(Ordering::Relaxed) {
@@ -964,9 +996,11 @@ async fn handle_client(
                     cursor_slot.clone(),
                     cursor_notify.clone(),
                     cursor_stop.clone(),
+                    touch_for_control.clone(),
+                    controls.clone(),
                 ));
                 mux_cursor_on_video = false;
-                tracing::info!("cursor on dedicated control socket (GlideX-style)");
+                tracing::info!("cursor+HID on dedicated control socket (GlideX-style)");
             }
         }
         if mux_cursor_on_video {
@@ -979,16 +1013,6 @@ async fn handle_client(
                     break;
                 }
             }
-        }
-        while let Ok(pkt) = audio_rx.try_recv() {
-            let payload = protocol::with_pts(pkt.pts_us, &pkt.pcm);
-            if let Err(err) =
-                protocol::write_message(&mut writer, protocol::MSG_AUDIO, 0, &payload).await
-            {
-                tracing::warn!("send audio failed: {err:#}");
-                break;
-            }
-            add_wire_bytes(&status, payload.len() + HEADER_BYTES);
         }
         if last_ping.elapsed() >= Duration::from_millis(1_000) {
             last_ping = std::time::Instant::now();
@@ -1014,15 +1038,17 @@ async fn handle_client(
                         break;
                     }
                 };
-                while let Ok(ap) = audio_rx.try_recv() {
-                    let audio_payload = protocol::with_pts(ap.pts_us, &ap.pcm);
-                    if protocol::write_message(&mut writer, protocol::MSG_AUDIO, 0, &audio_payload)
-                        .await
-                        .is_err()
-                    {
-                        break;
+                if session_policy::audio_packets_per_video_frame() > 0 {
+                    if let Some(ap) = take_latest_audio(&audio_rx) {
+                        let audio_payload = protocol::with_pts(ap.pts_us, &ap.pcm);
+                        if protocol::write_message(&mut writer, protocol::MSG_AUDIO, 0, &audio_payload)
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        sent += audio_payload.len() + HEADER_BYTES;
                     }
-                    sent += audio_payload.len() + HEADER_BYTES;
                 }
                 if let Ok(mut s) = status.lock() {
                     s.frames += 1;
