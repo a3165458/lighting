@@ -547,7 +547,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private fun applyCursor(update: CursorUpdate?) {
         if (update == null) return
         if (!update.visible) {
-            cursorOverlay.post { cursorOverlay.hidePointer() }
+            cursorOverlay.hidePointer()
             return
         }
         var incoming: Bitmap? = null
@@ -559,38 +559,31 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
             incoming.copyPixelsFromBuffer(ByteBuffer.wrap(shape))
             hotX = update.hotspotX
             hotY = update.hotspotY
+            cursorBitmap = incoming
+            cursorHotX = hotX
+            cursorHotY = hotY
         } else if (cursorBitmap == null) {
             incoming = defaultCursorBitmap()
             hotX = 1
             hotY = 1
+            cursorBitmap = incoming
+            cursorHotX = hotX
+            cursorHotY = hotY
         }
-        val x = update.x
-        val y = update.y
-        val sw = streamW.coerceAtLeast(1)
-        val sh = streamH.coerceAtLeast(1)
-        cursorOverlay.post {
-            if (isFinishing || isDestroyed) {
-                incoming?.recycle()
-                return@post
-            }
-            if (incoming != null) {
-                cursorBitmap?.recycle()
-                cursorBitmap = incoming
-                cursorHotX = hotX
-                cursorHotY = hotY
-                cursorOverlay.setShape(incoming, hotX, hotY)
-            }
-            cursorOverlay.showAt(
-                x,
-                y,
-                sw,
-                sh,
-                surface.left,
-                surface.top,
-                surface.width.coerceAtLeast(1),
-                surface.height.coerceAtLeast(1),
-            )
-        }
+        cursorOverlay.update(
+            visible = true,
+            x = update.x,
+            y = update.y,
+            srcW = streamW.coerceAtLeast(1),
+            srcH = streamH.coerceAtLeast(1),
+            surfaceLeft = surface.left,
+            surfaceTop = surface.top,
+            surfaceW = surface.width.coerceAtLeast(1),
+            surfaceH = surface.height.coerceAtLeast(1),
+            bitmap = incoming,
+            hotspotX = hotX,
+            hotspotY = hotY,
+        )
     }
 
     private fun letterboxSurface(width: Int, height: Int) {

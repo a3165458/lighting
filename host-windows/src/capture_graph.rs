@@ -114,9 +114,11 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
                 "{dda},hwupload=extra_hw_frames={extra},scale_d3d11={dst_w}:{dst_h}:format=nv12"
             ));
         } else {
+            // Stay on D3D11. hwdownload of an identity frame was a full CPU copy.
             graphs.push(format!(
-                "{dda},hwupload=extra_hw_frames={extra},format=d3d11,hwdownload,format=nv12"
+                "{dda},hwupload=extra_hw_frames={extra},format=d3d11"
             ));
+            graphs.push(format!("{dda},hwmap=derive_device=d3d11"));
         }
     }
     if scale {
@@ -197,6 +199,16 @@ mod tests {
             assert!(!g.contains("bitrate"));
             assert!(!g.contains("crf"));
         }
+    }
+
+    #[test]
+    fn amf_identity_stays_on_d3d11() {
+        let graphs = dda_capture_graphs(
+            Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x1002 }),
+            60, 1920, 1080, 1920, 1080, "h264_amf",
+        );
+        assert!(graphs[0].contains("format=d3d11"));
+        assert!(!graphs[0].contains("hwdownload"));
     }
 
     #[test]

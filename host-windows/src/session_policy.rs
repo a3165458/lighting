@@ -144,6 +144,11 @@ pub fn nvenc_surfaces() -> u32 {
     2
 }
 
+/// NVIDIA Spatial AQ is a quality pass. Sunshine keeps it off in ULL.
+pub fn nvenc_spatial_aq() -> bool {
+    false
+}
+
 /// WASAPI shared-mode loopback buffer, 100-ns units. 50 ms was audible lag.
 pub fn wasapi_buffer_hns() -> i64 {
     200_000
@@ -584,6 +589,7 @@ mod tests {
         assert_eq!(cursor_sample_interval_ms(), 1);
         assert_eq!(hw_extra_frames(), 2);
         assert_eq!(nvenc_surfaces(), 2);
+        assert!(!nvenc_spatial_aq());
         assert_eq!(wasapi_buffer_hns(), 200_000);
         assert_eq!(audio_capture_queue(), 2);
         assert!(!ddagrab_duplicate_frames());

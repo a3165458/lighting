@@ -21,7 +21,7 @@ class AudioPlayer(sampleRate: Int, channels: Int) {
         val min = AudioTrack.getMinBufferSize(sampleRate, ch, AudioFormat.ENCODING_PCM_16BIT)
         val attrs = AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_GAME)
-            .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
             .build()
         val format = AudioFormat.Builder()
             .setSampleRate(sampleRate)

@@ -26,7 +26,7 @@ class TouchMapper(private val send: (action: Int, x: Int, y: Int) -> Unit) {
         const val HWHEEL = 7
         private const val TAG = "LightingTouch"
         private const val LONG_PRESS_MS = 480L
-        private const val MOVE_MIN_INTERVAL_MS = 8L
+        private const val MOVE_MIN_INTERVAL_MS = 1L
         private const val WHEEL_PX = 28f
     }
 
