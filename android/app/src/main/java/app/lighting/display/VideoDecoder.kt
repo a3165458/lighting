@@ -201,12 +201,18 @@ class VideoDecoder {
         // max-output-buffers=2 and KEY_PRIORITY=0 ride try 0–6 (vendor-key
         // winners included). C2 reads both at configure(); setParameters
         // after start() does not shrink the pool or switch realtime.
-        // GSI / Treble crash on vendor keys — those stay behind
-        // lowLatencySafe (try 3–5).
+        // lowLatencySafe only widens lastTry to 5 (FEATURE/operating-rate
+        // reject fallbacks). Matching SoC keys ride try 0–lastTry even on
+        // GSI; try 6 / -1 stay without vendor keys.
         if (!software) {
             val lastTry = if (caps.lowLatencySafe) 5 else 2
             for (tryNumber in 0..lastTry) {
-                out.add(buildFormat(width, height, csd, codecName, tryNumber, caps.lowLatencySafe))
+                // Matching SoC keys only. The old GSI crash was dumping
+                // every vendor key on try 0. GSI Qualcomm advertises
+                // FEATURE_LowLatency, so allowVendor=false let try 0
+                // configure() without qti-ext and C2 held a reconstructed
+                // picture like a movie — one refresh vs the laptop.
+                out.add(buildFormat(width, height, csd, codecName, tryNumber, true))
             }
             // GSI / KEY_LOW_LATENCY reject used to skip to try -1 and
             // keep the default 4-8 output pool — one extra decoded
@@ -322,11 +328,13 @@ class VideoDecoder {
                 if (tryNumber < 1 && Build.VERSION.SDK_INT >= 23) {
                     format.setInteger(MediaFormat.KEY_OPERATING_RATE, 32767)
                 }
-                // GSI / Treble crash on a dump of every vendor key.
                 // Matching SoC keys must be on the format that actually
                 // succeeds. A KEY-only try 2 used to configure() and skip
                 // try 3–4, so C2 never got qti-ext. Moonlight keeps the
                 // SoC key through try 4. Try 5 / -1 stay KEY/bare.
+                // Do not return on GSI: FEATURE already won try 0 without
+                // qti-ext (one reconstructed picture). Try 6 / -1 pass
+                // allowVendor=false and still skip the SoC keys below.
                 if (!allowVendor) return
             }
             if (tryNumber < 2 &&
