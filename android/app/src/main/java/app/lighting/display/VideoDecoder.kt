@@ -8,7 +8,6 @@ import android.os.Build
 import android.util.Log
 import android.view.Surface
 import java.nio.ByteBuffer
-import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
 
 class VideoDecoder {
@@ -17,9 +16,7 @@ class VideoDecoder {
     private var mime: String = MediaFormat.MIMETYPE_VIDEO_AVC
     private val running = AtomicBoolean(false)
     private val skipUntilKey = AtomicBoolean(false)
-    private val queue = ArrayBlockingQueue<Packet>(1)
     private val inputLock = Any()
-    private var worker: Thread? = null
     private var presentWorker: Thread? = null
     private var fakePtsUs = 0L
     @Volatile var activeName: String = ""
@@ -62,7 +59,6 @@ class VideoDecoder {
                     skipUntilKey.set(false)
                     fakePtsUs = 0L
                     running.set(true)
-                    worker = Thread({ loop() }, "lighting-decode").apply { start() }
                     presentWorker = Thread({ presentLoop() }, "lighting-present").apply { start() }
                     Log.i(TAG, "decoder ok: ${decoder.name} ${w}x$h $mime soc=${caps.soc} gsi=${caps.gsi}")
                     return
@@ -99,17 +95,10 @@ class VideoDecoder {
         if (enqueueLocked(pkt, 0L)) {
             return
         }
-        if (codecConfig || keyframe) {
-            queue.clear()
-            queue.offer(pkt)
-            return
-        }
-        // Host never drops a live P-frame (`drop_encoded_p_on_backpressure`
-        // is false). Replacing the queued P tears the GOP until the next
-        // IDR (~1 s). Block the TCP reader so ffmpeg skips *input* frames.
-        // queue.offer(4 ms) is not woken when present() frees a buffer —
-        // on a loaded pad that sat every overflow picture on a 4 ms tick
-        // GlideX / Moonlight do not pay. dequeueInputBuffer is.
+        // IDR/CSD used to hop a leftover decode thread via queue.offer.
+        // This reader then offered the next P while the keyframe still
+        // sat on take() — a scheduler slice, and P-before-IDR on a loaded
+        // pad. Block like live P-frames so ffmpeg skips *input* instead.
         while (running.get()) {
             if (enqueueLocked(pkt, 8_000L)) return
         }
@@ -117,68 +106,6 @@ class VideoDecoder {
 
     fun feed(data: ByteArray, codecConfig: Boolean, keyframe: Boolean) {
         offer(data, codecConfig, keyframe, 0L)
-    }
-
-    private fun loop() {
-        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
-        var frames = 0
-        var skips = 0
-        var lagSum = 0L
-        while (running.get()) {
-            val pkt = try {
-                queue.take()
-            } catch (_: InterruptedException) {
-                break
-            }
-            if (codec == null || !configured) continue
-            if (pkt.codecConfig) {
-                enqueueLocked(pkt, 4_000L)
-                continue
-            }
-            if (skipUntilKey.get() && !pkt.keyframe) {
-                skips++
-                continue
-            }
-            var submitted = enqueueLocked(pkt, if (pkt.keyframe) 4_000L else 0L)
-            if (!submitted) {
-                // Present thread owns dequeueOutputBuffer. Wait for it to
-                // free an input slot instead of draining here (that raced).
-                // P-frames: keep retrying. Dropping one tears the GOP until
-                // the next IDR (host does not drop encoded P for the same
-                // reason). Keyframes still arm skipUntilKey after a stall.
-                while (running.get()) {
-                    val retry = if (pkt.keyframe) 16_000L else 8_000L
-                    if (enqueueLocked(pkt, retry)) {
-                        submitted = true
-                        break
-                    }
-                    if (pkt.keyframe) {
-                        skipUntilKey.set(true)
-                        break
-                    }
-                }
-            }
-            if (!submitted) {
-                skips++
-                continue
-            }
-            if (pkt.keyframe) skipUntilKey.set(false)
-            frames++
-            if (pkt.ptsUs > 0) {
-                val now = System.nanoTime() / 1000
-                lagSum += (now - pkt.ptsUs).coerceAtLeast(0)
-            }
-            if (frames % 120 == 0) {
-                val avgLagMs = if (frames > 0) lagSum / frames / 1000 else 0
-                Log.i(
-                    TAG,
-                    "stats decoder=$activeName q=${queue.size} skips=$skips avgLagMs=$avgLagMs",
-                )
-                skips = 0
-                lagSum = 0
-                frames = 0
-            }
-        }
     }
 
     /**
@@ -433,6 +360,9 @@ class VideoDecoder {
         if (Build.VERSION.SDK_INT >= 23) {
             poke(MediaFormat.KEY_PRIORITY, 0)
         }
+        // Configure try 2+ omits vdec-lowlatency. Without this poke,
+        // MTK/Amazon C2 holds a decoded picture (Moonlight MediaCodecHelper).
+        poke("vdec-lowlatency", 1)
         val n = codecName.lowercase()
         when {
             n.startsWith("omx.qcom") || n.startsWith("c2.qti") || n.contains(".qcom.") -> {
@@ -562,8 +492,6 @@ class VideoDecoder {
 
     fun release() {
         running.set(false)
-        queue.clear()
-        worker?.interrupt()
         presentWorker?.interrupt()
         configured = false
         activeName = ""
@@ -572,14 +500,9 @@ class VideoDecoder {
         } catch (_: Exception) {
         }
         try {
-            worker?.join(300)
-        } catch (_: Exception) {
-        }
-        try {
             presentWorker?.join(300)
         } catch (_: Exception) {
         }
-        worker = null
         presentWorker = null
         try {
             codec?.release()
