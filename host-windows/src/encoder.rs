@@ -386,6 +386,10 @@ fn build_args(
     ];
 
     args.extend(capture.device_args());
+    args.extend(lighting_host::capture_graph::extra_hw_device_args(
+        capture,
+        capture_filter,
+    ));
     args.extend([
         "-filter_complex".into(),
         capture_filter.to_string(),
