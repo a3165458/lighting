@@ -1148,27 +1148,25 @@ async fn handle_client(
                 }
             }
         }
-        // Wake as soon as ffmpeg emits an AU. 1 ms std recv_timeout left
-        // each picture sitting until the next poll (GlideX does not).
+        // Wake as soon as ffmpeg emits an AU. tokio mpsc cannot rendezvous
+        // (min cap 1); blocking recv_timeout on std sync_channel(0) runs on
+        // the blocking pool so this worker can still attach control / mux
+        // a fallback cursor. A 1 ms poll left every picture on a tick.
         let tick = if mux_cursor_on_video || control_task.is_none() {
             Duration::from_millis(1)
         } else {
             Duration::from_millis(1_000)
         };
-        let pkt = tokio::select! {
-            biased;
-            pkt = session.rx.recv() => pkt,
-            _ = tokio::time::sleep(tick) => continue,
-        };
-        match pkt {
-            Some(pkt) => {
+        let (next_session, recv_result) = recv_encoded_timeout(session, tick).await;
+        session = next_session;
+        match recv_result {
+            Ok(pkt) => {
                 // One TCP write for this picture plus latest PCM. Separate
                 // write_all on a TCP_NODELAY USB socket was a second reverse
-                // RTT after the AU. Do not try_recv more video: recv() already
-                // freed the 1-deep slot, so the assembler may have pushed the
-                // next AU — coalescing it here parks the first picture for a
-                // whole encode and the ~52 KB write misses the 48 KB send
-                // buffer (USB ACK mid-write). GlideX emits one picture per send.
+                // RTT after the AU. Do not try_recv more video: a rendezvous
+                // send is already waiting, and coalescing it here parks the
+                // first picture for a whole encode. GlideX emits one picture
+                // per send.
                 let mut out = encode_video_packet(t0, &pkt);
                 if session_policy::coalesce_extra_video_on_write() {
                     while let Ok(more) = session.rx.try_recv() {
@@ -1198,7 +1196,8 @@ async fn handle_client(
                     s.connected_secs = t0.elapsed().as_secs();
                 }
             }
-            None => {
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 session.stop();
                 let retry_dda = capture_kind == CaptureKind::Dda && dda_retries < 1;
                 dda_retries = dda_retries.saturating_add(1);
@@ -1293,6 +1292,36 @@ async fn write_video_packet<W: tokio::io::AsyncWrite + Unpin>(
     Ok(payload.len() + HEADER_BYTES)
 }
 
+/// tokio mpsc cannot rendezvous (min cap 1). Move the std receiver onto the
+/// blocking pool so this async worker is free for control-plane attach.
+async fn recv_encoded_timeout(
+    session: encoder::EncoderSession,
+    tick: Duration,
+) -> (
+    encoder::EncoderSession,
+    Result<EncodedPacket, std::sync::mpsc::RecvTimeoutError>,
+) {
+    tokio::task::spawn_blocking(move || {
+        let r = session.rx.recv_timeout(tick);
+        (session, r)
+    })
+    .await
+    .unwrap_or_else(|err| panic!("encoded recv worker: {err}"))
+}
+
+async fn wait_encoder_bootstrap(
+    session: encoder::EncoderSession,
+    hevc: bool,
+) -> Result<(encoder::EncoderSession, Vec<EncodedPacket>)> {
+    tokio::task::spawn_blocking(move || {
+        let pkts = annexb::recv_bootstrap(&session.rx, Duration::from_secs(3), hevc);
+        (session, pkts)
+    })
+    .await
+    .context("encoder bootstrap worker")
+    .and_then(|(session, pkts)| Ok((session, pkts?)))
+}
+
 async fn write_bootstrap<W: tokio::io::AsyncWrite + Unpin>(
     writer: &mut W,
     t0: std::time::Instant,
@@ -1374,8 +1403,8 @@ async fn start_live_encoder(
                         continue;
                     }
                 };
-                match annexb::recv_bootstrap_async(&mut session.rx, Duration::from_secs(3), hevc).await {
-                    Ok(bootstrap) => {
+                match wait_encoder_bootstrap(session, hevc).await {
+                    Ok((session, bootstrap)) => {
                         let virtual_output = display.is_virtual;
                         tracing::info!(
                             "using encoder {enc} graph={graph} surfaces={surfaces} rc={rc} (dda virtual={virtual_output})"
@@ -1442,8 +1471,8 @@ async fn restart_encoder_with_bootstrap(
                     continue;
                 }
             };
-            match annexb::recv_bootstrap_async(&mut session.rx, Duration::from_secs(3), hevc).await {
-                Ok(bootstrap) => {
+            match wait_encoder_bootstrap(session, hevc).await {
+                Ok((session, bootstrap)) => {
                     tracing::info!("gdigrab bootstrap ok with {enc} surfaces={surfaces} rc={rc}");
                     return Ok((session, bootstrap));
                 }

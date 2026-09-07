@@ -5,6 +5,7 @@ use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -53,7 +54,7 @@ pub struct EncodeSettings {
 
 pub struct EncoderSession {
     child: Option<Child>,
-    pub rx: tokio::sync::mpsc::Receiver<EncodedPacket>,
+    pub rx: mpsc::Receiver<EncodedPacket>,
     boost_stop: Option<Arc<AtomicBool>>,
 }
 
@@ -176,10 +177,12 @@ pub fn start_encoder(
 fn spawn_annexb_pump(
     stdout: impl std::io::Read + AsRawHandle + Send + 'static,
     hevc: bool,
-) -> tokio::sync::mpsc::Receiver<EncodedPacket> {
-    // One encoded AU: a deeper queue is glass latency, not a USB cushion.
-    let cap = lighting_host::session_policy::encoded_queue_capacity().max(1);
-    let (tx, rx) = tokio::sync::mpsc::channel(cap);
+) -> mpsc::Receiver<EncodedPacket> {
+    // tokio mpsc cannot rendezvous (min cap 1). That parked one encoded AU
+    // while TCP write_all flushed the previous picture — one extra refresh
+    // vs GlideX. std sync_channel(0) matches annexb_raw. Do not `.max(1)`.
+    let cap = lighting_host::session_policy::encoded_queue_capacity();
+    let (tx, rx) = mpsc::sync_channel(cap);
     thread::spawn(move || {
         raise_thread_priority();
         if let Err(err) = annexb::pump_annexb_with_available(stdout, tx, hevc, |s| pipe_bytes_available(s)) {

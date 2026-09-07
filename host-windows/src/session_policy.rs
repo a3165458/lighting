@@ -111,9 +111,14 @@ pub fn usb2_can_carry_bitrate_kbps(bitrate_kbps: u32) -> bool {
     bitrate_kbps <= 80_000
 }
 
-/// Encoded AU queue. Deep enough to absorb an IDR spike without tearing a GOP.
+/// Encoded assembler→TCP-write queue. tokio `mpsc` cannot rendezvous
+/// (min cap 1); that parked one 48 KB P while `write_all` flushed the
+/// previous picture — one extra refresh vs GlideX. 0 is a std
+/// `sync_channel` rendezvous: ffmpeg's pipe backs up one picture
+/// earlier and ddagrab skips *input*. Do not `.max(1)` at the call
+/// site. IDR spikes wait on the socket instead of hiding a GOP in RAM.
 pub fn encoded_queue_capacity() -> usize {
-    1
+    0
 }
 
 /// Drain extra encoded AUs into the same TCP write. After `recv` unblocks
@@ -126,10 +131,10 @@ pub fn coalesce_extra_video_on_write() -> bool {
 }
 
 /// Raw annexb reader→assembler queue. 8 held ~8 AUs (60–130 ms at 120 Hz)
-/// so ffmpeg never saw backpressure and `encoded_queue_capacity(1)` could
+/// so ffmpeg never saw backpressure and a 1-deep encoded queue could
 /// not make it skip *input* frames. 2 still parked the next AU's
-/// Data+Quiet while `push_blocking` waited on the 1-deep encoded
-/// channel — one extra refresh next to the laptop. 1 still parks one
+/// Data+Quiet while `push_blocking` waited on the encoded send
+/// — one extra refresh next to the laptop. 1 still parks one
 /// chunk (a full 25 Mbps P at the 48 KB pipe) while the assembler
 /// blocks on encoded-queue send. 0 is a rendezvous: the reader cannot
 /// take the next ffmpeg write until the assembler has the current
@@ -1746,10 +1751,29 @@ Current AC Power Setting Index: 0x00000003
     #[test]
     fn encoded_backpressure_does_not_tear_gop() {
         assert!(!drop_encoded_p_on_backpressure());
-        assert_eq!(encoded_queue_capacity(), 1);
+        assert_eq!(encoded_queue_capacity(), 0);
         assert_eq!(annexb_raw_queue_capacity(), 0);
         assert_eq!(capture_thread_queue_size(), 1);
         assert!(!coalesce_extra_video_on_write());
+    }
+
+    #[test]
+    fn encoded_queue_rendezvous_does_not_park_an_au() {
+        assert_eq!(encoded_queue_capacity(), 0);
+        let (tx, rx) = std::sync::mpsc::sync_channel::<u8>(encoded_queue_capacity());
+        let done = std::thread::spawn(move || {
+            tx.send(1).unwrap();
+            tx.send(2).unwrap();
+        });
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(
+            done.is_finished(),
+            false,
+            "rendezvous must block before recv; a cap-1 queue would park 1"
+        );
+        assert_eq!(rx.recv().unwrap(), 1);
+        assert_eq!(rx.recv().unwrap(), 2);
+        done.join().unwrap();
     }
 
     #[test]
