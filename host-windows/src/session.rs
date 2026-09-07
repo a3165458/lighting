@@ -960,9 +960,9 @@ async fn handle_client(
     // parked the tablet on "avc … 等待关键帧" for the whole graph bootstrap,
     // then reconnect if the pipe died before IDR.
     let hevc = codec.eq_ignore_ascii_case("hevc") || codec.eq_ignore_ascii_case("h265");
-    let (mut session, bootstrap, mut capture_kind) =
+    let (session, bootstrap, capture_kind) =
         start_live_encoder(&ffmpeg, &display, &settings, hevc).await?;
-    let mut dda_retries = 0u8;
+    let dda_retries = 0u8;
 
     let payload = serde_json::to_vec(&cfg)?;
     protocol::write_message(&mut writer, protocol::MSG_CONFIG, 0, &payload).await?;
@@ -1155,7 +1155,7 @@ async fn handle_client(
         .context("video write thread")?;
 
     let mut wait_control = control_task.is_none();
-    let session = loop {
+    let mut session = loop {
         tokio::select! {
             biased;
             back = &mut done_rx => {
