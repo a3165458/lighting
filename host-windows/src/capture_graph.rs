@@ -180,9 +180,9 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
                 "{dda},hwmap=derive_device=d3d11:extra_hw_frames=0"
             ));
             graphs.push(format!("{dda},format=d3d11"));
-            graphs.push(format!(
-                "{dda},hwupload=extra_hw_frames=0,format=d3d11"
-            ));
+            // hwupload wants sysmem. A D3D11 graph that survived configure()
+            // copies GPU→CPU→GPU every picture — same trap as hwupload_cuda.
+            // Device reject falls through to CPU bilinear.
         }
     }
     if scale {
@@ -353,6 +353,7 @@ mod tests {
         assert!(graphs.iter().any(|g| g.contains("hwmap=derive_device=d3d11:extra_hw_frames=0")));
         assert!(!graphs.iter().any(|g| g.contains("hwmap=derive_device=d3d11") && !g.contains("extra_hw_frames")));
         assert!(graphs.iter().any(|g| g.contains("format=d3d11")));
+        assert!(!graphs.iter().any(|g| g.contains("hwupload")));
         let scaled = dda_capture_graphs(
             Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x1002 }),
             60, 2560, 1440, 1920, 1080, "h264_amf",

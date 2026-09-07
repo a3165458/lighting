@@ -367,6 +367,11 @@ class VideoDecoder {
                 qcom -> {
                     if (tryNumber < 4) {
                         format.setInteger("vendor.qti-ext-dec-picture-order.enable", 1)
+                        // Default in-flight decode is 4 pictures on many
+                        // C2.qti builds (~32 ms at 120 Hz). Moonlight only
+                        // flips enable; 1 is the ULL cap. Try 4 keeps enable
+                        // if this unknown key rejects configure().
+                        format.setInteger("vendor.qti-ext-dec-low-latency.num-decode-frames", 1)
                     }
                     if (tryNumber < 5) {
                         format.setInteger("vendor.qti-ext-dec-low-latency.enable", 1)
@@ -459,6 +464,7 @@ class VideoDecoder {
             n.startsWith("omx.qcom") || n.startsWith("c2.qti") || n.contains(".qcom.") -> {
                 poke("vendor.qti-ext-dec-picture-order.enable", 1)
                 poke("vendor.qti-ext-dec-low-latency.enable", 1)
+                poke("vendor.qti-ext-dec-low-latency.num-decode-frames", 1)
             }
             n.startsWith("omx.hisi") || n.startsWith("c2.hisi") || n.contains("kirin") -> {
                 poke("vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-req", 1)
