@@ -394,29 +394,32 @@ class VideoDecoder {
             when {
                 qcom -> {
                     if (tryNumber < 4) {
-                        format.setInteger("vendor.qti-ext-dec-picture-order.enable", 1)
                         // Default in-flight decode is 4 pictures on many
                         // C2.qti builds (~32 ms at 120 Hz). Moonlight only
-                        // flips enable; 1 is the ULL cap. Try 4 keeps enable
-                        // if this unknown key rejects configure().
+                        // flips enable; 1 is the ULL cap. Try 4 keeps
+                        // picture-order + enable if this unknown key
+                        // rejects configure().
                         format.setInteger("vendor.qti-ext-dec-low-latency.num-decode-frames", 1)
                     }
                     if (tryNumber < 5) {
+                        // Display-order bypass. Bound to try 3 with
+                        // num-decode-frames, a reject skipped try 4 and
+                        // C2 held a reconstructed picture for VUI.
+                        format.setInteger("vendor.qti-ext-dec-picture-order.enable", 1)
                         format.setInteger("vendor.qti-ext-dec-low-latency.enable", 1)
                     }
                 }
                 n.startsWith("omx.hisi") || n.startsWith("c2.hisi") || n.contains("kirin") -> {
-                    if (tryNumber < 4) {
+                    if (tryNumber < 5) {
                         format.setInteger("vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-req", 1)
                         format.setInteger("vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-rdy", -1)
                     }
                 }
                 n.startsWith("omx.exynos") || n.startsWith("c2.exynos") || n.contains(".sec.") || n.contains("samsung") -> {
                     if (tryNumber < 4) {
-                        format.setInteger("vendor.rtc-ext-dec-low-latency.enable", 1)
                         // Pixel Tensor is also c2.exynos (Google). sec-ext is
                         // Samsung C2; an unknown vendor key fails configure()
-                        // and skips rtc-ext. Only Samsung/SEC get both.
+                        // and used to skip rtc-ext. Only Samsung/SEC get both.
                         if (n.contains(".sec.") || n.contains("samsung") ||
                             android.os.Build.MANUFACTURER.equals("samsung", true)
                         ) {
@@ -427,9 +430,12 @@ class VideoDecoder {
                             format.setInteger("vendor.sec-ext-dec-picture-order.enable", 1)
                         }
                     }
+                    if (tryNumber < 5) {
+                        format.setInteger("vendor.rtc-ext-dec-low-latency.enable", 1)
+                    }
                 }
                 n.startsWith("omx.amlogic") || n.startsWith("c2.amlogic") -> {
-                    if (tryNumber < 4) {
+                    if (tryNumber < 5) {
                         format.setInteger("vendor.low-latency.enable", 1)
                     }
                 }
