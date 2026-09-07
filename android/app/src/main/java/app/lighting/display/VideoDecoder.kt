@@ -267,20 +267,6 @@ class VideoDecoder {
             } catch (_: Throwable) {
             }
         }
-        if (Build.VERSION.SDK_INT >= 31) {
-            try {
-                // Encoder is IPPP / no B-frames. Default reorder depth is 2
-                // pictures (~16–32 ms) even when the SPS already says 0.
-                format.setInteger(MediaFormat.KEY_OUTPUT_REORDER_DEPTH, 0)
-                // Ask C2 to emit SDR even if VUI looks unspecified after
-                // annexb strips timing/HRD. Unsupported → 0 after configure.
-                format.setInteger(
-                    MediaFormat.KEY_COLOR_TRANSFER_REQUEST,
-                    MediaFormat.COLOR_TRANSFER_SDR_VIDEO,
-                )
-            } catch (_: Throwable) {
-            }
-        }
         if (tryNumber >= 0) {
             applyLowLatencyOptions(format, codecName, tryNumber, allowVendor)
         }
@@ -324,6 +310,19 @@ class VideoDecoder {
             // it on try 6 used to skip straight to bare try -1 (4–8 slots).
             if (tryNumber < 6) {
                 format.setInteger("max-output-buffer-count", 2)
+            }
+            if (Build.VERSION.SDK_INT >= 31) {
+                // Encoder is IPPP / no B-frames. Default reorder depth is 2
+                // pictures (~16–32 ms) even when the SPS already says 0.
+                // Not on try -1: a reject used to fail every hardware try
+                // and fall through to software (a GOP of glass vs GlideX).
+                format.setInteger(MediaFormat.KEY_OUTPUT_REORDER_DEPTH, 0)
+                // Ask C2 to emit SDR even if VUI looks unspecified after
+                // annexb strips timing/HRD. Unsupported → 0 after configure.
+                format.setInteger(
+                    MediaFormat.KEY_COLOR_TRANSFER_REQUEST,
+                    MediaFormat.COLOR_TRANSFER_SDR_VIDEO,
+                )
             }
             if (Build.VERSION.SDK_INT >= 23) {
                 // 0 = realtime / ahead of vsync. C2 reads this at
@@ -475,6 +474,10 @@ class VideoDecoder {
         }
         if (Build.VERSION.SDK_INT >= 31) {
             poke(MediaFormat.KEY_ALLOW_FRAME_DROP, 1)
+            // Try -1 omits this at configure() so a reject cannot skip
+            // hardware. C2 that already configured still honors a poke
+            // and drops the 2-picture default reorder (~16–32 ms).
+            poke(MediaFormat.KEY_OUTPUT_REORDER_DEPTH, 0)
         }
         // Configure try 2+ omits vdec-lowlatency. Without this poke,
         // MTK/Amazon C2 holds a decoded picture (Moonlight MediaCodecHelper).
