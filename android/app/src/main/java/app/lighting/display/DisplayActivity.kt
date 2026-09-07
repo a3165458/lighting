@@ -217,14 +217,24 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 if (Build.VERSION.SDK_INT >= 31) {
                     DisplayApis.setPreferredRefreshRange(lp, peakHz)
                 }
+                // Put ALLM on the LayoutParams before the write.
+                // attributes= used to drop PhoneWindow's prefer-minimal
+                // flag and SurfaceFlinger kept a post-processing vsync.
+                if (Build.VERSION.SDK_INT >= 30) {
+                    lp.preferMinimalPostProcessing = true
+                }
                 window.attributes = lp
-                // AppCompat PhoneWindow exists only after super.onCreate.
-                // Writing attributes here dropped ALLM (manifest
-                // preferMinimalPostProcessing) on some pads, so
-                // SurfaceFlinger kept a post-processing vsync GlideX /
-                // Moonlight do not pay. Re-assert after every write.
                 if (Build.VERSION.SDK_INT >= 30) {
                     window.setPreferMinimalPostProcessing(true)
+                }
+                // Android 15 VRR "balanced" recaps a 120 Hz game window
+                // to 60 to save power — every picture waits a vsync the
+                // laptop does not. GlideX / Moonlight opt out.
+                if (Build.VERSION.SDK_INT >= 35) {
+                    try {
+                        window.setFrameRatePowerSavingsBalanced(false)
+                    } catch (_: Throwable) {
+                    }
                 }
             } catch (_: Throwable) {
             }
