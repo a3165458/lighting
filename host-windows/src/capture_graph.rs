@@ -113,27 +113,13 @@ pub fn dda_capture_graphs_for(
     dda_encoder_graphs(&dda, scale, dst_w, dst_h, encoder)
 }
 
-fn hw_frame_pool_sizes() -> Vec<u32> {
-    crate::session_policy::hw_extra_frame_attempts()
-}
-
 fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &str) -> Vec<String> {
     let mut graphs = Vec::new();
-    let extras = hw_frame_pool_sizes();
     if encoder.contains("nvenc") {
-        // ffmpeg vf_scale_d3d11.c hardcodes initial_pool_size = 10 and only
-        // adds extra_hw_frames when > 0. extra_hw_frames=0 is still ten GPU
-        // pictures in flight — GlideX / Sunshine native DDA has none.
+        // ffmpeg vf_scale_d3d11.c hardcodes initial_pool_size = 10 and
+        // always succeeds, so it must never be in the list or CUDA / CPU
+        // never go live (ten pictures of glass vs GlideX native DDA).
         // Identity: ddagrab is already D3D11 BGRA and NVENC accepts D3D11.
-        // Try that first. BGRA reject must NOT fall into scale_d3d11:
-        // that filter hardcodes a 10-frame pool and always *succeeds*,
-        // so a later CUDA graph is never live. scale_cuda's pool is
-        // dynamic (Sunshine / GlideX native DDA has none).
-        let d3d11 = if scale {
-            format!("scale_d3d11=width={dst_w}:height={dst_h}:format=nv12")
-        } else {
-            "scale_d3d11=format=nv12".to_string()
-        };
         let cuda = if scale {
             format!("scale_cuda={dst_w}:{dst_h}:format=nv12")
         } else {
@@ -142,30 +128,28 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
         if !scale {
             graphs.push(dda.to_string());
         }
-        // One CUDA try at extra=0. extra=1/2 cannot beat a working extra=0
-        // graph, and unkeyed hwmap keeps ffmpeg's 16-frame default pool.
-        // scale_cuda's own pool is dynamic. hwupload is the sysmem fallback
-        // if D3D11→CUDA map is unavailable. Encoder adds cuda@capture.
+        // extra=0 only. Unkeyed hwmap keeps ffmpeg's 16-frame default.
+        // mode=direct maps D3D11 textures; if that FATAL-rejects (format),
+        // a copy hwmap still stays on CUDA. hwupload_cuda of a D3D11 frame
+        // often FATAL-rejects (it wants sysmem). Encoder adds cuda@capture.
         graphs.push(format!(
             "{dda},hwmap=derive_device=cuda:mode=direct:extra_hw_frames=0,{cuda}:extra_hw_frames=0"
+        ));
+        graphs.push(format!(
+            "{dda},hwmap=derive_device=cuda:extra_hw_frames=0,{cuda}:extra_hw_frames=0"
         ));
         graphs.push(format!(
             "{dda},hwupload_cuda=extra_hw_frames=0,{cuda}:extra_hw_frames=0"
         ));
         if !scale {
-            for extra in &extras {
-                graphs.push(format!(
-                    "{dda},hwmap=derive_device=d3d11:extra_hw_frames={extra}"
-                ));
-            }
+            graphs.push(format!(
+                "{dda},hwmap=derive_device=d3d11:extra_hw_frames=0"
+            ));
         }
-        // scale_d3d11 floor is 10 with or without extra_hw_frames. One try.
-        graphs.push(format!("{dda},{d3d11}:extra_hw_frames=0"));
     }
     if encoder.contains("qsv") {
         // ddagrab is D3D11. hwmap first avoids a sysmem upload (~1–2 ms).
-        // Same trap as NVENC: unkeyed hwmap still succeeds and keeps the
-        // default 16-frame pool. Try extra_hw_frames=0 first.
+        // Unkeyed hwmap still succeeds and keeps the default 16-frame pool.
         // Identity: scale_qsv with w/h is a VPP resize even at 1:1. Format
         // convert only, matching Sunshine ULL (no extra scale pass).
         let qsv = if scale {
@@ -173,25 +157,23 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
         } else {
             "scale_qsv=format=nv12".to_string()
         };
-        // extra=0 only. extra=1/2 cannot beat a working extra=0 graph, and
-        // unkeyed hwmap keeps ffmpeg's 16-frame default. Encoder adds
-        // qsv@capture so this is not a 3s reject into hwupload sysmem.
+        // extra=0 only. Encoder adds qsv@capture so this is not a 3s reject
+        // into hwupload sysmem. Key the hwupload-path hwmap too — an
+        // unkeyed derive still allocates ffmpeg's 16-frame default.
         graphs.push(format!(
             "{dda},hwmap=derive_device=qsv:extra_hw_frames=0,{qsv}:extra_hw_frames=0"
         ));
         graphs.push(format!(
-            "{dda},hwupload=extra_hw_frames=0,hwmap=derive_device=qsv,{qsv}:extra_hw_frames=0"
+            "{dda},hwupload=extra_hw_frames=0,hwmap=derive_device=qsv:extra_hw_frames=0,{qsv}:extra_hw_frames=0"
         ));
     }
     if encoder.contains("amf") {
         if scale {
             // vpp_amf is AMF's own scaler (dynamic pool). scale_d3d11
-            // hardcodes 10 and always succeeds, so it must not be first.
+            // hardcodes 10 and always succeeds, so it must never be in
+            // the list or CPU bilinear never goes live.
             graphs.push(format!(
                 "{dda},hwmap=derive_device=amf:extra_hw_frames=0,vpp_amf=w={dst_w}:h={dst_h}:format=nv12:extra_hw_frames=0"
-            ));
-            graphs.push(format!(
-                "{dda},scale_d3d11=width={dst_w}:height={dst_h}:format=nv12:extra_hw_frames=0"
             ));
         } else {
             // Stay on D3D11. hwupload of an identity frame is a copy.
@@ -200,17 +182,13 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
             // still wraps a derived frames context — try raw ddagrab
             // first (same as identity NVENC). Device reject falls through.
             graphs.push(dda.to_string());
-            for extra in &extras {
-                graphs.push(format!(
-                    "{dda},hwmap=derive_device=d3d11:extra_hw_frames={extra}"
-                ));
-            }
+            graphs.push(format!(
+                "{dda},hwmap=derive_device=d3d11:extra_hw_frames=0"
+            ));
             graphs.push(format!("{dda},format=d3d11"));
-            for extra in &extras {
-                graphs.push(format!(
-                    "{dda},hwupload=extra_hw_frames={extra},format=d3d11"
-                ));
-            }
+            graphs.push(format!(
+                "{dda},hwupload=extra_hw_frames=0,format=d3d11"
+            ));
         }
     }
     if scale {
@@ -285,14 +263,18 @@ mod tests {
         let graphs = dda_capture_graphs(Some(capture), 60, 2560, 1440, 1920, 1080, "h264_nvenc");
         assert!(graphs.len() >= 3);
         // Resize: scale_d3d11 always succeeds with a 10-frame GPU pool, so
-        // it must not be first or CUDA is never live.
+        // it must not be in the list or CUDA / CPU never go live.
         assert!(graphs[0].contains("hwmap=derive_device=cuda:mode=direct:extra_hw_frames=0"));
         assert!(graphs[0].contains("scale_cuda=1920:1080:format=nv12"));
         assert!(!graphs[0].contains("scale_d3d11"));
         assert!(!graphs[0].contains("hwupload_cuda"));
+        assert!(!graphs.iter().any(|g| g.contains("scale_d3d11")));
         let cuda_at = graphs.iter().position(|g| g.contains("scale_cuda")).unwrap();
-        let d3d_at = graphs.iter().position(|g| g.contains("scale_d3d11")).unwrap();
-        assert!(cuda_at < d3d_at);
+        let cpu_at = graphs.iter().position(|g| g.contains("hwdownload")).unwrap();
+        assert!(cuda_at < cpu_at);
+        assert!(graphs.iter().any(|g| {
+            g.contains("hwmap=derive_device=cuda:extra_hw_frames=0") && !g.contains("mode=direct")
+        }));
         // Unkeyed CUDA hwmap is the 16-frame default pool — never emit it.
         assert!(!graphs.iter().any(|g| g.contains("derive_device=cuda") && !g.contains("extra_hw_frames")));
         assert_eq!(
@@ -340,10 +322,9 @@ mod tests {
         assert!(!same[0].contains("hwmap"));
         assert!(same[0].starts_with("ddagrab="));
         let cuda_at = same.iter().position(|g| g.contains("scale_cuda")).unwrap();
-        let d3d_at = same.iter().position(|g| g.contains("scale_d3d11")).unwrap();
-        assert!(cuda_at < d3d_at, "BGRA reject must try CUDA before scale_d3d11");
-        assert!(same.iter().any(|g| g.contains("scale_d3d11=format=nv12:extra_hw_frames=0")));
-        assert!(!same.iter().any(|g| g.contains("scale_d3d11") && g.contains("width=")));
+        let cpu_at = same.iter().position(|g| g.contains("hwdownload")).unwrap();
+        assert!(cuda_at < cpu_at, "BGRA reject must try CUDA before CPU download");
+        assert!(!same.iter().any(|g| g.contains("scale_d3d11")));
         assert!(same.iter().any(|g| g.contains("scale_cuda=format=nv12") && !g.contains("1920:1080")));
         assert!(!same.iter().any(|g| g.contains("derive_device=cuda") && !g.contains("extra_hw_frames")));
         let scaled = dda_capture_graphs(
@@ -383,7 +364,7 @@ mod tests {
             60, 2560, 1440, 1920, 1080, "h264_amf",
         );
         assert!(scaled[0].contains("vpp_amf=w=1920:h=1080:format=nv12"));
-        assert!(!scaled[0].contains("scale_d3d11"));
+        assert!(!scaled.iter().any(|g| g.contains("scale_d3d11")));
         let cap = DxgiCapture { adapter_index: 1, output_index: 0, vendor_id: 0x1002 };
         assert_eq!(
             extra_hw_device_args(cap, &scaled[0]),
