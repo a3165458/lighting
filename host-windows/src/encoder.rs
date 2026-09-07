@@ -589,6 +589,8 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "0".into(),
             "-zerolatency".into(),
             "1".into(),
+            "-ldkfs".into(),
+            lighting_host::session_policy::nvenc_ldkfs().to_string(),
             "-b_ref_mode".into(),
             "0".into(),
             // Sunshine disables Spatial AQ for ULL: CUDA complexity scan can
