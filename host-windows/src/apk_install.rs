@@ -53,6 +53,30 @@ pub fn default_stream_port() -> u16 {
     17400
 }
 
+/// Parse `adb devices` stdout. UI listing still dumps the package version;
+/// the USB reverse path must not — Honor `dumpsys package` after IddCx
+/// re-enum is what left HA18C874 visible while 127.0.0.1:17400 stayed dead.
+pub fn parse_adb_ready_serials(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('*') {
+                return None;
+            }
+            let mut parts = line.split_whitespace();
+            let serial = parts.next().unwrap_or("");
+            let state = parts.next().unwrap_or("");
+            if serial.is_empty() || state != "device" {
+                None
+            } else {
+                Some(serial.to_string())
+            }
+        })
+        .collect()
+}
+
 /// `adb install` flags after `-s <serial> install`.
 /// `-r` replace, `-d` downgrade, `-g` grant, `-t` test-only (CI debug APK).
 pub fn install_replace_flags() -> &'static [&'static str] {
@@ -266,6 +290,13 @@ mod tests {
             am_start_succeeded("Permission Denial: starting Intent not exported"),
             false
         );
+    }
+
+    #[test]
+    fn adb_devices_ready_serials_ignore_offline() {
+        let stdout = "List of devices attached\nHA18C874\tdevice\nemulator-5554\toffline\nXYZ\tunauthorized\n";
+        assert_eq!(parse_adb_ready_serials(stdout), vec!["HA18C874".to_string()]);
+        assert!(parse_adb_ready_serials("List of devices attached\n").is_empty());
     }
 
     #[test]

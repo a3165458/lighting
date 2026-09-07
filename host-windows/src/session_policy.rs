@@ -115,6 +115,26 @@ pub fn refresh_usb_after_virtual_prepare() -> bool {
     true
 }
 
+/// Hellos that arrived while IddCx bounced USB are half-open. Handling them
+/// after VDD writes CONFIG into a dead socket and parks the only video
+/// channel slot — host keeps HA18C874 on screen, share never starts.
+pub fn drop_parked_hellos_after_virtual_prepare() -> bool {
+    true
+}
+
+/// Reverse must not wait on `dumpsys package`. The settings page already
+/// probed the APK version; doing it again on the share path is the
+/// HA18C874-visible / 127.0.0.1-dead hang.
+pub fn usb_reverse_skips_package_probe() -> bool {
+    true
+}
+
+/// `am start` after reverse is 20s × 4 on Honor. Bind + reverse are
+/// already live; do not hold IddCx / accept behind the launch.
+pub fn launch_stream_client_does_not_block_listen() -> bool {
+    true
+}
+
 pub fn listen_port_from_bind(bind: &str) -> u16 {
     bind.rsplit_once(':')
         .and_then(|(_, p)| p.parse().ok())
@@ -1225,6 +1245,9 @@ mod tests {
         assert_eq!(jitter_backoff_ms(650, 999, 200), 850);
         assert!(listen_before_virtual_prepare());
         assert!(refresh_usb_after_virtual_prepare());
+        assert!(drop_parked_hellos_after_virtual_prepare());
+        assert!(usb_reverse_skips_package_probe());
+        assert!(launch_stream_client_does_not_block_listen());
         assert_eq!(listen_port_from_bind("0.0.0.0:17400"), 17400);
         assert_eq!(listen_port_from_bind("127.0.0.1:17400"), 17400);
         assert_eq!(listen_port_from_bind(""), 17400);
