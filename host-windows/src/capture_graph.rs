@@ -126,13 +126,13 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
             "scale_cuda=format=nv12".to_string()
         };
         if !scale {
-            // ddagrab hardcodes initial_pool_size = 8. Raw identity always
-            // configures, so the extra=0 CUDA wrap never ran and every
-            // picture sat in an 8-deep D3D11 queue — vs GlideX native DDA
-            // (1–2 surfaces). Cap first; mode=direct maps BGRA without a
-            // GPU copy. Unkeyed hwmap is ffmpeg's 16-frame default.
-            // Raw dda stays as the 8-pool fallback if extra=0 never emits IDR.
-            graphs.push(format!("{dda},hwmap=mode=direct:extra_hw_frames=0"));
+            // ddagrab hardcodes initial_pool_size = 8. hwmap mode=direct
+            // only derives that same pool (extra_hw_frames is ignored).
+            // reverse=1 is the path that allocates a new context:
+            // initial_pool_size = 2 + extra_hw_frames. extra=0 → 2 surfaces,
+            // matching Sunshine / GlideX native DDA. Raw dda stays as the
+            // 8-pool fallback if reverse never emits IDR.
+            graphs.push(format!("{dda},hwmap=reverse=1:extra_hw_frames=0"));
             graphs.push(dda.to_string());
         }
         // extra=0 only. Unkeyed hwmap keeps ffmpeg's 16-frame default.
@@ -180,10 +180,10 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
             "vpp_amf=format=nv12".to_string()
         };
         if !scale {
-            // Same 8-pool trap as NVENC identity: raw dda always
-            // configures and never reaches extra=0. Cap first; raw
-            // dda stays as the fallback if extra=0 never emits IDR.
-            graphs.push(format!("{dda},hwmap=mode=direct:extra_hw_frames=0"));
+            // Same 8-pool trap as NVENC identity: mode=direct derived
+            // hwmap does not shrink ddagrab. reverse=1 extra=0 is a
+            // 2-surface pool; raw dda stays as the 8-pool fallback.
+            graphs.push(format!("{dda},hwmap=reverse=1:extra_hw_frames=0"));
             graphs.push(dda.to_string());
         }
         // extra=0 only. Encoder adds amf@capture. mode=direct maps D3D11
@@ -331,8 +331,10 @@ mod tests {
             Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x10DE }),
             60, 1920, 1080, 1920, 1080, "h264_nvenc",
         );
-        // Identity: cap ddagrab's 8-pool before raw dda succeeds.
-        assert!(same[0].contains("hwmap=mode=direct:extra_hw_frames=0"));
+        // Identity: reverse hwmap is the only path that applies
+        // extra_hw_frames (pool = 2 + extra). mode=direct derived does not.
+        assert!(same[0].contains("hwmap=reverse=1:extra_hw_frames=0"));
+        assert!(!same[0].contains("mode=direct"));
         assert!(!same[0].contains("scale_d3d11"));
         assert!(!same[0].contains("scale_cuda"));
         assert!(!same[0].contains("derive_device"));
@@ -371,8 +373,10 @@ mod tests {
             Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x1002 }),
             60, 1920, 1080, 1920, 1080, "h264_amf",
         );
-        // Identity: cap ddagrab's 8-pool before raw dda succeeds.
-        assert!(graphs[0].contains("hwmap=mode=direct:extra_hw_frames=0"));
+        // Identity: reverse hwmap is the only path that applies
+        // extra_hw_frames (pool = 2 + extra). mode=direct derived does not.
+        assert!(graphs[0].contains("hwmap=reverse=1:extra_hw_frames=0"));
+        assert!(!graphs[0].contains("mode=direct"));
         assert!(!graphs[0].contains("derive_device"));
         assert!(!graphs[0].contains("hwupload"));
         assert!(!graphs[0].contains("hwdownload"));
