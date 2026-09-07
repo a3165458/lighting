@@ -501,6 +501,13 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                                 surface.holder.setFixedSize(cfg.width, cfg.height)
                             } catch (_: Throwable) {
                             }
+                            // Pin Hz + 2-buffer queue before MediaCodec
+                            // attaches. After start() SurfaceFlinger rebuilds
+                            // the queue (one extra glass frame).
+                            try {
+                                applySurfaceFrameRate(surface.holder.surface)
+                            } catch (_: Throwable) {
+                            }
                             decoder.configure(
                                 cfg.codec,
                                 cfg.width,
@@ -770,6 +777,15 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     SurfaceControl.FRAME_RATE_SELECTION_STRATEGY_OVERRIDE_CHILDREN,
                 )
             } catch (_: Throwable) {
+            }
+            if (Build.VERSION.SDK_INT >= 34) {
+                try {
+                    // SurfaceView default BufferQueue is 3. The extra slot
+                    // holds a decoded picture until the next vsync — one
+                    // refresh vs the laptop. 2 is ping-pong; 1 tears.
+                    tx.setBufferMaxCount(sc, 2)
+                } catch (_: Throwable) {
+                }
             }
             tx.apply()
         } catch (_: Throwable) {
