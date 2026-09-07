@@ -22,12 +22,18 @@ fn adb_command(adb: &Path) -> Command {
     cmd
 }
 
-async fn adb_output(mut cmd: Command, max: Duration) -> Result<std::process::Output, String> {
+async fn adb_output(cmd: &mut Command, max: Duration) -> Result<std::process::Output, String> {
     match tokio::time::timeout(max, cmd.output()).await {
         Ok(Ok(output)) => Ok(output),
         Ok(Err(err)) => Err(format!("{err:#}")),
         Err(_) => Err("超时".into()),
     }
+}
+
+async fn adb_args(adb: &Path, args: &[&str], max: Duration) -> Result<std::process::Output, String> {
+    let mut cmd = adb_command(adb);
+    cmd.args(args);
+    adb_output(&mut cmd, max).await
 }
 
 fn probe_timeout() -> Duration {
@@ -200,7 +206,7 @@ impl AdbDevice {
 }
 
 pub async fn list_devices(adb: &Path) -> Result<Vec<AdbDevice>> {
-    let output = adb_output(adb_command(adb).arg("devices"), probe_timeout())
+    let output = adb_args(adb, &["devices"], probe_timeout())
         .await
         .map_err(|err| anyhow::anyhow!("adb devices: {err}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -238,8 +244,9 @@ pub async fn list_devices(adb: &Path) -> Result<Vec<AdbDevice>> {
 
 /// `adb shell pm path <package>` — empty stdout means not installed.
 pub async fn package_installed(adb: &Path, serial: &str, package: &str) -> bool {
-    let output = adb_output(
-        adb_command(adb).args(["-s", serial, "shell", "pm", "path", package]),
+    let output = adb_args(
+        adb,
+        &["-s", serial, "shell", "pm", "path", package],
         probe_timeout(),
     )
     .await;
@@ -255,8 +262,9 @@ pub async fn package_installed(adb: &Path, serial: &str, package: &str) -> bool 
 
 /// Best-effort `versionName` via `dumpsys package`. Must not block install forever.
 pub async fn package_version(adb: &Path, serial: &str, package: &str) -> Option<String> {
-    let output = adb_output(
-        adb_command(adb).args(["-s", serial, "shell", "dumpsys", "package", package]),
+    let output = adb_args(
+        adb,
+        &["-s", serial, "shell", "dumpsys", "package", package],
         probe_timeout(),
     )
     .await
@@ -274,8 +282,9 @@ pub fn parse_version_name(dumpsys: &str) -> Option<String> {
 }
 
 async fn uninstall_package(adb: &Path, serial: &str, package: &str) -> Result<()> {
-    let output = adb_output(
-        adb_command(adb).args(["-s", serial, "uninstall", package]),
+    let output = adb_args(
+        adb,
+        &["-s", serial, "uninstall", package],
         Duration::from_secs(lighting_host::apk_install::uninstall_timeout_secs()),
     )
     .await
@@ -300,16 +309,18 @@ async fn uninstall_package(adb: &Path, serial: &str, package: &str) -> Result<()
 }
 
 async fn force_stop_package(adb: &Path, serial: &str, package: &str) {
-    let _ = adb_output(
-        adb_command(adb).args(["-s", serial, "shell", "am", "force-stop", package]),
+    let _ = adb_args(
+        adb,
+        &["-s", serial, "shell", "am", "force-stop", package],
         probe_timeout(),
     )
     .await;
 }
 
 async fn wait_for_device(adb: &Path, serial: &str) {
-    let _ = adb_output(
-        adb_command(adb).args(["-s", serial, "wait-for-device"]),
+    let _ = adb_args(
+        adb,
+        &["-s", serial, "wait-for-device"],
         Duration::from_secs(lighting_host::apk_install::wait_for_device_timeout_secs()),
     )
     .await;
@@ -317,8 +328,9 @@ async fn wait_for_device(adb: &Path, serial: &str) {
 
 async fn launch_client(adb: &Path, serial: &str) {
     let component = lighting_host::apk_install::launcher_component();
-    let _ = adb_output(
-        adb_command(adb).args([
+    let _ = adb_args(
+        adb,
+        &[
             "-s",
             serial,
             "shell",
@@ -330,7 +342,7 @@ async fn launch_client(adb: &Path, serial: &str) {
             "android.intent.action.MAIN",
             "-c",
             "android.intent.category.LAUNCHER",
-        ]),
+        ],
         probe_timeout(),
     )
     .await;
@@ -354,7 +366,7 @@ async fn adb_install_once(
     cmd.args(flags);
     cmd.arg(apk);
     let output = adb_output(
-        cmd,
+        &mut cmd,
         Duration::from_secs(lighting_host::apk_install::install_timeout_secs()),
     )
     .await
@@ -452,8 +464,9 @@ pub async fn install_apk(adb: &Path, serial: &str, apk: &Path) -> Result<String>
 
 pub async fn reverse_port(adb: &Path, serial: &str, port: u16) -> Result<()> {
     let spec = format!("tcp:{port}");
-    let output = adb_output(
-        adb_command(adb).args(["-s", serial, "reverse", &spec, &spec]),
+    let output = adb_args(
+        adb,
+        &["-s", serial, "reverse", &spec, &spec],
         probe_timeout(),
     )
     .await
@@ -469,8 +482,9 @@ pub async fn reverse_port(adb: &Path, serial: &str, port: u16) -> Result<()> {
 
 pub async fn remove_reverse(adb: &Path, serial: &str, port: u16) -> Result<()> {
     let spec = format!("tcp:{port}");
-    let _ = adb_output(
-        adb_command(adb).args(["-s", serial, "reverse", "--remove", &spec]),
+    let _ = adb_args(
+        adb,
+        &["-s", serial, "reverse", "--remove", &spec],
         probe_timeout(),
     )
     .await;
