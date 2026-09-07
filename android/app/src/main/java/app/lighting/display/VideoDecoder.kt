@@ -189,9 +189,9 @@ class VideoDecoder {
         // vendor key on try 0 used to fail FEATURE_LowLatency configure().
         // Try 1 still has the SoC key (no operating-rate). Try 2 is KEY +
         // SoC (no FEATURE). Try 5 / -1 omit vendor so a reject still configures.
-        // max-output-buffers=2 and KEY_PRIORITY=0 ride with KEY_LOW_LATENCY
-        // (try 0–2). GSI / Treble crash on vendor keys — those stay behind
-        // lowLatencySafe (try 3–5).
+        // max-output-buffers=2 rides try 0–5 (vendor-key winners included).
+        // KEY_PRIORITY=0 rides with KEY_LOW_LATENCY (try 0–2). GSI / Treble
+        // crash on vendor keys — those stay behind lowLatencySafe (try 3–5).
         if (!software) {
             val lastTry = if (caps.lowLatencySafe) 5 else 2
             for (tryNumber in 0..lastTry) {
@@ -260,7 +260,8 @@ class VideoDecoder {
      * decoder paced at SPS like a movie (a vsync of hold). Try 2 is KEY +
      * SoC (no FEATURE / no operating-rate). A KEY-only try 2 used to
      * configure() and skip try 3–4, so C2 never saw qti-ext. Try 5 / -1
-     * stay bare. max-output-buffers=2 and KEY_PRIORITY=0 ride try 0–2.
+     * stay bare. max-output-buffers=2 rides try 0–5 so a vendor-key
+     * configure still gets a 2-slot pool; KEY_PRIORITY=0 rides try 0–2.
      */
     private fun applyLowLatencyOptions(
         format: MediaFormat,
@@ -271,6 +272,13 @@ class VideoDecoder {
         val n = codecName.lowercase()
         val qcom = n.startsWith("omx.qcom") || n.startsWith("c2.qti") || n.contains(".qcom.")
         try {
+            // 1 output buffer deadlocks (no ping-pong). Default is often
+            // 4-8; Moonlight uses 2. Must be on the MediaFormat that
+            // actually configure()s — try 3-5 win on vendor keys after
+            // FEATURE/operating-rate reject, and used to keep the large
+            // pool (one extra decoded picture vs the laptop). Cannot
+            // setParameters this after start(). Try -1 stays bare.
+            format.setInteger("max-output-buffers", 2)
             if (tryNumber < 3) {
                 format.setInteger("low-latency", 1)
                 if (Build.VERSION.SDK_INT >= 30) {
@@ -295,13 +303,6 @@ class VideoDecoder {
                     // vanished when C2 rejected operating-rate, then
                     // official FEATURE codecs returned and paced a vsync.
                     format.setInteger(MediaFormat.KEY_PRIORITY, 0)
-                }
-                if (tryNumber < 3) {
-                    // 1 output buffer deadlocks the decoder (no ping-pong).
-                    // Default is often 4–8; Moonlight uses 2. Try 2 is
-                    // KEY without FEATURE, so a feature- prefix reject
-                    // still gets the small pool.
-                    format.setInteger("max-output-buffers", 2)
                 }
                 // GSI / Treble crash on a dump of every vendor key.
                 // Matching SoC keys must be on the format that actually
