@@ -445,6 +445,11 @@ class VideoDecoder {
         }
         if (Build.VERSION.SDK_INT >= 23) {
             poke(MediaFormat.KEY_PRIORITY, 0)
+            // Try 0 is the only configure() with OPERATING_RATE. A FEATURE
+            // or vendor-key winner (try 1–6) used to stay on the 30 fps
+            // DVFS bin and hold a reconstructed picture. Moonlight pokes
+            // this after start() so those tries still run unbounded.
+            poke(MediaFormat.KEY_OPERATING_RATE, 32767)
         }
         // Configure try 2+ omits vdec-lowlatency. Without this poke,
         // MTK/Amazon C2 holds a decoded picture (Moonlight MediaCodecHelper).

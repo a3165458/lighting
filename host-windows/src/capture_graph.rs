@@ -129,23 +129,17 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
             graphs.push(dda.to_string());
         }
         // extra=0 only. Unkeyed hwmap keeps ffmpeg's 16-frame default.
-        // mode=direct maps D3D11 textures; if that FATAL-rejects (format),
-        // a copy hwmap still stays on CUDA. hwupload_cuda of a D3D11 frame
-        // often FATAL-rejects (it wants sysmem). Encoder adds cuda@capture.
+        // mode=direct maps D3D11 textures; copy hwmap if that FATAL-rejects.
+        // Encoder adds cuda@capture.
         graphs.push(format!(
             "{dda},hwmap=derive_device=cuda:mode=direct:extra_hw_frames=0,{cuda}:extra_hw_frames=0"
         ));
         graphs.push(format!(
             "{dda},hwmap=derive_device=cuda:extra_hw_frames=0,{cuda}:extra_hw_frames=0"
         ));
-        graphs.push(format!(
-            "{dda},hwupload_cuda=extra_hw_frames=0,{cuda}:extra_hw_frames=0"
-        ));
-        if !scale {
-            graphs.push(format!(
-                "{dda},hwmap=derive_device=d3d11:extra_hw_frames=0"
-            ));
-        }
+        // hwupload_cuda wants sysmem. A D3D11 frame that survives configure()
+        // copies GPU→CPU→GPU every picture. Identity d3d11 wrap is the same
+        // BGRA NVENC already rejected. CUDA miss goes to CPU bilinear.
     }
     if encoder.contains("qsv") {
         // ddagrab is D3D11. hwmap first avoids a sysmem upload (~1–2 ms).
@@ -267,7 +261,7 @@ mod tests {
         assert!(graphs[0].contains("hwmap=derive_device=cuda:mode=direct:extra_hw_frames=0"));
         assert!(graphs[0].contains("scale_cuda=1920:1080:format=nv12"));
         assert!(!graphs[0].contains("scale_d3d11"));
-        assert!(!graphs[0].contains("hwupload_cuda"));
+        assert!(!graphs.iter().any(|g| g.contains("hwupload_cuda")));
         assert!(!graphs.iter().any(|g| g.contains("scale_d3d11")));
         let cuda_at = graphs.iter().position(|g| g.contains("scale_cuda")).unwrap();
         let cpu_at = graphs.iter().position(|g| g.contains("hwdownload")).unwrap();
