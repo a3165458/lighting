@@ -198,11 +198,11 @@ pub fn client_app_missing_hint(can_install: bool) -> (String, Tone) {
 }
 
 pub fn client_app_installing_hint() -> String {
-    "正在把 Lighting 安装到平板，请在平板上点「允许安装」…".into()
+    "正在通过 USB 安装 Lighting。多数平板不会弹「允许安装」，请保持亮屏。开发者选项里若有「USB安装」，请打开。".into()
 }
 
 pub fn client_app_installed_ok() -> String {
-    "客户端已安装。请完全退出平板上的 Lighting 再打开，然后点「开始共享」".into()
+    "客户端已安装，平板上会自动打开 Lighting 副屏。若没看到，到应用列表里找这个名字，然后回电脑点「开始共享」".into()
 }
 
 pub fn client_app_installed_ok_version(ver: &str) -> String {
@@ -211,7 +211,7 @@ pub fn client_app_installed_ok_version(ver: &str) -> String {
         client_app_installed_ok()
     } else {
         format!(
-            "客户端 v{ver} 已覆盖安装。请完全退出平板上的 Lighting 再打开，然后点「开始共享」"
+            "客户端 v{ver} 已覆盖安装，平板上会自动打开。若没看到「Lighting 副屏」，到应用列表里找，然后回电脑点「开始共享」"
         )
     }
 }
@@ -516,8 +516,9 @@ mod tests {
         assert!(no_apk.contains("Lighting 客户端"));
         assert!(!no_apk.contains("adb"));
         assert!(!client_app_installing_hint().contains("adb"));
+        assert!(client_app_installing_hint().contains("USB"));
         assert!(client_app_installed_ok().contains("开始共享"));
-        assert!(client_app_installed_ok().contains("完全退出"));
+        assert!(client_app_installed_ok().contains("Lighting 副屏"));
         assert!(client_app_installed_ok_version("0.1.47").contains("v0.1.47"));
         assert!(client_app_installed_ok_version("").contains("开始共享"));
     }

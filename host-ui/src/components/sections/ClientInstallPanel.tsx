@@ -23,12 +23,12 @@ export function ClientInstallPanel({ host, busy, onInstallClient }: Props) {
       : !host.deviceDetected
         ? '请用数据线连接平板并开启 USB 调试。'
         : host.clientAppMissing
-          ? '平板上还没有客户端，点下方安装。'
+          ? '平板上还没有客户端，点下方安装。多数平板不会弹「允许安装」，请保持亮屏。'
           : stale
-            ? `平板还是 v${apkVersion}，便携包是 v${expected}。请点重新安装（会先卸载再装）。`
+            ? `平板还是 v${apkVersion}，便携包是 v${expected}。请点重新安装（先覆盖，签名冲突才会卸载）。`
             : apkVersion
-              ? `当前平板客户端 v${apkVersion}。版本偏旧时可覆盖安装。`
-              : '已检测到客户端。若版本偏旧，可覆盖安装。'
+              ? `当前平板客户端 v${apkVersion}。装不上时再覆盖安装。`
+              : '已检测到客户端，但读不到版本号。点重新安装覆盖，不会先卸载。'
 
   return (
     <section className="glass-card-lg p-8" aria-label="安装客户端">
