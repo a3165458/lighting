@@ -808,13 +808,13 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
             if (Build.VERSION.SDK_INT >= 31) {
                 surfaceObj.setFrameRate(
                     hz,
-                    Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
+                    DisplayApis.peakFrameRateCompatibility(),
                     Surface.CHANGE_FRAME_RATE_ALWAYS,
                 )
             } else {
                 surfaceObj.setFrameRate(
                     hz,
-                    Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
+                    DisplayApis.peakFrameRateCompatibility(),
                 )
             }
         } catch (_: Throwable) {
@@ -835,7 +835,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 .setFrameRate(
                     sc,
                     hz,
-                    Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
+                    DisplayApis.peakFrameRateCompatibility(),
                     Surface.CHANGE_FRAME_RATE_ALWAYS,
                 )
             DisplayApis.overrideChildrenFrameRate(tx, sc)

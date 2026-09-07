@@ -142,11 +142,11 @@ class CursorOverlayView @JvmOverloads constructor(
                 if (Build.VERSION.SDK_INT >= 31) {
                     s.setFrameRate(
                         hz,
-                        Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
+                        DisplayApis.peakFrameRateCompatibility(),
                         Surface.CHANGE_FRAME_RATE_ALWAYS,
                     )
                 } else {
-                    s.setFrameRate(hz, Surface.FRAME_RATE_COMPATIBILITY_DEFAULT)
+                    s.setFrameRate(hz, DisplayApis.peakFrameRateCompatibility())
                 }
             } catch (_: Throwable) {
             }
@@ -163,7 +163,7 @@ class CursorOverlayView @JvmOverloads constructor(
                 .setFrameRate(
                     sc,
                     hz,
-                    Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
+                    DisplayApis.peakFrameRateCompatibility(),
                     Surface.CHANGE_FRAME_RATE_ALWAYS,
                 )
             DisplayApis.overrideChildrenFrameRate(tx, sc)
