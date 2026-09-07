@@ -197,8 +197,8 @@ class VideoDecoder {
         // risky. Try 0 is official + matching SoC vendor key. Dumping every
         // vendor key on try 0 used to fail FEATURE_LowLatency configure().
         // Try 1 still has the SoC key (no operating-rate). Try 2 is KEY +
-        // SoC (no FEATURE). Try 5 / -1 omit vendor so a reject still configures.
-        // max-output-buffers=2 and KEY_PRIORITY=0 ride try 0–5 (vendor-key
+        // SoC (no FEATURE). Try 6 is pool-only; try -1 is fully bare.
+        // max-output-buffers=2 and KEY_PRIORITY=0 ride try 0–6 (vendor-key
         // winners included). C2 reads both at configure(); setParameters
         // after start() does not shrink the pool or switch realtime.
         // GSI / Treble crash on vendor keys — those stay behind
@@ -208,6 +208,11 @@ class VideoDecoder {
             for (tryNumber in 0..lastTry) {
                 out.add(buildFormat(width, height, csd, codecName, tryNumber, caps.lowLatencySafe))
             }
+            // GSI / KEY_LOW_LATENCY reject used to skip to try -1 and
+            // keep the default 4-8 output pool — one extra decoded
+            // picture vs the laptop. Try 6 is max-output-buffers +
+            // PRIORITY only (tryNumber >= 5 skips vendor / FEATURE).
+            out.add(buildFormat(width, height, csd, codecName, 6, false))
         }
         out.add(buildFormat(width, height, csd, codecName, -1, false))
         return out
