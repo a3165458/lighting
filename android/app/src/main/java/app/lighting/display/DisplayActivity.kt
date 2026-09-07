@@ -776,17 +776,23 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     }
 
     /**
-     * Hint the panel refresh, but do not mark the surface as a fixed-rate
-     * movie. FIXED_SOURCE made SurfaceFlinger wait a vsync; GlideX /
-     * Moonlight present as soon as the buffer is released.
+     * Hint the locked panel refresh, but do not mark the surface as a
+     * fixed-rate movie. FIXED_SOURCE made SurfaceFlinger wait a vsync;
+     * GlideX / Moonlight present as soon as the buffer is released.
      *
      * MediaCodec consumes the BufferQueue Surface, and Android then
      * ignores Surface.setFrameRate. Pin the SurfaceView's SurfaceControl
      * too so the compositor still latches at peak Hz, not 60.
+     *
+     * Vote the panel, never encode fps. Host encodes at 120 even when
+     * lockPeakRefresh landed on 90/60 so DDA is not on a 16 ms grid.
+     * Voting 120 on that mode made SurfaceFlinger keep a 120 Hz movie
+     * buffer — one refresh vs the laptop. Extra pictures are dropped by
+     * releaseOutputBuffer(now).
      */
     private fun applySurfaceFrameRate(surfaceObj: Surface) {
         if (Build.VERSION.SDK_INT < 30 || !surfaceObj.isValid) return
-        val hz = panelFps.coerceAtLeast(streamFps).toFloat().coerceAtLeast(30f)
+        val hz = panelFps.toFloat().coerceAtLeast(30f)
         try {
             if (Build.VERSION.SDK_INT >= 31) {
                 surfaceObj.setFrameRate(
