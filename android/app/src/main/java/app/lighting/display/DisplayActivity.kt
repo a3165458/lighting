@@ -215,17 +215,14 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 val peakHz = peak?.refreshRate ?: hz.toFloat()
                 lp.preferredRefreshRate = peakHz
                 if (Build.VERSION.SDK_INT >= 31) {
-                    try {
-                        lp.preferredMinRefreshRate = peakHz
-                        lp.preferredMaxRefreshRate = peakHz
-                    } catch (_: Throwable) {
-                    }
+                    DisplayApis.setPreferredRefreshRange(lp, peakHz)
                 }
                 window.attributes = lp
                 // AppCompat PhoneWindow exists only after super.onCreate.
-                // Writing attributes here dropped ALLM (manifest/theme) on
-                // some pads, so SurfaceFlinger kept a post-processing vsync
-                // GlideX / Moonlight do not pay. Re-assert after every write.
+                // Writing attributes here dropped ALLM (manifest
+                // preferMinimalPostProcessing) on some pads, so
+                // SurfaceFlinger kept a post-processing vsync GlideX /
+                // Moonlight do not pay. Re-assert after every write.
                 if (Build.VERSION.SDK_INT >= 30) {
                     window.setPreferMinimalPostProcessing(true)
                 }
@@ -771,13 +768,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
                     Surface.CHANGE_FRAME_RATE_ALWAYS,
                 )
-            try {
-                tx.setFrameRateSelectionStrategy(
-                    sc,
-                    SurfaceControl.FRAME_RATE_SELECTION_STRATEGY_OVERRIDE_CHILDREN,
-                )
-            } catch (_: Throwable) {
-            }
+            DisplayApis.overrideChildrenFrameRate(tx, sc)
             if (Build.VERSION.SDK_INT >= 34) {
                 try {
                     // SurfaceView default BufferQueue is 3. The extra slot
