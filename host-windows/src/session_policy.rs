@@ -591,12 +591,18 @@ pub fn encode_fps(_req_fps: u32, _tablet_max: u32, _dec_fps: u32, hw: bool) -> u
     }
 }
 
-/// ffmpeg output `-r`. `ddagrab=framerate=` is the DXGI poll grid
-/// (`dda_poll_hz`, 8000) and becomes the filter's advertised frame_rate.
-/// NVENC/QSV write that into SPS/VUI; Qualcomm C2 then paces like a movie
-/// (or falls back to 30 fps). Always the virtual panel rate, never 8000.
+/// Intended encoder/panel rate for GOP/VBV (never the 8000 Hz DXGI poll).
+/// Not a muxer `-r`: current ffmpeg FATAL-rejects `-r` + `fps_mode
+/// passthrough`; older builds VSYNC_CFR and hold every picture ~1/fps.
+/// SPS rewrite drops 8000 Hz VUI; Android KEY_FRAME_RATE is 120.
 pub fn ffmpeg_output_fps(encode_fps: u32) -> u32 {
     encode_fps.max(1)
+}
+
+/// Muxer `-r` would either fail spawn (new ffmpeg) or CFR-FIFO every
+/// picture (old ffmpeg). Keep `-fps_mode passthrough` only.
+pub fn ffmpeg_muxer_sets_output_fps() -> bool {
+    false
 }
 
 /// Sunshine `D3DKMTSetProcessSchedulingPriorityClass(HIGH)`.
@@ -1216,6 +1222,7 @@ mod tests {
         assert_eq!(ffmpeg_output_fps(encode_fps(60, 60, 60, true)), 120);
         assert_ne!(ffmpeg_output_fps(120), dda_poll_hz(120));
         assert_eq!(ffmpeg_output_fps(45), 45);
+        assert!(!ffmpeg_muxer_sets_output_fps());
         assert_eq!(ffmpeg_pipe_buffer_bytes(), 32 * 1024);
         assert!(ffmpeg_pipe_buffer_bytes() > 16 * 1024);
         // annexb read vec must be this size: larger and n==buf.len() never
