@@ -168,7 +168,12 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
                 ));
             }
         } else {
-            // Stay on D3D11. hwmap first; hwupload of an identity frame is a copy.
+            // Stay on D3D11. hwupload of an identity frame is a copy.
+            // Identity ddagrab is already D3D11 BGRA; h264_amf/hevc_amf
+            // advertise AV_PIX_FMT_D3D11 (ff_amf_pix_fmts). hwmap derive
+            // still wraps a derived frames context — try raw ddagrab
+            // first (same as identity NVENC). Device reject falls through.
+            graphs.push(dda.to_string());
             for extra in &extras {
                 graphs.push(format!(
                     "{dda},hwmap=derive_device=d3d11:extra_hw_frames={extra}"
@@ -322,9 +327,12 @@ mod tests {
             Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x1002 }),
             60, 1920, 1080, 1920, 1080, "h264_amf",
         );
-        assert!(graphs[0].contains("hwmap=derive_device=d3d11:extra_hw_frames=0"));
+        // Identity: no hwmap wrap (NVENC already skips scale_d3d11).
+        assert!(!graphs[0].contains("hwmap"));
         assert!(!graphs[0].contains("hwupload"));
         assert!(!graphs[0].contains("hwdownload"));
+        assert!(graphs[0].starts_with("ddagrab="));
+        assert!(graphs.iter().any(|g| g.contains("hwmap=derive_device=d3d11:extra_hw_frames=0")));
         assert!(graphs.iter().any(|g| g.contains("hwmap=derive_device=d3d11") && !g.contains("extra_hw_frames")));
         assert!(graphs.iter().any(|g| g.contains("format=d3d11")));
     }
