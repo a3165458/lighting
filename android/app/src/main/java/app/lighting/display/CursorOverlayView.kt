@@ -151,6 +151,7 @@ class CursorOverlayView @JvmOverloads constructor(
             } catch (_: Throwable) {
             }
         }
+        DisplayApis.requestViewFrameRate(this, hz)
         if (Build.VERSION.SDK_INT < 31) return
         try {
             val sc = surfaceControl

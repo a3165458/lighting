@@ -236,6 +236,9 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     } catch (_: Throwable) {
                     }
                 }
+                // ViewRoot ignores Surface.setFrameRate unless the View
+                // itself votes. Same 60 Hz latch as the VRR throttle.
+                DisplayApis.requestViewFrameRate(window.decorView, peakHz)
             } catch (_: Throwable) {
             }
         }
@@ -761,6 +764,9 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 )
             }
         } catch (_: Throwable) {
+        }
+        if (this::surface.isInitialized) {
+            DisplayApis.requestViewFrameRate(surface, hz)
         }
         if (Build.VERSION.SDK_INT < 31) return
         if (!this::surface.isInitialized) return
