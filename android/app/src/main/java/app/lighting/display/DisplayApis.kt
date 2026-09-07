@@ -32,4 +32,17 @@ internal object DisplayApis {
         } catch (_: Throwable) {
         }
     }
+
+    fun setBufferMaxCount(tx: SurfaceControl.Transaction, sc: SurfaceControl, count: Int) {
+        try {
+            SurfaceControl.Transaction::class.java
+                .getMethod(
+                    "setBufferMaxCount",
+                    SurfaceControl::class.java,
+                    Int::class.javaPrimitiveType,
+                )
+                .invoke(tx, sc, count)
+        } catch (_: Throwable) {
+        }
+    }
 }
