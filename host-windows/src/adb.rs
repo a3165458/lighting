@@ -242,6 +242,17 @@ pub async fn list_devices(adb: &Path) -> Result<Vec<AdbDevice>> {
     Ok(devices)
 }
 
+/// `adb devices` only. Used by the share USB tunnel so reverse is not
+/// stuck behind `dumpsys package` while the UI already shows HA18C874.
+pub async fn list_ready_serials(adb: &Path) -> Result<Vec<String>> {
+    let output = adb_args(adb, &["devices"], probe_timeout())
+        .await
+        .map_err(|err| anyhow::anyhow!("adb devices: {err}"))?;
+    Ok(lighting_host::apk_install::parse_adb_ready_serials(
+        &String::from_utf8_lossy(&output.stdout),
+    ))
+}
+
 /// `adb shell pm path <package>` — empty stdout means not installed.
 pub async fn package_installed(adb: &Path, serial: &str, package: &str) -> bool {
     let output = adb_args(

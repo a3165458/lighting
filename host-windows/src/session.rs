@@ -505,6 +505,15 @@ async fn run_session_inner(
     // IddCx / UAC re-enumerates USB. Reverse from before VDD is then gone
     // while adb devices still shows the pad — same 「等待 USB」 hang.
     if session_policy::refresh_usb_after_virtual_prepare() {
+        if session_policy::drop_parked_hellos_after_virtual_prepare() {
+            let video_n = drop_parked_classified(&mut video_rx);
+            let ctrl_n = drop_parked_classified(&mut ctrl_rx);
+            if video_n + ctrl_n > 0 {
+                tracing::info!(
+                    "dropped {video_n} stale video / {ctrl_n} control hellos after VDD"
+                );
+            }
+        }
         let refreshed = open_usb_tunnel(
             adb_path.as_ref(),
             reverse_serial
@@ -645,6 +654,14 @@ struct UsbTunnel {
     wait_detail: String,
 }
 
+fn drop_parked_classified(rx: &mut mpsc::Receiver<ClassifiedStream>) -> usize {
+    let mut n = 0;
+    while rx.try_recv().is_ok() {
+        n += 1;
+    }
+    n
+}
+
 /// Bind is already listening. Reverse 127.0.0.1:port and open the pad app.
 /// Called before VDD (so the 90s USB retry can start) and again after VDD
 /// (USB often re-enumerates during IddCx / UAC).
@@ -666,27 +683,29 @@ async fn open_usb_tunnel(
             wait_detail,
         };
     };
-    let devices = adb::list_devices(adb_bin).await.unwrap_or_default();
-    let serial = preferred_serial
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .or_else(|| {
-            devices
-                .into_iter()
-                .find(|d| d.state == "device")
-                .map(|d| d.serial)
-        });
-    let Some(serial) = serial else {
-        let wait_detail = "未检测到已授权设备，平板可填电脑 IP".to_string();
-        set_transport(
-            status,
-            "USB · 未检测到已授权设备，可走 Wi-Fi（填电脑 IP）",
-        );
-        set_status(status, "等待设备", wait_detail.clone());
-        return UsbTunnel {
-            serial: None,
-            wait_detail,
-        };
+    let serial = if let Some(s) = preferred_serial.filter(|s| !s.is_empty()) {
+        s.to_string()
+    } else {
+        match adb::list_ready_serials(adb_bin)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .next()
+        {
+            Some(s) => s,
+            None => {
+                let wait_detail = "未检测到已授权设备，平板可填电脑 IP".to_string();
+                set_transport(
+                    status,
+                    "USB · 未检测到已授权设备，可走 Wi-Fi（填电脑 IP）",
+                );
+                set_status(status, "等待设备", wait_detail.clone());
+                return UsbTunnel {
+                    serial: None,
+                    wait_detail,
+                };
+            }
+        }
     };
     set_status(
         status,
@@ -706,7 +725,15 @@ async fn open_usb_tunnel(
         };
     }
     set_transport(status, format!("USB · adb reverse 已就绪（{serial}）"));
-    adb::launch_stream_client(adb_bin, &serial, listen_port).await;
+    if session_policy::launch_stream_client_does_not_block_listen() {
+        let adb_owned = adb_bin.clone();
+        let serial_owned = serial.clone();
+        tokio::spawn(async move {
+            adb::launch_stream_client(&adb_owned, &serial_owned, listen_port).await;
+        });
+    } else {
+        adb::launch_stream_client(adb_bin, &serial, listen_port).await;
+    }
     let wait_detail = format!("USB 已就绪（{serial}），正在打开平板投屏");
     set_status(status, "等待设备", wait_detail.clone());
     UsbTunnel {
