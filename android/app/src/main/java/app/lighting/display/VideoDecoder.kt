@@ -282,7 +282,8 @@ class VideoDecoder {
      * Qualcomm C2 advertises FEATURE_LowLatency, so a FEATURE-only try 0
      * used to succeed and never reach qti-ext-dec-low-latency — then the
      * decoder paced at SPS like a movie (a vsync of hold). Try 2 is KEY +
-     * SoC (no FEATURE / no operating-rate). A KEY-only try 2 used to
+     * SoC + OPERATING_RATE (no FEATURE). Try 3 drops OPERATING_RATE if
+     * 32767 rejects. A KEY-only try 2 used to
      * configure() and skip try 3–4, so C2 never saw qti-ext. Try 5 / -1
      * stay bare. max-output-buffers=2 and KEY_PRIORITY=0 ride try 0–5
      * so a vendor-key configure still gets a 2-slot realtime pool.
@@ -364,7 +365,13 @@ class VideoDecoder {
                         )
                     }
                 }
-                if (tryNumber < 1 && Build.VERSION.SDK_INT >= 23) {
+                // Even tries: OPERATING_RATE at configure() so C2 leaves
+                // the 30 fps DVFS bin. Odd tries omit it so a reject
+                // cannot skip KEY. FEATURE reject used to land on try 2
+                // without this (try 2 and try 3 were identical after KEY
+                // rode through try 3) and the post-start poke does not
+                // switch the realtime bin — same as KEY_PRIORITY.
+                if (tryNumber % 2 == 0 && Build.VERSION.SDK_INT >= 23) {
                     format.setInteger(MediaFormat.KEY_OPERATING_RATE, 32767)
                 }
                 // Matching SoC keys must be on the format that actually
@@ -489,10 +496,10 @@ class VideoDecoder {
         }
         if (Build.VERSION.SDK_INT >= 23) {
             poke(MediaFormat.KEY_PRIORITY, 0)
-            // Try 0 is the only configure() with OPERATING_RATE. A FEATURE
-            // or vendor-key winner (try 1–6) used to stay on the 30 fps
-            // DVFS bin and hold a reconstructed picture. Moonlight pokes
-            // this after start() so those tries still run unbounded.
+            // Try 0/2 configure() with OPERATING_RATE. Odd / vendor-only
+            // winners still need this poke; C2 that honors it at runtime
+            // leaves the 30 fps DVFS bin. Configure remains the path
+            // that actually switches the realtime bin (KEY_PRIORITY).
             poke(MediaFormat.KEY_OPERATING_RATE, 32767)
         }
         if (Build.VERSION.SDK_INT >= 31) {
