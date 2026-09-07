@@ -311,11 +311,13 @@ class VideoDecoder {
             if (tryNumber < 6) {
                 format.setInteger("max-output-buffer-count", 2)
             }
-            if (Build.VERSION.SDK_INT >= 31) {
+            if (Build.VERSION.SDK_INT >= 31 && tryNumber < 6) {
                 // Encoder is IPPP / no B-frames. Default reorder depth is 2
                 // pictures (~16–32 ms) even when the SPS already says 0.
-                // Not on try -1: a reject used to fail every hardware try
-                // and fall through to software (a GOP of glass vs GlideX).
+                // Not on try 6 / -1: a reject used to skip the pool-only
+                // fallback and land on bare try -1 (4–8 slots). start()
+                // still pokes reorder-depth so a pool-only winner drops
+                // the default 2-picture hold.
                 format.setInteger(MediaFormat.KEY_OUTPUT_REORDER_DEPTH, 0)
                 // Ask C2 to emit SDR even if VUI looks unspecified after
                 // annexb strips timing/HRD. Unsupported → 0 after configure.
