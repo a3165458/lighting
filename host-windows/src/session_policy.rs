@@ -469,6 +469,22 @@ pub fn tcp_recv_buffer_bytes() -> usize {
     48 * 1024
 }
 
+/// Linux doubles `SO_RCVBUF` (bookkeeping); `getsockopt` returns that
+/// doubled window. Requesting 48 KB then advertises ~96 KB — two 25 Mbps
+/// P-frames after encoded/annexb queues are 1-deep. If `actual` is already
+/// ~`want`, this stack did not double (the 24 KB stall). Return the next
+/// `setsockopt` value so the advertised window is one picture.
+pub fn tcp_clamp_kernel_buffer(want: usize, actual: usize) -> usize {
+    if want == 0 {
+        return 0;
+    }
+    if actual >= want.saturating_mul(2) {
+        (want / 2).max(8 * 1024)
+    } else {
+        want
+    }
+}
+
 /// Control-plane socket: cursor packets are tens of bytes.
 pub fn tcp_control_buffer_bytes() -> usize {
     16 * 1024
@@ -1118,6 +1134,10 @@ mod tests {
         assert!(tcp_send_buffer_bytes() > p25 + 8 * 1024);
         assert!(tcp_send_buffer_bytes() > p40);
         assert!(tcp_send_buffer_bytes() < 2 * p25);
+        assert_eq!(tcp_clamp_kernel_buffer(48 * 1024, 48 * 1024), 48 * 1024);
+        assert_eq!(tcp_clamp_kernel_buffer(48 * 1024, 96 * 1024), 24 * 1024);
+        assert_eq!(tcp_clamp_kernel_buffer(48 * 1024, 64 * 1024), 48 * 1024);
+        assert_eq!(tcp_clamp_kernel_buffer(16 * 1024, 32 * 1024), 8 * 1024);
         assert!(tcp_ack_every_packet());
         let frame = lit1_encode(3, 1, &[9, 8, 7]);
         assert_eq!(&frame[..4], b"LIT1");

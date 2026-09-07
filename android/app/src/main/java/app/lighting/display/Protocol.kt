@@ -180,9 +180,15 @@ class LitSocket(
         // 25 Mbps P-frame (~26 KB) after encoded/annexb queues were already
         // 1-deep — one extra refresh next to the laptop. 24 KB was smaller
         // than one P+PCM AU and stalled the USB window mid-picture.
+        // Linux doubles SO_RCVBUF; getsockopt then returns ~96 KB and the
+        // advertised window hides two default P-frames. Clamp like
+        // session_policy::tcp_clamp_kernel_buffer.
         try {
             receiveBufferSize = recvBytes
             sendBufferSize = sendBytes
+            if (receiveBufferSize >= recvBytes * 2 && recvBytes >= 16 * 1024) {
+                receiveBufferSize = recvBytes / 2
+            }
         } catch (_: Exception) {
         }
         try {
@@ -201,6 +207,14 @@ class LitSocket(
         // ParcelFileDescriptor runs in init — hidden getFileDescriptor$
         // is greylisted on API 28+.
         tcpNoDelay = true
+        // Connect can reset SO_RCVBUF on some pads. Re-clamp so a doubled
+        // window cannot hide a second P after the 1-deep queues.
+        try {
+            if (receiveBufferSize >= recvBytes * 2 && recvBytes >= 16 * 1024) {
+                receiveBufferSize = recvBytes / 2
+            }
+        } catch (_: Exception) {
+        }
     }
     private val writeLock = Any()
     // Keep the dup fd for the socket lifetime. Hidden getFileDescriptor$
