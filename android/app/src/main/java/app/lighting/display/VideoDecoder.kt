@@ -424,14 +424,19 @@ class VideoDecoder {
                             android.os.Build.MANUFACTURER.equals("samsung", true)
                         ) {
                             format.setInteger("vendor.sec-ext-dec-low-latency.enable", 1)
-                            // Same display-order bypass as Qualcomm
-                            // qti-ext-dec-picture-order: SEC otherwise
-                            // holds a reconstructed picture for VUI.
-                            format.setInteger("vendor.sec-ext-dec-picture-order.enable", 1)
                         }
                     }
                     if (tryNumber < 5) {
                         format.setInteger("vendor.rtc-ext-dec-low-latency.enable", 1)
+                        // Same display-order bypass as Qualcomm
+                        // qti-ext-dec-picture-order: bound to try 3 with
+                        // sec-ext-low-latency, a reject skipped try 4 and
+                        // C2 held a reconstructed picture for VUI.
+                        if (n.contains(".sec.") || n.contains("samsung") ||
+                            android.os.Build.MANUFACTURER.equals("samsung", true)
+                        ) {
+                            format.setInteger("vendor.sec-ext-dec-picture-order.enable", 1)
+                        }
                     }
                 }
                 n.startsWith("omx.amlogic") || n.startsWith("c2.amlogic") -> {
