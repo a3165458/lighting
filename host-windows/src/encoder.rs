@@ -383,6 +383,12 @@ fn build_args(
         lighting_host::session_policy::ffmpeg_filter_threads().to_string(),
         "-avioflags".into(),
         "direct".into(),
+        "-auto_conversion_filters".into(),
+        if lighting_host::session_policy::ffmpeg_auto_conversion_filters() {
+            "1".into()
+        } else {
+            "0".into()
+        },
     ];
 
     args.extend(capture.device_args());
@@ -458,6 +464,12 @@ pub fn start_encoder_gdigrab(
         lighting_host::session_policy::ffmpeg_filter_threads().to_string(),
         "-avioflags".into(),
         "direct".into(),
+        "-auto_conversion_filters".into(),
+        if lighting_host::session_policy::ffmpeg_auto_conversion_filters() {
+            "1".into()
+        } else {
+            "0".into()
+        },
     ];
     args.extend(lighting_host::capture_graph::gdigrab_input_args(
         display.x,
