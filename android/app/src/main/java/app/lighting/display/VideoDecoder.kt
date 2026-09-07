@@ -217,11 +217,29 @@ class VideoDecoder {
             format.setInteger(MediaFormat.KEY_FRAME_RATE, 120)
         } catch (_: Throwable) {
         }
+        if (Build.VERSION.SDK_INT >= 24) {
+            try {
+                // Unspecified DataSpace on an HDR pad makes HWC GPU-compose
+                // + tone-map every picture — one refresh GlideX / Moonlight
+                // do not pay. Encoder is SDR BT.709 limited; window colorMode
+                // is already DEFAULT. This pins the *buffer*.
+                format.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
+                format.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
+                format.setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
+            } catch (_: Throwable) {
+            }
+        }
         if (Build.VERSION.SDK_INT >= 31) {
             try {
                 // Encoder is IPPP / no B-frames. Default reorder depth is 2
                 // pictures (~16–32 ms) even when the SPS already says 0.
                 format.setInteger(MediaFormat.KEY_OUTPUT_REORDER_DEPTH, 0)
+                // Ask C2 to emit SDR even if VUI looks unspecified after
+                // annexb strips timing/HRD. Unsupported → 0 after configure.
+                format.setInteger(
+                    MediaFormat.KEY_COLOR_TRANSFER_REQUEST,
+                    MediaFormat.COLOR_TRANSFER_SDR_VIDEO,
+                )
             } catch (_: Throwable) {
             }
         }
