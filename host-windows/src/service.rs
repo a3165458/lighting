@@ -221,7 +221,7 @@ impl HostService {
         let prepare_detail = if mode.uses_virtual_display() {
             "正在检查并启用虚拟显示器…"
         } else {
-            "正在枚举显示器…"
+            "正在打开投屏通道…"
         };
         if let Ok(mut s) = g.status.lock() {
             *s = SessionStatus {
@@ -345,11 +345,45 @@ impl HostService {
                 return Err(msg);
             }
         };
+        let share_running = g.running
+            || g.status
+                .lock()
+                .ok()
+                .is_some_and(|s| s.running);
+        if share_running {
+            g.stop.store(true, Ordering::Relaxed);
+            g.running = false;
+        }
         g.install_inflight = true;
-        g.notice = Some((Tone::Info, ui_text::client_app_installing_hint()));
+        g.notice = Some((
+            Tone::Info,
+            if share_running {
+                ui_text::client_app_installing_after_stop_hint()
+            } else {
+                ui_text::client_app_installing_hint()
+            },
+        ));
         let pending = g.pending_notice.clone();
+        let status = g.status.clone();
+        let wait_ms = lighting_host::apk_install::install_wait_share_stop_ms();
         self.rt.spawn(async move {
-            let notice = match adb::install_apk(&adb, &serial, &apk).await {
+            let mut share_idle = __omp_shell("share_running;")
+            if share_running {
+                let deadline = tokio::time::Instant::now() + Duration::from_millis(wait_ms);
+                while tokio::time::Instant::now() < deadline {
+                    let still = status.lock().ok().is_some_and(|s| s.running);
+                    if !still {
+                        share_idle = true;
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(120)).await;
+                }
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                if !status.lock().ok().is_some_and(|s| s.running) {
+                    share_idle = true;
+                }
+            }
+            let notice = match adb::install_apk(&adb, &serial, &apk, share_idle).await {
                 Ok(ver) => (Tone::Ok, ui_text::client_app_installed_ok_version(&ver)),
                 Err(err) => (
                     Tone::Bad,

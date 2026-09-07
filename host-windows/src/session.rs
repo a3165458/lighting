@@ -383,14 +383,15 @@ async fn run_session_inner(
     let _restore_pc = TabletOnlyRestoreGuard(tablet_only.clone(), preserve.clone());
 
     let adb_path = adb::find_adb().ok();
-    let mut reverse_serial = open_usb_tunnel(
+    let first_usb = open_usb_tunnel(
         adb_path.as_ref(),
         req.device_serial.as_deref(),
         listen_port,
         &status,
     )
-    .await
-    .serial;
+    .await;
+    let mut reverse_serial = first_usb.serial;
+    let mut usb_wait_detail = first_usb.wait_detail;
 
 
     let (stop_tx, stop_rx) = watch::channel(false);
@@ -443,6 +444,7 @@ async fn run_session_inner(
         }
     });
 
+    let mut prepared_displays: Option<Vec<displays::DisplayInfo>> = None;
     if req.share_mode.uses_virtual_display() {
         set_status(&status, "准备虚拟屏", "正在检查并启用虚拟显示器…");
         let mode = req.share_mode;
@@ -482,6 +484,7 @@ async fn run_session_inner(
                 if let Some(idx) = displays::pick_display_index(&list, req.share_mode) {
                     req.display_index = idx;
                 }
+                prepared_displays = Some(list);
                 set_status(&status, "准备虚拟屏", "虚拟屏已就绪，开始等待平板…");
             }
             lighting_host::share_flow::VirtualPrepareOutcome::Abort { reason } => {
@@ -512,13 +515,23 @@ async fn run_session_inner(
         )
         .await;
         reverse_serial = refreshed.serial;
-        set_status(&status, "等待设备", refreshed.wait_detail);
+        usb_wait_detail = refreshed.wait_detail;
+        set_status(&status, "等待设备", usb_wait_detail.clone());
     }
 
-    set_status(&status, "启动", "正在枚举显示器");
-    let displays = displays::list_displays()?;
+    // Do not sit on phase "启动" / 正在枚举显示器: that pins the UI on
+    // 启用虚拟屏 while we are actually waiting for the pad. Reuse the
+    // post-VDD list so CCD is not queried again while IddCx is settling.
+    let displays = if let Some(list) = prepared_displays.filter(|l| !l.is_empty()) {
+        list
+    } else {
+        tokio::task::spawn_blocking(displays::list_displays)
+            .await
+            .context("枚举显示器任务中断")??
+    };
     req.display_index = displays::pick_display_index(&displays, req.share_mode)
         .context("所选投屏模式没有可用显示器，请刷新列表")?;
+    set_status(&status, "等待设备", usb_wait_detail);
     let display = displays
         .get(req.display_index)
         .cloned()

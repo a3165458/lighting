@@ -102,6 +102,17 @@ pub fn settle_after_uninstall_ms() -> u64 {
     1500
 }
 
+/// Cover-install while a share holds `adb reverse` / `am start` first
+/// uninstalls (Honor reports UPDATE_INCOMPATIBLE) then hangs. Stop the
+/// share and wait for the session to drop USB before touching the APK.
+pub fn share_must_idle_before_install() -> bool {
+    true
+}
+
+pub fn install_wait_share_stop_ms() -> u64 {
+    15_000
+}
+
 pub fn needs_uninstall_reinstall(output: &str) -> bool {
     let upper = output.to_ascii_uppercase();
     upper.contains("INSTALL_FAILED_UPDATE_INCOMPATIBLE")
@@ -233,6 +244,8 @@ mod tests {
         assert!(flags.contains(&"-g"));
         assert!(flags.contains(&"-t"));
         assert!(!uninstall_before_install());
+        assert!(share_must_idle_before_install());
+        assert!(install_wait_share_stop_ms() >= 8_000);
         assert!(install_replace_attempts()[0].contains(&"--no-incremental"));
         assert!(install_timeout_secs() >= 30);
         assert!(adb_reverse_timeout_secs() > adb_probe_timeout_secs());

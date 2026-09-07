@@ -508,7 +508,14 @@ async fn adb_install_with_attempts(
 
 /// Cover-install the client. Uninstall only when the signatures actually
 /// conflict — doing it first left the pad empty whenever `adb install` hung.
-pub async fn install_apk(adb: &Path, serial: &str, apk: &Path) -> Result<String> {
+/// `allow_uninstall` is false while a share still holds USB: Honor then
+/// uninstalls, the follow-up install hangs, and the pad is left with no app.
+pub async fn install_apk(
+    adb: &Path,
+    serial: &str,
+    apk: &Path,
+    allow_uninstall: bool,
+) -> Result<String> {
     let package = CLIENT_PACKAGE;
     let expected = lighting_host::apk_install::expected_client_version();
     if package_installed(adb, serial, package).await {
@@ -526,6 +533,9 @@ pub async fn install_apk(adb: &Path, serial: &str, apk: &Path) -> Result<String>
             anyhow::bail!("{}", lighting_host::apk_install::user_restricted_hint());
         }
         if lighting_host::apk_install::needs_uninstall_reinstall(&err) {
+            if !allow_uninstall {
+                anyhow::bail!("{}", lighting_host::ui_text::share_busy_install_hint());
+            }
             uninstall_package(adb, serial, package)
                 .await
                 .context("签名不一致，卸载旧客户端")?;
