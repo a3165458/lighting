@@ -188,7 +188,7 @@ class VideoDecoder {
         width: Int,
         height: Int,
         csd: ByteArray?,
-        caps: DeviceCaps,
+        @Suppress("UNUSED_PARAMETER") caps: DeviceCaps,
         codecName: String,
     ): List<MediaFormat> {
         val out = ArrayList<MediaFormat>()
@@ -201,11 +201,14 @@ class VideoDecoder {
         // max-output-buffers=2 and KEY_PRIORITY=0 ride try 0–6 (vendor-key
         // winners included). C2 reads both at configure(); setParameters
         // after start() does not shrink the pool or switch realtime.
-        // lowLatencySafe only widens lastTry to 5 (FEATURE/operating-rate
-        // reject fallbacks). Matching SoC keys ride try 0–lastTry even on
-        // GSI; try 6 / -1 stay without vendor keys.
+        // Matching SoC keys ride try 0–5 even on GSI (qti-ext on c2.qti,
+        // not a dump of every vendor). lastTry used to stay 2 when
+        // lowLatencySafe=false, so FEATURE+KEY+qti-ext reject skipped
+        // try 3–4 (vendor without FEATURE/KEY) and try 6 won without
+        // qti-ext — C2 held a reconstructed picture. Moonlight keeps
+        // the SoC key through try 4. Try 6 / -1 stay bare.
         if (!software) {
-            val lastTry = if (caps.lowLatencySafe) 5 else 2
+            val lastTry = 5
             for (tryNumber in 0..lastTry) {
                 // Matching SoC keys only. The old GSI crash was dumping
                 // every vendor key on try 0. GSI Qualcomm advertises
