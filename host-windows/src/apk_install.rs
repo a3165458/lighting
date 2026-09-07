@@ -21,6 +21,10 @@ pub fn display_component() -> &'static str {
     "app.lighting.display/app.lighting.display.DisplayActivity"
 }
 
+pub fn stream_action() -> &'static str {
+    "app.lighting.display.STREAM"
+}
+
 /// `adb reverse` on Honor/Huawei pads is often slower than `adb devices`.
 /// 0.1.48 reused the 8s probe timeout and killed reverse mid-flight.
 pub fn adb_reverse_timeout_secs() -> u64 {
