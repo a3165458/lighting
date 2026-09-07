@@ -126,6 +126,13 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
             "scale_cuda=format=nv12".to_string()
         };
         if !scale {
+            // ddagrab hardcodes initial_pool_size = 8. Raw identity always
+            // configures, so the extra=0 CUDA wrap never ran and every
+            // picture sat in an 8-deep D3D11 queue — vs GlideX native DDA
+            // (1–2 surfaces). Cap first; mode=direct maps BGRA without a
+            // GPU copy. Unkeyed hwmap is ffmpeg's 16-frame default.
+            // Raw dda stays as the 8-pool fallback if extra=0 never emits IDR.
+            graphs.push(format!("{dda},hwmap=mode=direct:extra_hw_frames=0"));
             graphs.push(dda.to_string());
         }
         // extra=0 only. Unkeyed hwmap keeps ffmpeg's 16-frame default.
@@ -173,8 +180,10 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
             "vpp_amf=format=nv12".to_string()
         };
         if !scale {
-            // Identity ddagrab is already D3D11 BGRA; h264_amf/hevc_amf
-            // advertise AV_PIX_FMT_D3D11. Try raw first (same as NVENC).
+            // Same 8-pool trap as NVENC identity: raw dda always
+            // configures and never reaches extra=0. Cap first; raw
+            // dda stays as the fallback if extra=0 never emits IDR.
+            graphs.push(format!("{dda},hwmap=mode=direct:extra_hw_frames=0"));
             graphs.push(dda.to_string());
         }
         // extra=0 only. Encoder adds amf@capture. mode=direct maps D3D11
@@ -322,11 +331,16 @@ mod tests {
             Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x10DE }),
             60, 1920, 1080, 1920, 1080, "h264_nvenc",
         );
-        // Identity: no scale_d3d11 (hardcoded 10-frame GPU pool).
+        // Identity: cap ddagrab's 8-pool before raw dda succeeds.
+        assert!(same[0].contains("hwmap=mode=direct:extra_hw_frames=0"));
         assert!(!same[0].contains("scale_d3d11"));
         assert!(!same[0].contains("scale_cuda"));
-        assert!(!same[0].contains("hwmap"));
-        assert!(same[0].starts_with("ddagrab="));
+        assert!(!same[0].contains("derive_device"));
+        assert!(same.iter().any(|g| g.starts_with("ddagrab=") && !g.contains("hwmap")));
+        assert!(extra_hw_device_args(
+            DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x10DE },
+            &same[0],
+        ).is_empty());
         let cuda_at = same.iter().position(|g| g.contains("scale_cuda")).unwrap();
         let cpu_at = same.iter().position(|g| g.contains("hwdownload")).unwrap();
         assert!(cuda_at < cpu_at, "BGRA reject must try CUDA before CPU download");
@@ -357,11 +371,12 @@ mod tests {
             Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x1002 }),
             60, 1920, 1080, 1920, 1080, "h264_amf",
         );
-        // Identity: no hwmap wrap (NVENC already skips scale_d3d11).
-        assert!(!graphs[0].contains("hwmap"));
+        // Identity: cap ddagrab's 8-pool before raw dda succeeds.
+        assert!(graphs[0].contains("hwmap=mode=direct:extra_hw_frames=0"));
+        assert!(!graphs[0].contains("derive_device"));
         assert!(!graphs[0].contains("hwupload"));
         assert!(!graphs[0].contains("hwdownload"));
-        assert!(graphs[0].starts_with("ddagrab="));
+        assert!(graphs.iter().any(|g| g.starts_with("ddagrab=") && !g.contains("hwmap")));
         assert!(graphs.iter().any(|g| g.contains("hwmap=derive_device=d3d11:extra_hw_frames=0")));
         assert!(!graphs.iter().any(|g| g.contains("hwmap=derive_device=d3d11") && !g.contains("extra_hw_frames")));
         assert!(graphs.iter().any(|g| g.contains("format=d3d11")));
