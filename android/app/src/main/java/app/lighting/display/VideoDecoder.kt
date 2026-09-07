@@ -49,6 +49,15 @@ class VideoDecoder {
                 try {
                     decoder = MediaCodec.createByCodecName(name)
                     decoder.configure(format, surface, null, 0)
+                    // AOSP default is SCALE_TO_FIT. Some OEM MediaCodec
+                    // defaults to SCALE_TO_FIT_WITH_CROPPING, which GPU-
+                    // composites every picture — one refresh GlideX /
+                    // Moonlight do not pay (HWC overlay). Must be after
+                    // configure(), before start().
+                    try {
+                        decoder.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT)
+                    } catch (_: Throwable) {
+                    }
                     decoder.start()
                     // setParameters cannot fail configure(); poke the SoC
                     // keys in case this try won without them (try 5 / -1).
@@ -189,9 +198,11 @@ class VideoDecoder {
         // vendor key on try 0 used to fail FEATURE_LowLatency configure().
         // Try 1 still has the SoC key (no operating-rate). Try 2 is KEY +
         // SoC (no FEATURE). Try 5 / -1 omit vendor so a reject still configures.
-        // max-output-buffers=2 rides try 0–5 (vendor-key winners included).
-        // KEY_PRIORITY=0 rides with KEY_LOW_LATENCY (try 0–2). GSI / Treble
-        // crash on vendor keys — those stay behind lowLatencySafe (try 3–5).
+        // max-output-buffers=2 and KEY_PRIORITY=0 ride try 0–5 (vendor-key
+        // winners included). C2 reads both at configure(); setParameters
+        // after start() does not shrink the pool or switch realtime.
+        // GSI / Treble crash on vendor keys — those stay behind
+        // lowLatencySafe (try 3–5).
         if (!software) {
             val lastTry = if (caps.lowLatencySafe) 5 else 2
             for (tryNumber in 0..lastTry) {
@@ -260,8 +271,8 @@ class VideoDecoder {
      * decoder paced at SPS like a movie (a vsync of hold). Try 2 is KEY +
      * SoC (no FEATURE / no operating-rate). A KEY-only try 2 used to
      * configure() and skip try 3–4, so C2 never saw qti-ext. Try 5 / -1
-     * stay bare. max-output-buffers=2 rides try 0–5 so a vendor-key
-     * configure still gets a 2-slot pool; KEY_PRIORITY=0 rides try 0–2.
+     * stay bare. max-output-buffers=2 and KEY_PRIORITY=0 ride try 0–5
+     * so a vendor-key configure still gets a 2-slot realtime pool.
      */
     private fun applyLowLatencyOptions(
         format: MediaFormat,
@@ -279,6 +290,14 @@ class VideoDecoder {
             // pool (one extra decoded picture vs the laptop). Cannot
             // setParameters this after start(). Try -1 stays bare.
             format.setInteger("max-output-buffers", 2)
+            if (Build.VERSION.SDK_INT >= 23) {
+                // 0 = realtime / ahead of vsync. C2 reads this at
+                // configure(). Bound to try 0–2 it vanished when C2
+                // rejected operating-rate, then vendor-key try 3–5
+                // won and paced a vsync. setParameters after start()
+                // does not switch the realtime bin.
+                format.setInteger(MediaFormat.KEY_PRIORITY, 0)
+            }
             if (tryNumber < 3) {
                 format.setInteger("low-latency", 1)
                 if (Build.VERSION.SDK_INT >= 30) {
@@ -297,12 +316,6 @@ class VideoDecoder {
                 }
                 if (tryNumber < 1 && Build.VERSION.SDK_INT >= 23) {
                     format.setInteger(MediaFormat.KEY_OPERATING_RATE, 32767)
-                }
-                if (tryNumber < 3 && Build.VERSION.SDK_INT >= 23) {
-                    // 0 = realtime / ahead of vsync. Bound to 32767 it
-                    // vanished when C2 rejected operating-rate, then
-                    // official FEATURE codecs returned and paced a vsync.
-                    format.setInteger(MediaFormat.KEY_PRIORITY, 0)
                 }
                 // GSI / Treble crash on a dump of every vendor key.
                 // Matching SoC keys must be on the format that actually
