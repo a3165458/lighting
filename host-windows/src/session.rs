@@ -885,21 +885,36 @@ async fn handle_client(
         }
     }
 
-    // Always clamp to the tablet panel when Hello reports it — a 2K desktop
-    // must not stream 2K to a 1080p/1200p pad just because ResCap is「最高 2K」.
-    let (mut width, mut height) = lighting_host::session_policy::compute_encode_size(
-        display.width,
-        display.height,
-        hello.screen_width,
-        hello.screen_height,
-        req.max_width,
-        req.max_height,
-        scale,
-        dec_w,
-        dec_h,
-    );
-    width = lighting_host::session_policy::align_dim(width, align);
-    height = lighting_host::session_policy::align_dim(height, align);
+    // Virtual: encode the desktop IddCx actually landed on when that size
+    // still fits the decoder. Re-clamping to Hello.alignment (16) used to
+    // turn 1920×1080 into 1920×1072 (not in the VDD table) and force
+    // ffmpeg scale_d3d11's 10-frame pool. Mirror still clamps to the pad.
+    let (mut width, mut height) = if req.share_mode.uses_virtual_display() {
+        lighting_host::session_policy::encode_keep_dda_identity(
+            display.width,
+            display.height,
+            panel_w,
+            panel_h,
+            dec_w,
+            dec_h,
+        )
+    } else {
+        let (w, h) = lighting_host::session_policy::compute_encode_size(
+            display.width,
+            display.height,
+            hello.screen_width,
+            hello.screen_height,
+            req.max_width,
+            req.max_height,
+            scale,
+            dec_w,
+            dec_h,
+        );
+        (
+            lighting_host::session_policy::align_dim(w, align),
+            lighting_host::session_policy::align_dim(h, align),
+        )
+    };
 
     let fps = adapted_fps(req.fps, hello.max_fps, dec_fps, hw);
     let auto_br = auto_bitrate(width, height, fps);

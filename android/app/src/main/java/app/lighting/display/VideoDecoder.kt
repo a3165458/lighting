@@ -40,49 +40,62 @@ class VideoDecoder {
             MediaFormat.MIMETYPE_VIDEO_AVC
         }
         val caps = DeviceCaps.probe()
-        val w = (width.coerceAtLeast(16) / caps.alignment * caps.alignment).coerceAtLeast(16)
-        val h = (height.coerceAtLeast(16) / caps.alignment * caps.alignment).coerceAtLeast(16)
+        // Host now sends the even panel (1920×1080), not a 16-floor
+        // (1920×1072) that IddCx never lists. Try the stream size first —
+        // isSizeSupported(1920, 1080) is true on every pad Lighting
+        // targets. Aligned fallback only if configure() rejects it.
+        val exactW = width.coerceAtLeast(16)
+        val exactH = height.coerceAtLeast(16)
+        val sizes = LinkedHashSet<Pair<Int, Int>>()
+        sizes.add(exactW to exactH)
+        val alignedW = (exactW / caps.alignment * caps.alignment).coerceAtLeast(16)
+        val alignedH = (exactH / caps.alignment * caps.alignment).coerceAtLeast(16)
+        if (alignedW != exactW || alignedH != exactH) {
+            sizes.add(alignedW to alignedH)
+        }
         val errors = ArrayList<String>()
-        for (name in decoderCandidates(mime, w, h, caps)) {
-            for (format in formatVariants(w, h, csd, caps, name)) {
-                var decoder: MediaCodec? = null
-                try {
-                    decoder = MediaCodec.createByCodecName(name)
-                    decoder.configure(format, surface, null, 0)
-                    // AOSP default is SCALE_TO_FIT. Some OEM MediaCodec
-                    // defaults to SCALE_TO_FIT_WITH_CROPPING, which GPU-
-                    // composites every picture — one refresh GlideX /
-                    // Moonlight do not pay (HWC overlay). Must be after
-                    // configure(), before start().
+        for ((w, h) in sizes) {
+            for (name in decoderCandidates(mime, w, h, caps)) {
+                for (format in formatVariants(w, h, csd, caps, name)) {
+                    var decoder: MediaCodec? = null
                     try {
-                        decoder.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT)
-                    } catch (_: Throwable) {
-                    }
-                    decoder.start()
-                    // setParameters cannot fail configure(); poke the SoC
-                    // keys in case this try won without them (try 5 / -1).
-                    applyRuntimeLowLatency(decoder, name)
-                    codec = decoder
-                    configured = true
-                    activeName = decoder.name
-                    skipUntilKey.set(false)
-                    fakePtsUs = 0L
-                    running.set(true)
-                    presentWorker = Thread({ presentLoop() }, "lighting-present").apply { start() }
-                    Log.i(TAG, "decoder ok: ${decoder.name} ${w}x$h $mime soc=${caps.soc} gsi=${caps.gsi}")
-                    return
-                } catch (t: Throwable) {
-                    val msg = "$name: ${t.message}"
-                    Log.w(TAG, "decoder failed $msg", t)
-                    errors.add(msg)
-                    try {
-                        decoder?.release()
-                    } catch (_: Exception) {
+                        decoder = MediaCodec.createByCodecName(name)
+                        decoder.configure(format, surface, null, 0)
+                        // AOSP default is SCALE_TO_FIT. Some OEM MediaCodec
+                        // defaults to SCALE_TO_FIT_WITH_CROPPING, which GPU-
+                        // composites every picture — one refresh GlideX /
+                        // Moonlight do not pay (HWC overlay). Must be after
+                        // configure(), before start().
+                        try {
+                            decoder.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT)
+                        } catch (_: Throwable) {
+                        }
+                        decoder.start()
+                        // setParameters cannot fail configure(); poke the SoC
+                        // keys in case this try won without them (try 5 / -1).
+                        applyRuntimeLowLatency(decoder, name)
+                        codec = decoder
+                        configured = true
+                        activeName = decoder.name
+                        skipUntilKey.set(false)
+                        fakePtsUs = 0L
+                        running.set(true)
+                        presentWorker = Thread({ presentLoop() }, "lighting-present").apply { start() }
+                        Log.i(TAG, "decoder ok: ${decoder.name} ${w}x$h $mime soc=${caps.soc} gsi=${caps.gsi}")
+                        return
+                    } catch (t: Throwable) {
+                        val msg = "$name ${w}x$h: ${t.message}"
+                        Log.w(TAG, "decoder failed $msg", t)
+                        errors.add(msg)
+                        try {
+                            decoder?.release()
+                        } catch (_: Exception) {
+                        }
                     }
                 }
             }
         }
-        throw IllegalStateException("解码失败 0xfffffc0e/UNSUPPORTED。${w}x$h $mime。${errors.joinToString(" | ")}")
+        throw IllegalStateException("解码失败 0xfffffc0e/UNSUPPORTED。${exactW}x$exactH $mime。${errors.joinToString(" | ")}")
     }
 
     fun offer(
