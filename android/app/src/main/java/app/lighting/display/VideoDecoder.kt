@@ -319,9 +319,12 @@ class VideoDecoder {
             format.setInteger("max-output-buffers", 2)
             // C2 reads max-output-buffer-count. OMX-era max-output-buffers
             // is ignored and the default 4–8 pool holds a reconstructed
-            // picture — one refresh vs the laptop. Harmless extra key if
-            // the codec does not know it; Try -1 stays bare.
-            format.setInteger("max-output-buffer-count", 2)
+            // picture — one refresh vs the laptop. Only tries 0–5: if this
+            // key rejects configure(), try 6 still has the OMX pool. Putting
+            // it on try 6 used to skip straight to bare try -1 (4–8 slots).
+            if (tryNumber < 6) {
+                format.setInteger("max-output-buffer-count", 2)
+            }
             if (Build.VERSION.SDK_INT >= 23) {
                 // 0 = realtime / ahead of vsync. C2 reads this at
                 // configure(). Bound to try 0–2 it vanished when C2
