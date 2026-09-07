@@ -749,15 +749,31 @@ pub fn ensure_vdd_xml_high_refresh(xml: &str, width: u32, height: u32) -> String
         }
     }
     xml = ensure_vdd_resolution_blocks_have_120(&xml);
-    let w_tag = format!("<width>{width}</width>");
-    let h_tag = format!("<height>{height}</height>");
-    if !(xml.contains(&w_tag) && xml.contains(&h_tag)) {
+    if !vdd_xml_has_resolution(&xml, width, height) {
         let entry = vdd_resolution_xml(width, height);
         if let Some(idx) = xml.find("</resolutions>") {
             xml.insert_str(idx, &entry);
         }
     }
     xml
+}
+
+fn vdd_xml_has_resolution(xml: &str, width: u32, height: u32) -> bool {
+    let w_tag = format!("<width>{width}</width>");
+    let h_tag = format!("<height>{height}</height>");
+    let mut rest = xml;
+    while let Some(res_start) = rest.find("<resolution>") {
+        let after = &rest[res_start..];
+        let Some(rel_end) = after.find("</resolution>") else {
+            break;
+        };
+        let block = &after[..rel_end];
+        if block.contains(&w_tag) && block.contains(&h_tag) {
+            return true;
+        }
+        rest = &after[rel_end + "</resolution>".len()..];
+    }
+    false
 }
 
 fn ensure_vdd_resolution_blocks_have_120(xml: &str) -> String {
@@ -998,11 +1014,38 @@ pub fn compute_encode_size(
     fit_resolution(src_w, src_h, out_w, out_h)
 }
 
-/// MediaCodec / IddCx both want even multiples of `alignment` (often 16).
-pub fn align_dim(v: u32, alignment: u32) -> u32 {
-    let align = alignment.max(2);
-    let aligned = (v.max(align) / align * align).max(align);
-    aligned.max(16) & !1
+/// Even pixels only. MediaCodec `widthAlignment` is often 16, but that is a
+/// stride hint: 1920×1080 is `isSizeSupported` on every Android decoder
+/// Lighting targets. Flooring to 16 turned 1080 into 1072 / 2340 into 2336,
+/// sizes IddCx/VDD do not advertise — ffmpeg then hits `scale_d3d11`
+/// (hardcoded 10-frame GPU pool). GlideX encodes the even panel.
+pub fn align_dim(v: u32, _alignment: u32) -> u32 {
+    v.max(16) & !1
+}
+
+/// When IddCx did not land on `wanted`, encode the captured desktop 1:1
+/// if it still fits the decoder. Shrinking in the filter graph is the
+/// scale_d3d11 pool; the tablet already SCALE_TO_FITs.
+pub fn encode_keep_dda_identity(
+    capture_w: u32,
+    capture_h: u32,
+    wanted_w: u32,
+    wanted_h: u32,
+    dec_w: u32,
+    dec_h: u32,
+) -> (u32, u32) {
+    let cw = align_dim(capture_w, 2);
+    let ch = align_dim(capture_h, 2);
+    let ww = align_dim(wanted_w, 2);
+    let wh = align_dim(wanted_h, 2);
+    if cw == ww && ch == wh {
+        return (cw, ch);
+    }
+    let (lim_w, lim_h) = orient_box(cw, ch, dec_w.max(16), dec_h.max(16));
+    if cw <= lim_w && ch <= lim_h {
+        return (cw, ch);
+    }
+    (ww, wh)
 }
 
 /// Virtual panel size that matches the encoder output, so `ddagrab` is 1:1.
@@ -1432,12 +1475,49 @@ mod tests {
     }
 
     #[test]
-    fn virtual_panel_uses_decoder_alignment_not_raw_tablet() {
-        // 1080 is not a multiple of 16 (1080/16=67.5) — 1072 is.
+    fn virtual_panel_keeps_even_panel_not_16_floor() {
+        // 16-floor used to invent 2336×1072, which IddCx does not list.
         let (w, h) = virtual_panel_size(2340, 1080, 3840, 2160, 1.0, 3840, 2160, 16);
-        assert_eq!((w, h), (2336, 1072));
-        assert_eq!(align_dim(2340, 16), 2336);
-        assert_eq!(align_dim(1080, 16), 1072);
+        assert_eq!((w, h), (2340, 1080));
+        assert_eq!(align_dim(2340, 16), 2340);
+        assert_eq!(align_dim(1080, 16), 1080);
+        assert_eq!(align_dim(1920, 16), 1920);
+    }
+
+    #[test]
+    fn capture_identity_wins_when_vdd_misses_tablet_mode() {
+        // VDD stayed 2560×1440; decoder is 4K. Do not scale_d3d11 to 1080p.
+        let (w, h) = encode_keep_dda_identity(2560, 1440, 1920, 1080, 3840, 2160);
+        assert_eq!((w, h), (2560, 1440));
+        assert!(!crate::capture_graph::needs_scale(2560, 1440, w, h));
+    }
+
+    #[test]
+    fn capture_identity_still_clamps_when_decoder_is_smaller() {
+        let (w, h) = encode_keep_dda_identity(2560, 1440, 1920, 1080, 1920, 1088);
+        assert_eq!((w, h), (1920, 1080));
+    }
+
+    #[test]
+    fn vdd_xml_inserts_paired_resolution_not_loose_tags() {
+        let xml = r#"<vdd_settings>
+    <resolutions>
+        <resolution>
+            <width>1920</width>
+            <height>1080</height>
+            <refresh_rate>60</refresh_rate>
+        </resolution>
+        <resolution>
+            <width>2560</width>
+            <height>1440</height>
+            <refresh_rate>60</refresh_rate>
+        </resolution>
+    </resolutions>
+</vdd_settings>"#;
+        let out = ensure_vdd_xml_high_refresh(xml, 1920, 1200);
+        assert!(out.contains("<height>1200</height>"));
+        assert!(vdd_xml_has_resolution(&out, 1920, 1200));
+        assert!(vdd_xml_has_resolution(&out, 1920, 1080));
     }
 
     #[test]
