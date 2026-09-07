@@ -155,7 +155,10 @@ pub fn usb_wait_refresh_ms() -> u64 {
 /// 0.1.54/55 then trusted `reverse --list`: after IddCx the list still
 /// shows tcp:17400 while the tunnel is dead (HA18C874 visible, pad on
 /// 重连中 / 没检测到电脑). Recreate at most this often, only while
-/// still waiting for the first Hello — not a 2s launch heartbeat.
+/// still waiting for Hello — not a 2s launch heartbeat.
+/// 0.1.56 always `--remove` + `am start` on this timer and chopped the
+/// pad's in-flight 127.0.0.1 connect (重连中 loop). Skip when accept
+/// recently proved the tunnel is live.
 pub fn usb_reverse_recreate_after_ms() -> u64 {
     4_000
 }
@@ -178,6 +181,68 @@ pub fn relaunch_client_while_waiting_for_hello() -> bool {
 
 pub fn relaunch_client_when_reverse_restored() -> bool {
     true
+}
+
+/// 0.1.56 mapped force-recreate success to "restored" so every 4s
+/// `am start` bounced DisplayActivity. The reconnect loop is already
+/// running; `--remove` + launch is the 0.1.53 Honor 闪退 / 重连中 loop.
+pub fn relaunch_client_after_forced_reverse_recreate() -> bool {
+    false
+}
+
+/// `--remove` while classify_incoming is reading Hello kills the TCP
+/// that just proved reverse is alive. Cover the 3s Hello timeout plus
+/// one recreate tick.
+pub fn usb_reverse_recreate_skips_recent_accept() -> bool {
+    true
+}
+
+pub fn usb_reverse_recent_accept_ms() -> u64 {
+    8_000
+}
+
+/// Whether wait-hello should `adb reverse --remove` + re-bind.
+/// `last_recreate_ms` / `last_accept_ms` are elapsed times; `None` = never.
+pub fn should_force_stale_reverse(
+    hello_wait_ms: u64,
+    last_recreate_ms: Option<u64>,
+    last_accept_ms: Option<u64>,
+) -> bool {
+    let after = usb_reverse_recreate_after_ms();
+    if after == 0 || hello_wait_ms < after {
+        return false;
+    }
+    if last_recreate_ms.is_some_and(|ms| ms < after) {
+        return false;
+    }
+    if usb_reverse_recreate_skips_recent_accept()
+        && last_accept_ms.is_some_and(|ms| ms < usb_reverse_recent_accept_ms())
+    {
+        return false;
+    }
+    true
+}
+
+/// `restored_missing` = `ensure_reverse_port` added a mapping that was gone.
+/// Forced recreate is a rebuild of a listed-but-maybe-stale tunnel.
+pub fn should_relaunch_client_after_reverse(restored_missing: bool, forced_recreate: bool) -> bool {
+    if forced_recreate {
+        relaunch_client_after_forced_reverse_recreate()
+    } else {
+        restored_missing && relaunch_client_when_reverse_restored()
+    }
+}
+
+/// ChangeDisplaySettingsEx on the IddCx panel re-enumerates USB on
+/// Honor. The Hello TCP is then dead; CONFIG/ffmpeg on that socket is
+/// the 「设置平板分辨率 → 上一台已断开 → 重连中」 loop. Wait for the
+/// next Hello and do not change mode again this share.
+pub fn rerequest_hello_after_virtual_mode_change() -> bool {
+    true
+}
+
+pub fn abandon_hello_after_virtual_mode(did_change_mode: bool) -> bool {
+    did_change_mode && rerequest_hello_after_virtual_mode_change()
 }
 
 pub fn listen_port_from_bind(bind: &str) -> u16 {
@@ -1302,6 +1367,23 @@ mod tests {
         assert!(force_usb_reverse_after_virtual_prepare());
         assert!(!relaunch_client_while_waiting_for_hello());
         assert!(relaunch_client_when_reverse_restored());
+        assert!(!relaunch_client_after_forced_reverse_recreate());
+        assert!(usb_reverse_recreate_skips_recent_accept());
+        assert!(usb_reverse_recent_accept_ms() >= usb_reverse_recreate_after_ms());
+        assert!(rerequest_hello_after_virtual_mode_change());
+        assert!(abandon_hello_after_virtual_mode(true));
+        assert!(!abandon_hello_after_virtual_mode(false));
+        // No Hello yet, tunnel never accepted — rebuild the stale Honor reverse.
+        assert!(should_force_stale_reverse(4_000, None, None));
+        assert!(!should_force_stale_reverse(2_000, None, None));
+        // Accept in flight (Hello still being classified) — do not --remove.
+        assert!(!should_force_stale_reverse(4_000, None, Some(500)));
+        assert!(should_force_stale_reverse(12_000, Some(8_000), Some(9_000)));
+        // Last recreate was 2s ago — wait the interval.
+        assert!(!should_force_stale_reverse(6_000, Some(2_000), None));
+        assert!(should_relaunch_client_after_reverse(true, false));
+        assert!(!should_relaunch_client_after_reverse(false, false));
+        assert!(!should_relaunch_client_after_reverse(true, true));
         assert_eq!(listen_port_from_bind("0.0.0.0:17400"), 17400);
         assert_eq!(listen_port_from_bind("127.0.0.1:17400"), 17400);
         assert_eq!(listen_port_from_bind(""), 17400);

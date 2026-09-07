@@ -522,12 +522,15 @@ fn run_vdd_provision() -> Result<()> {
     run_provision_script(&script, &bundle, "Full")
 }
 
+/// Second value is true when ChangeDisplaySettingsEx actually ran on the
+/// virtual panel. Honor re-enumerates USB on that path, so the Hello TCP
+/// must not be reused for CONFIG.
 pub fn configure_virtual_for_tablet(
     width: u32,
     height: u32,
     fps: u32,
     preserve: Option<&PrimarySnapshot>,
-) -> Result<DisplayInfo> {
+) -> Result<(DisplayInfo, bool)> {
     let w = (width.max(16) & !1).max(16);
     let h = (height.max(16) & !1).max(16);
     let hz = lighting_host::session_policy::virtual_target_hz(fps, 120);
@@ -554,6 +557,7 @@ pub fn configure_virtual_for_tablet(
     );
 
     let current_hz = current_display_mode(&target.name).map(|m| m.fps).unwrap_or(0);
+    let mut changed = false;
     if target.width != w || target.height != h || current_hz < hz {
         // Size + refresh on the virtual device only. Immediately reassert the
         // laptop snapshot below so a CCD side-effect cannot keep the panel at 60.
@@ -570,6 +574,7 @@ pub fn configure_virtual_for_tablet(
                     );
                     std::thread::sleep(Duration::from_millis(400));
                     applied = true;
+                    changed = true;
                     break;
                 }
                 Err(err) => {
@@ -578,8 +583,9 @@ pub fn configure_virtual_for_tablet(
             }
         }
         if !applied && (target.width != w || target.height != h) {
-            if let Err(err) = change_display_mode(&target.name, w, h, None, None, false) {
-                tracing::warn!("set virtual size {w}×{h} failed: {err:#}");
+            match change_display_mode(&target.name, w, h, None, None, false) {
+                Ok(()) => changed = true,
+                Err(err) => tracing::warn!("set virtual size {w}×{h} failed: {err:#}"),
             }
         }
     }
@@ -590,11 +596,13 @@ pub fn configure_virtual_for_tablet(
     }
 
     let list = list_displays()?;
-    list.iter()
+    let info = list
+        .iter()
         .find(|d| d.name.eq_ignore_ascii_case(&target.name))
         .cloned()
         .or_else(|| pick_virtual_excluding(&list, primary_name).cloned())
-        .context("设置平板分辨率后找不到原扩展屏")
+        .context("设置平板分辨率后找不到原扩展屏")?;
+    Ok((info, changed))
 }
 
 fn vdd_pipe_alive() -> bool {

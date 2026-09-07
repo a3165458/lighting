@@ -111,6 +111,14 @@ fn set_bitrate(status: &Arc<Mutex<SessionStatus>>, bitrate_kbps: u32) {
 
 const HEADER_BYTES: usize = 12;
 
+/// What `handle_client` did with this Hello. Virtual mode change on Honor
+/// kills USB, so that path must not restore the laptop desktop (CCD) or
+/// start ffmpeg on the dead socket.
+enum ClientOutcome {
+    Finished,
+    NeedHelloAfterVirtualMode,
+}
+
 struct ClassifiedStream {
     reader: tokio::net::tcp::OwnedReadHalf,
     writer: tokio::net::tcp::OwnedWriteHalf,
@@ -401,6 +409,8 @@ async fn run_session_inner(
     // it must not enter the video session channel or it HOL-blocks the pointer.
     let (video_tx, mut video_rx) = mpsc::channel::<ClassifiedStream>(1);
     let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<ClassifiedStream>(4);
+    let last_accept: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+    let last_accept_for_accept = last_accept.clone();
     let mut accept_stop = stop_rx.clone();
     tokio::spawn(async move {
         loop {
@@ -409,6 +419,9 @@ async fn run_session_inner(
                 accepted = listener.accept() => {
                     match accepted {
                         Ok((stream, addr)) => {
+                            if let Ok(mut slot) = last_accept_for_accept.lock() {
+                                *slot = Some(Instant::now());
+                            }
                             let video_tx = video_tx.clone();
                             let ctrl_tx = ctrl_tx.clone();
                             tokio::spawn(async move {
@@ -518,6 +531,11 @@ async fn run_session_inner(
                 );
             }
         }
+        // Accepts from before IddCx must not suppress reverse --remove:
+        // that TCP is the stale Hello we just dropped.
+        if let Ok(mut slot) = last_accept.lock() {
+            *slot = None;
+        }
         let refreshed = open_usb_tunnel(
             adb_path.as_ref(),
             reverse_serial
@@ -545,10 +563,11 @@ async fn run_session_inner(
     req.display_index = displays::pick_display_index(&displays, req.share_mode)
         .context("所选投屏模式没有可用显示器，请刷新列表")?;
     set_status(&status, "等待设备", usb_wait_detail);
-    let display = displays
+    let mut display = displays
         .get(req.display_index)
         .cloned()
         .context("所选显示器不存在，请刷新列表")?;
+    let mut virtual_mode_applied = false;
 
     let mut stop_rx = stop_rx;
     let usb_refresh_busy = Arc::new(AtomicBool::new(false));
@@ -595,16 +614,18 @@ async fn run_session_inner(
                         {
                             let busy = usb_refresh_busy.clone();
                             let status_ref = status.clone();
-                            let recreate_after =
-                                session_policy::usb_reverse_recreate_after_ms();
-                            let force_stale = recreate_after > 0
-                                && hello_wait.elapsed()
-                                    >= Duration::from_millis(recreate_after)
-                                && last_reverse_recreate
-                                    .map(|t| {
-                                        t.elapsed() >= Duration::from_millis(recreate_after)
-                                    })
-                                    .unwrap_or(true);
+                            let last_accept_ms = last_accept
+                                .lock()
+                                .ok()
+                                .and_then(|g| *g)
+                                .map(|t| t.elapsed().as_millis() as u64);
+                            let last_recreate_ms = last_reverse_recreate
+                                .map(|t| t.elapsed().as_millis() as u64);
+                            let force_stale = session_policy::should_force_stale_reverse(
+                                hello_wait.elapsed().as_millis() as u64,
+                                last_recreate_ms,
+                                last_accept_ms,
+                            );
                             if force_stale {
                                 last_reverse_recreate = Some(Instant::now());
                             }
@@ -616,7 +637,7 @@ async fn run_session_inner(
                                         listen_port,
                                     )
                                     .await
-                                    .map(|_| true)
+                                    .map(|_| false)
                                 } else {
                                     adb::ensure_reverse_port(
                                         &adb_bin,
@@ -626,23 +647,25 @@ async fn run_session_inner(
                                     .await
                                 };
                                 match result {
-                                    Ok(restored) => {
-                                        if restored {
+                                    Ok(restored_missing) => {
+                                        if restored_missing || force_stale {
                                             set_transport(
                                                 &status_ref,
                                                 format!(
                                                     "USB · adb reverse 已就绪（{serial}）"
                                                 ),
                                             );
-                                            if session_policy::relaunch_client_when_reverse_restored()
-                                            {
-                                                adb::launch_stream_client(
-                                                    &adb_bin,
-                                                    &serial,
-                                                    listen_port,
-                                                )
-                                                .await;
-                                            }
+                                        }
+                                        if session_policy::should_relaunch_client_after_reverse(
+                                            restored_missing,
+                                            force_stale,
+                                        ) {
+                                            adb::launch_stream_client(
+                                                &adb_bin,
+                                                &serial,
+                                                listen_port,
+                                            )
+                                            .await;
                                         }
                                     }
                                     Err(err) => {
@@ -660,10 +683,10 @@ async fn run_session_inner(
             }
         };
 
-        match handle_client(
+        let outcome = handle_client(
             incoming,
             &mut ctrl_rx,
-            display.clone(),
+            &mut display,
             ffmpeg.clone(),
             req.clone(),
             status.clone(),
@@ -671,10 +694,20 @@ async fn run_session_inner(
             controls.clone(),
             tablet_only.clone(),
             preserve.clone(),
+            &mut virtual_mode_applied,
         )
-        .await
-        {
-            Ok(()) => {
+        .await;
+        let wait_after_virtual = matches!(
+            &outcome,
+            Ok(ClientOutcome::NeedHelloAfterVirtualMode)
+        );
+        match &outcome {
+            Ok(ClientOutcome::NeedHelloAfterVirtualMode) => {
+                tracing::info!(
+                    "virtual mode applied; waiting for a fresh Hello (USB may re-enum)"
+                );
+            }
+            Ok(ClientOutcome::Finished) => {
                 tracing::info!("client session ended");
             }
             Err(err) => {
@@ -685,35 +718,38 @@ async fn run_session_inner(
         // Tablet sleep / drop: ffmpeg is already dead (handle_client waits).
         // "仅平板" must undo Win+P external *before* any SET_PRIMARY, otherwise
         // the internal panel stays detached and the GPU hangs until
-        // Win+Ctrl+Shift+B.
-        let was_tablet_only = tablet_only.swap(false, Ordering::SeqCst);
-        if let Some(snap) = preserve.clone() {
-            let action = lighting_host::session_policy::client_drop_desktop_action(
-                was_tablet_only,
-                if was_tablet_only {
-                    lighting_host::session_policy::PrimaryRestoreAction::SetPrimary
-                } else {
-                    lighting_host::session_policy::PrimaryRestoreAction::TimingOnly
-                },
-            );
-            let _ = tokio::task::spawn_blocking(move || {
-                match action {
-                    lighting_host::session_policy::ClientDropDesktopAction::UndoExternal => {
-                        if let Err(err) = displays::restore_after_tablet_only(&snap) {
-                            tracing::warn!("restore after tablet-only disconnect: {err:#}");
-                        } else {
-                            tracing::info!("restored laptop after tablet sleep/disconnect");
+        // Win+Ctrl+Shift+B. Do not CCD after a virtual-mode Hello: that
+        // fights the size we just applied and bounces USB again.
+        if !wait_after_virtual {
+            let was_tablet_only = tablet_only.swap(false, Ordering::SeqCst);
+            if let Some(snap) = preserve.clone() {
+                let action = lighting_host::session_policy::client_drop_desktop_action(
+                    was_tablet_only,
+                    if was_tablet_only {
+                        lighting_host::session_policy::PrimaryRestoreAction::SetPrimary
+                    } else {
+                        lighting_host::session_policy::PrimaryRestoreAction::TimingOnly
+                    },
+                );
+                let _ = tokio::task::spawn_blocking(move || {
+                    match action {
+                        lighting_host::session_policy::ClientDropDesktopAction::UndoExternal => {
+                            if let Err(err) = displays::restore_after_tablet_only(&snap) {
+                                tracing::warn!("restore after tablet-only disconnect: {err:#}");
+                            } else {
+                                tracing::info!("restored laptop after tablet sleep/disconnect");
+                            }
                         }
-                    }
-                    lighting_host::session_policy::ClientDropDesktopAction::ReassertPrimary => {
-                        if let Err(err) = displays::reassert_primary(&snap) {
-                            tracing::warn!("reassert primary after tablet drop: {err:#}");
+                        lighting_host::session_policy::ClientDropDesktopAction::ReassertPrimary => {
+                            if let Err(err) = displays::reassert_primary(&snap) {
+                                tracing::warn!("reassert primary after tablet drop: {err:#}");
+                            }
                         }
+                        lighting_host::session_policy::ClientDropDesktopAction::None => {}
                     }
-                    lighting_host::session_policy::ClientDropDesktopAction::None => {}
-                }
-            })
-            .await;
+                })
+                .await;
+            }
         }
 
         if !session_policy::continue_accept_loop(stop.load(Ordering::Relaxed)) {
@@ -723,22 +759,39 @@ async fn run_session_inner(
 
         // Refresh reverse in the background so USB 127.0.0.1 is restored
         // without stalling the already-running accept task. Do not trust
-        // a leftover --list entry from the dropped session.
+        // a leftover --list entry from the dropped session. If the pad
+        // already parked a new Hello during IddCx, --remove would kill it.
+        let pad_already_reconnected = wait_after_virtual && !video_rx.is_empty();
+        if wait_after_virtual && !pad_already_reconnected {
+            if let Ok(mut slot) = last_accept.lock() {
+                *slot = None;
+            }
+        }
         if let (Some(adb_bin), Some(serial)) = (adb_path.clone(), reverse_serial.clone()) {
-            tokio::spawn(async move {
-                if let Err(err) =
-                    adb::recreate_reverse_port(&adb_bin, &serial, listen_port).await
-                {
-                    tracing::warn!("re-apply adb reverse failed: {err:#}");
-                }
-            });
+            if !pad_already_reconnected {
+                tokio::spawn(async move {
+                    if let Err(err) =
+                        adb::recreate_reverse_port(&adb_bin, &serial, listen_port).await
+                    {
+                        tracing::warn!("re-apply adb reverse failed: {err:#}");
+                    }
+                });
+            }
         }
         if let Ok(mut st) = status.lock() {
             clear_peer_metrics(&mut st);
         }
         hello_wait = Instant::now();
         last_reverse_recreate = None;
-        set_status(&status, "等待设备", "上一台已断开，等待重新连接");
+        if wait_after_virtual {
+            set_status(
+                &status,
+                "等待设备",
+                "虚拟屏已设为平板分辨率，等待重新连接",
+            );
+        } else {
+            set_status(&status, "等待设备", "上一台已断开，等待重新连接");
+        }
     }
 }
 
@@ -872,7 +925,7 @@ impl Drop for TabletOnlyRestoreGuard {
 async fn handle_client(
     incoming: ClassifiedStream,
     ctrl_rx: &mut mpsc::Receiver<ClassifiedStream>,
-    mut display: DisplayInfo,
+    display: &mut DisplayInfo,
     ffmpeg: std::path::PathBuf,
     req: SessionRequest,
     status: Arc<Mutex<SessionStatus>>,
@@ -880,7 +933,8 @@ async fn handle_client(
     controls: Arc<Controls>,
     tablet_only: Arc<AtomicBool>,
     preserve: Option<displays::PrimarySnapshot>,
-) -> Result<()> {
+    virtual_mode_applied: &mut bool,
+) -> Result<ClientOutcome> {
     let ClassifiedStream {
         mut reader,
         mut writer,
@@ -920,43 +974,75 @@ async fn handle_client(
     if req.share_mode.uses_virtual_display() && hello.screen_width > 0 && hello.screen_height > 0 {
         // Independent second screen: virtual monitor = encode size so
         // capture is 1:1 (no scaling anywhere) and the PC monitor is untouched.
-        set_status(
-            &status,
-            "独立第二屏",
-            format!("正在把虚拟屏设为编码分辨率 {panel_w}×{panel_h}"),
-        );
-        let (tw, th) = (panel_w, panel_h);
-        let want_fps = hello.max_fps.max(req.fps).min(120);
-        let preserve_for_mode = preserve.clone();
-        match tokio::task::spawn_blocking(move || {
-            displays::configure_virtual_for_tablet(tw, th, want_fps, preserve_for_mode.as_ref())
-        })
-        .await
-        {
-            Ok(Ok(updated)) => {
-                tracing::info!(
-                    "virtual display now {}×{} (capture {:?})",
-                    updated.width,
-                    updated.height,
-                    updated.dxgi
-                );
-                display = updated;
-                set_status(
-                    &status,
-                    "独立第二屏",
-                    format!("虚拟屏 {}×{} · 1:1 抓取", display.width, display.height),
-                );
-            }
-            Ok(Err(err)) => {
-                tracing::warn!("configure virtual for tablet failed: {err:#}");
-                set_status(
-                    &status,
-                    "独立第二屏",
-                    format!("虚拟屏未能设为平板分辨率，将缩放推流。{err}"),
-                );
-            }
-            Err(err) => {
-                tracing::warn!("configure virtual join failed: {err:#}");
+        // Honor IddCx re-enumerates USB on ChangeDisplaySettingsEx — do this
+        // once per share, then wait for a new Hello instead of CONFIG on a
+        // dead socket (the 设置平板分辨率 / 重连中 loop).
+        if *virtual_mode_applied {
+            set_status(
+                &status,
+                "独立第二屏",
+                format!(
+                    "虚拟屏已是平板分辨率 {}×{}，开始推流",
+                    display.width, display.height
+                ),
+            );
+        } else {
+            set_status(
+                &status,
+                "独立第二屏",
+                format!("正在把虚拟屏设为编码分辨率 {panel_w}×{panel_h}"),
+            );
+            let (tw, th) = (panel_w, panel_h);
+            let want_fps = hello.max_fps.max(req.fps).min(120);
+            let preserve_for_mode = preserve.clone();
+            match tokio::task::spawn_blocking(move || {
+                displays::configure_virtual_for_tablet(
+                    tw,
+                    th,
+                    want_fps,
+                    preserve_for_mode.as_ref(),
+                )
+            })
+            .await
+            {
+                Ok(Ok((updated, changed))) => {
+                    tracing::info!(
+                        "virtual display now {}×{} changed={changed} (capture {:?})",
+                        updated.width,
+                        updated.height,
+                        updated.dxgi
+                    );
+                    *display = updated;
+                    *virtual_mode_applied = true;
+                    set_status(
+                        &status,
+                        "独立第二屏",
+                        format!(
+                            "虚拟屏 {}×{} · 1:1 抓取",
+                            display.width, display.height
+                        ),
+                    );
+                    if session_policy::abandon_hello_after_virtual_mode(changed) {
+                        while ctrl_rx.try_recv().is_ok() {}
+                        set_status(
+                            &status,
+                            "等待设备",
+                            "虚拟屏已设为平板分辨率，正在恢复 USB…",
+                        );
+                        return Ok(ClientOutcome::NeedHelloAfterVirtualMode);
+                    }
+                }
+                Ok(Err(err)) => {
+                    tracing::warn!("configure virtual for tablet failed: {err:#}");
+                    set_status(
+                        &status,
+                        "独立第二屏",
+                        format!("虚拟屏未能设为平板分辨率，将缩放推流。{err}"),
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!("configure virtual join failed: {err:#}");
+                }
             }
         }
     } else if req.match_device && hello.screen_width > 0 && hello.screen_height > 0 {
@@ -1003,7 +1089,7 @@ async fn handle_client(
                         .find(|d| d.name == device_name)
                         .cloned()
                     {
-                        display = updated;
+                        *display = updated;
                     } else {
                         display.width = applied.width;
                         display.height = applied.height;
@@ -1067,14 +1153,14 @@ async fn handle_client(
                     })
                     .await
                     {
-                        Ok(Ok(updated)) => display = updated,
+                        Ok(Ok((updated, _))) => *display = updated,
                         Ok(Err(err)) => tracing::warn!("reapply virtual Hz after tablet-only: {err:#}"),
                         Err(err) => tracing::warn!("reapply virtual Hz join: {err:#}"),
                     }
                 }
                 let list = displays::list_displays()?;
                 if let Some(updated) = list.into_iter().find(|d| d.name == display.name) {
-                    display = updated;
+                    *display = updated;
                 }
                 set_status(
                     &status,
@@ -1411,7 +1497,7 @@ async fn handle_client(
     session.stop();
     tokio::time::sleep(Duration::from_millis(200)).await;
     drop(mode_guard);
-    Ok(())
+    Ok(ClientOutcome::Finished)
 }
 
 fn video_flags(pkt: &EncodedPacket) -> u8 {
