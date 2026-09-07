@@ -87,16 +87,12 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
     let mut graphs = Vec::new();
     let extras = hw_frame_pool_sizes();
     if encoder.contains("nvenc") {
-        // GlideX / Sunshine: ddagrab is already D3D11. scale_d3d11 converts
-        // BGRA→NV12 on the same device and NVENC consumes D3D11 frames.
-        // Try extra_hw_frames=0 first (no extra filter queue). An unkeyed
-        // scale_d3d11 still succeeds on new ffmpeg and then uses the filter
-        // default pool (often 16 pictures). Unknown extra_hw_frames on old
-        // ffmpeg fails this graph (~3s); the unkeyed graph below is last.
-        // Identity still needs NV12, but width/height on scale_d3d11 runs a
-        // VPP resize kernel (~0.5–2 ms) even when src==dst. Omit them so
-        // the filter only converts format. Sunshine's native DDA path has
-        // no resize either.
+        // ffmpeg vf_scale_d3d11.c hardcodes initial_pool_size = 10 and only
+        // adds extra_hw_frames when > 0. extra_hw_frames=0 is still ten GPU
+        // pictures in flight — GlideX / Sunshine native DDA has none.
+        // Identity: ddagrab is already D3D11 BGRA and NVENC accepts D3D11.
+        // Try that first. BGRA reject falls through to scale_d3d11 NV12.
+        // Resize still needs scale_d3d11 (pool of 10 is ffmpeg's floor).
         let d3d11 = if scale {
             format!("scale_d3d11=width={dst_w}:height={dst_h}:format=nv12")
         } else {
@@ -107,6 +103,14 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
         } else {
             "scale_cuda=format=nv12".to_string()
         };
+        if !scale {
+            graphs.push(dda.to_string());
+            for extra in &extras {
+                graphs.push(format!(
+                    "{dda},hwmap=derive_device=d3d11:extra_hw_frames={extra}"
+                ));
+            }
+        }
         for extra in &extras {
             graphs.push(format!("{dda},{d3d11}:extra_hw_frames={extra}"));
         }
@@ -288,9 +292,13 @@ mod tests {
             Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x10DE }),
             60, 1920, 1080, 1920, 1080, "h264_nvenc",
         );
-        assert!(same[0].contains("scale_d3d11=format=nv12:extra_hw_frames=0"));
-        assert!(!same[0].contains("width="));
-        assert!(!same[0].contains("height="));
+        // Identity: no scale_d3d11 (hardcoded 10-frame GPU pool).
+        assert!(!same[0].contains("scale_d3d11"));
+        assert!(!same[0].contains("scale_cuda"));
+        assert!(!same[0].contains("hwmap"));
+        assert!(same[0].starts_with("ddagrab="));
+        assert!(same.iter().any(|g| g.contains("scale_d3d11=format=nv12:extra_hw_frames=0")));
+        assert!(!same.iter().any(|g| g.contains("scale_d3d11") && g.contains("width=")));
         assert!(same.iter().any(|g| g.contains("scale_cuda=format=nv12") && !g.contains("1920:1080")));
         let scaled = dda_capture_graphs(
             Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x10DE }),
