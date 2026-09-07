@@ -120,6 +120,30 @@ pub fn install_fresh_attempts() -> &'static [&'static [&'static str]] {
     ]
 }
 
+/// Honor `adb install` waits on a USB-install confirm that never appears.
+/// `pm install` of a file already on the pad uses a different gate.
+pub fn pm_install_attempts() -> &'static [&'static [&'static str]] {
+    &[
+        &["-r", "-d", "-g", "-t"],
+        &["-r", "-d", "-t"],
+        &["-r", "-t"],
+        &["-r"],
+    ]
+}
+
+pub fn install_tmp_remote_path() -> &'static str {
+    "/data/local/tmp/lighting-client.apk"
+}
+
+pub fn pm_install_after_push() -> bool {
+    true
+}
+
+/// AOSP "Verify apps over USB". Honor's USB安装 toggle may ignore this.
+pub fn relax_adb_install_verifier() -> bool {
+    true
+}
+
 /// Do not uninstall the working client before the new APK is known to install.
 pub fn uninstall_before_install() -> bool {
     false
@@ -127,6 +151,20 @@ pub fn uninstall_before_install() -> bool {
 
 pub fn install_timeout_secs() -> u64 {
     90
+}
+
+/// One `adb install` flag set. Honor USB安装 hung the whole 90s budget
+/// and used to skip push+pm. Fail the streamed session fast, then push.
+pub fn install_attempt_timeout_secs() -> u64 {
+    20
+}
+
+pub fn adb_push_timeout_secs() -> u64 {
+    30
+}
+
+pub fn pm_install_timeout_secs() -> u64 {
+    45
 }
 
 pub fn adb_probe_timeout_secs() -> u64 {
@@ -184,6 +222,17 @@ pub fn user_action_required(output: &str) -> bool {
 
 pub fn timeout_hint() -> &'static str {
     "安装超时。多数平板不会弹「允许安装」。请点亮屏幕，打开开发者选项里的「USB安装 / 通过USB安装应用」，然后重试。这次不会先卸载旧客户端。"
+}
+
+pub fn is_install_timeout(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("timeout") || lower.contains("timed out") || err.contains("超时")
+}
+
+/// Timeout / USER_RESTRICTED: more `adb install` flags hit the same gate.
+/// Push the APK and `pm install` it as a local file instead.
+pub fn should_try_pm_install_fallback(err: &str) -> bool {
+    pm_install_after_push() && (is_install_timeout(err) || user_action_required(err))
 }
 
 pub fn user_restricted_hint() -> &'static str {
@@ -291,6 +340,20 @@ mod tests {
         assert!(install_wait_share_stop_ms() >= 8_000);
         assert!(install_replace_attempts()[0].contains(&"--no-incremental"));
         assert!(install_timeout_secs() >= 30);
+        assert!(install_attempt_timeout_secs() >= 10 && install_attempt_timeout_secs() <= 30);
+        assert!(pm_install_after_push());
+        assert!(relax_adb_install_verifier());
+        assert!(pm_install_attempts()[0].contains(&"-r"));
+        assert!(install_tmp_remote_path().starts_with("/data/local/tmp/"));
+        assert!(is_install_timeout("超时"));
+        assert!(is_install_timeout(timeout_hint()));
+        assert!(should_try_pm_install_fallback(timeout_hint()));
+        assert!(should_try_pm_install_fallback(
+            "Failure [INSTALL_FAILED_USER_RESTRICTED]"
+        ));
+        assert!(!should_try_pm_install_fallback(
+            "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE]"
+        ));
         assert!(adb_reverse_timeout_secs() > adb_probe_timeout_secs());
         assert!(am_start_timeout_secs() > adb_probe_timeout_secs());
         assert!(display_component().contains("DisplayActivity"));

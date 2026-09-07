@@ -506,7 +506,7 @@ async fn adb_install_once(
     cmd.arg(apk);
     let output = adb_output(
         &mut cmd,
-        Duration::from_secs(lighting_host::apk_install::install_timeout_secs()),
+        Duration::from_secs(lighting_host::apk_install::install_attempt_timeout_secs()),
     )
     .await
     .map_err(|_| lighting_host::apk_install::timeout_hint().to_string())?;
@@ -535,10 +535,148 @@ async fn adb_install_with_attempts(
                 last = err;
                 continue;
             }
+            Err(err) if lighting_host::apk_install::is_install_timeout(&err) => {
+                // Honor USB安装 hangs every streamed `adb install`. Do not
+                // spend another 20s per flag set — caller falls back to pm.
+                return Err(err);
+            }
             Err(err) => return Err(err),
         }
     }
     Err(last)
+}
+
+async fn relax_install_gate(adb: &Path, serial: &str) {
+    if !lighting_host::apk_install::relax_adb_install_verifier() {
+        return;
+    }
+    let _ = adb_args(
+        adb,
+        &[
+            "-s",
+            serial,
+            "shell",
+            "settings",
+            "put",
+            "global",
+            "verifier_verify_adb_installs",
+            "0",
+        ],
+        probe_timeout(),
+    )
+    .await;
+}
+
+async fn push_then_pm_install(adb: &Path, serial: &str, apk: &Path) -> Result<(), String> {
+    let remote = lighting_host::apk_install::install_tmp_remote_path();
+    let push_to = Duration::from_secs(lighting_host::apk_install::adb_push_timeout_secs());
+    let mut last_push = String::from("拷贝安装包失败");
+    let mut pushed = false;
+    for extra in [Some("--sync"), None] {
+        let mut cmd = adb_command(adb);
+        cmd.args(["-s", serial, "push"]);
+        if let Some(flag) = extra {
+            cmd.arg(flag);
+        }
+        cmd.arg(apk);
+        cmd.arg(remote);
+        match adb_output(&mut cmd, push_to).await {
+            Ok(out) if out.status.success() => {
+                pushed = true;
+                break;
+            }
+            Ok(out) => {
+                let combined = combined_output(&out);
+                if extra.is_some() && lighting_host::apk_install::unknown_adb_option(&combined)
+                {
+                    last_push = combined;
+                    continue;
+                }
+                last_push = if combined.trim().is_empty() {
+                    "拷贝安装包失败".into()
+                } else {
+                    combined.trim().to_string()
+                };
+            }
+            Err(err) => last_push = format!("拷贝安装包失败: {err}"),
+        }
+    }
+    if !pushed {
+        return Err(last_push);
+    }
+
+    let pm_to = Duration::from_secs(lighting_host::apk_install::pm_install_timeout_secs());
+    let mut last = String::from("本机安装失败");
+    for flags in lighting_host::apk_install::pm_install_attempts() {
+        let mut args: Vec<&str> = vec!["-s", serial, "shell", "pm", "install"];
+        args.extend_from_slice(flags);
+        args.push(remote);
+        match adb_args(adb, &args, pm_to).await {
+            Ok(out) => {
+                let combined = combined_output(&out);
+                if out.status.success()
+                    || lighting_host::apk_install::install_succeeded(&combined)
+                {
+                    let _ = adb_args(
+                        adb,
+                        &["-s", serial, "shell", "rm", "-f", remote],
+                        probe_timeout(),
+                    )
+                    .await;
+                    return Ok(());
+                }
+                if lighting_host::apk_install::unknown_adb_option(&combined) {
+                    last = combined;
+                    continue;
+                }
+                last = combined.trim().to_string();
+                if lighting_host::apk_install::user_action_required(&last) {
+                    break;
+                }
+            }
+            Err(err) => {
+                last = if lighting_host::apk_install::is_install_timeout(&err)
+                    || err.contains("超时")
+                {
+                    "本机安装超时".into()
+                } else {
+                    err
+                };
+            }
+        }
+    }
+    let _ = adb_args(
+        adb,
+        &["-s", serial, "shell", "rm", "-f", remote],
+        probe_timeout(),
+    )
+    .await;
+    Err(last)
+}
+
+async fn install_with_pm_fallback(
+    adb: &Path,
+    serial: &str,
+    apk: &Path,
+    attempts: &'static [&'static [&'static str]],
+) -> Result<(), String> {
+    match adb_install_with_attempts(adb, serial, apk, attempts).await {
+        Ok(()) => Ok(()),
+        Err(err) if lighting_host::apk_install::should_try_pm_install_fallback(&err) => {
+            match push_then_pm_install(adb, serial, apk).await {
+                Ok(()) => Ok(()),
+                Err(pm_err) if lighting_host::apk_install::user_action_required(&pm_err) => {
+                    Err(lighting_host::apk_install::user_restricted_hint().to_string())
+                }
+                Err(pm_err) => Err(format!("{err} 已改用平板本机安装仍失败：{pm_err}")),
+            }
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn looks_like_usb_install_block(err: &str) -> bool {
+    lighting_host::apk_install::user_action_required(err) || err.contains("禁止 USB 安装")
 }
 
 /// Cover-install the client. Uninstall only when the signatures actually
@@ -556,7 +694,8 @@ pub async fn install_apk(
     if package_installed(adb, serial, package).await {
         force_stop_package(adb, serial, package).await;
     }
-    if let Err(err) = adb_install_with_attempts(
+    relax_install_gate(adb, serial).await;
+    if let Err(err) = install_with_pm_fallback(
         adb,
         serial,
         apk,
@@ -564,7 +703,7 @@ pub async fn install_apk(
     )
     .await
     {
-        if lighting_host::apk_install::user_action_required(&err) {
+        if looks_like_usb_install_block(&err) {
             anyhow::bail!("{}", lighting_host::apk_install::user_restricted_hint());
         }
         if lighting_host::apk_install::needs_uninstall_reinstall(&err) {
@@ -579,7 +718,7 @@ pub async fn install_apk(
                 lighting_host::apk_install::settle_after_uninstall_ms(),
             ))
             .await;
-            adb_install_with_attempts(
+            install_with_pm_fallback(
                 adb,
                 serial,
                 apk,
@@ -587,7 +726,7 @@ pub async fn install_apk(
             )
             .await
             .map_err(|retry| {
-                if lighting_host::apk_install::user_action_required(&retry) {
+                if looks_like_usb_install_block(&retry) {
                     anyhow::anyhow!("{}", lighting_host::apk_install::user_restricted_hint())
                 } else {
                     anyhow::anyhow!("安装失败: {retry}")
