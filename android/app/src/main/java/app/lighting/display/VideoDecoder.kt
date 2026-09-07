@@ -317,6 +317,11 @@ class VideoDecoder {
             // pool (one extra decoded picture vs the laptop). Cannot
             // setParameters this after start(). Try -1 stays bare.
             format.setInteger("max-output-buffers", 2)
+            // C2 reads max-output-buffer-count. OMX-era max-output-buffers
+            // is ignored and the default 4–8 pool holds a reconstructed
+            // picture — one refresh vs the laptop. Harmless extra key if
+            // the codec does not know it; Try -1 stays bare.
+            format.setInteger("max-output-buffer-count", 2)
             if (Build.VERSION.SDK_INT >= 23) {
                 // 0 = realtime / ahead of vsync. C2 reads this at
                 // configure(). Bound to try 0–2 it vanished when C2
