@@ -381,6 +381,11 @@ class CursorOverlayView @JvmOverloads constructor(
         showing = true
         if (visibility != VISIBLE) {
             visibility = VISIBLE
+            // GONE views do not count in ViewRoot's frame-rate vote.
+            // setPeakRefreshHz ran while this overlay was GONE, so a
+            // 120 Hz pad latched 60 until surfaceCreated. Vote now so
+            // the first pointer pose is not a refresh behind the laptop.
+            hintOverlayFrameRate()
         }
         if (shapeChanged) {
             paintShape()
