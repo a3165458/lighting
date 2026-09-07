@@ -166,6 +166,15 @@ class CursorOverlayView @JvmOverloads constructor(
                     Surface.CHANGE_FRAME_RATE_ALWAYS,
                 )
             DisplayApis.overrideChildrenFrameRate(tx, sc)
+            if (Build.VERSION.SDK_INT >= 34) {
+                try {
+                    // Same 2-buffer pin as the decoder SurfaceView. Default 3
+                    // lets SurfaceView.updateSurface latch an old pointer
+                    // bitmap a vsync behind the laptop after lockCanvas.
+                    tx.setBufferMaxCount(sc, 2)
+                } catch (_: Throwable) {
+                }
+            }
             tx.apply()
         } catch (_: Throwable) {
         }
