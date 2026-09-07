@@ -101,6 +101,29 @@ pub fn reconnect_backoff_ms(fail_index: u32) -> u64 {
     }
 }
 
+/// Bind + `adb reverse` before IddCx / UAC. Otherwise the tablet's USB
+/// 127.0.0.1 connect is refused for the whole driver wait and its reconnect
+/// budget expires while the host is still on 准备虚拟屏.
+pub fn listen_before_virtual_prepare() -> bool {
+    true
+}
+
+pub fn listen_port_from_bind(bind: &str) -> u16 {
+    bind.rsplit_once(':')
+        .and_then(|(_, p)| p.parse().ok())
+        .filter(|p: &u16| *p != 0)
+        .unwrap_or(17400)
+}
+
+/// Tablet USB retry window. Must cover VDD + UAC (often 20-40s).
+pub fn usb_reconnect_budget_ms() -> u64 {
+    90_000
+}
+
+pub fn usb_reconnect_attempts() -> u32 {
+    24
+}
+
 pub fn jitter_backoff_ms(base_ms: u64, jitter_ms: u64, max_jitter_ms: u64) -> u64 {
     base_ms.saturating_add(jitter_ms.min(max_jitter_ms))
 }
@@ -1193,6 +1216,12 @@ mod tests {
         assert!(reconnect_backoff_ms(0) < reconnect_backoff_ms(4));
         assert_eq!(jitter_backoff_ms(650, 80, 200), 730);
         assert_eq!(jitter_backoff_ms(650, 999, 200), 850);
+        assert!(listen_before_virtual_prepare());
+        assert_eq!(listen_port_from_bind("0.0.0.0:17400"), 17400);
+        assert_eq!(listen_port_from_bind("127.0.0.1:17400"), 17400);
+        assert_eq!(listen_port_from_bind(""), 17400);
+        assert!(usb_reconnect_budget_ms() >= 60_000);
+        assert!(usb_reconnect_attempts() >= 12);
     }
 
     #[test]

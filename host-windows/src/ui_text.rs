@@ -183,6 +183,23 @@ pub fn share_button_label(running: bool) -> String {
 }
 
 /// Beginner copy when a USB device is ready but the Lighting client APK is missing.
+/// Idle USB hint. Finding the pad is not a connection — 开始共享 still has
+/// to bind 17400 and `adb reverse` before 127.0.0.1 works.
+pub fn device_ready_hint(serial: &str) -> (String, Tone) {
+    let name = serial.trim();
+    if name.is_empty() {
+        (
+            "已找到平板。请点「开始共享」，电脑会自动打开平板投屏。".into(),
+            Tone::Ok,
+        )
+    } else {
+        (
+            format!("已找到平板 {name}。请点「开始共享」，电脑会自动打开平板投屏。"),
+            Tone::Ok,
+        )
+    }
+}
+
 pub fn client_app_missing_hint(can_install: bool) -> (String, Tone) {
     if can_install {
         (
@@ -521,6 +538,11 @@ mod tests {
         assert!(client_app_installed_ok().contains("Lighting 副屏"));
         assert!(client_app_installed_ok_version("0.1.47").contains("v0.1.47"));
         assert!(client_app_installed_ok_version("").contains("开始共享"));
+        let (ready, tone) = device_ready_hint("HA18C874");
+        assert!(ready.contains("HA18C874"));
+        assert!(ready.contains("开始共享"));
+        assert!(!ready.contains("将自动连接"));
+        assert_eq!(tone, Tone::Ok);
     }
 
     #[test]

@@ -107,12 +107,28 @@ class MainActivity : AppCompatActivity() {
                 localAddress.text = address
             }
         }, "lighting-caps").start()
+        maybeAutoUsb()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        maybeAutoUsb()
     }
 
     override fun onResume() {
         super.onResume()
         pulse.pulsing = true
         renderHistory()
+    }
+
+    /** Host `am start --ez lightingAutoUsb true` after adb reverse. */
+    private fun maybeAutoUsb() {
+        if (!intent.getBooleanExtra("lightingAutoUsb", false)) {
+            return
+        }
+        intent.putExtra("lightingAutoUsb", false)
+        launchDisplay(ConnectCopy.USB_HOST, LitProtocol.PORT)
     }
 
     override fun onPause() {

@@ -356,75 +356,17 @@ async fn run_session_inner(
         displays::DesktopRestoreGuard { primary: None }
     };
     let preserve = desktop.primary.clone();
-    if req.share_mode.uses_virtual_display() {
-        set_status(&status, "准备虚拟屏", "正在检查并启用虚拟显示器…");
-        let mode = req.share_mode;
-        let status_prog = status.clone();
-        let preserve_for_drv = preserve.clone();
-        let ensure = tokio::task::spawn_blocking(move || {
-            displays::ensure_secondary_display_with_progress(
-                mode,
-                |step| {
-                    if let Ok(mut s) = status_prog.lock() {
-                        s.running = true;
-                        s.phase = "准备虚拟屏".into();
-                        s.detail = step.to_string();
-                    }
-                },
-                preserve_for_drv.as_ref(),
-            )
-        })
-        .await;
-        let ensure_result = match ensure {
-            Ok(inner) => inner,
-            Err(err) => Err(anyhow::anyhow!("启用虚拟屏任务中断: {err:#}")),
-        };
-        let (ensure_ok, ensure_err) = match &ensure_result {
-            Ok(()) => (true, String::new()),
-            Err(err) => (false, format!("{err:#}")),
-        };
-        let list = displays::list_displays().unwrap_or_default();
-        match lighting_host::share_flow::decide_after_virtual_prepare(
-            req.share_mode,
-            ensure_ok,
-            &ensure_err,
-            displays::has_secondary(&list),
-            displays::has_virtual_display(&list),
-        ) {
-            lighting_host::share_flow::VirtualPrepareOutcome::Ready => {
-                if let Some(idx) = displays::pick_display_index(&list, req.share_mode) {
-                    req.display_index = idx;
-                }
-                set_status(&status, "准备虚拟屏", "虚拟屏已就绪，开始等待平板…");
-            }
-            lighting_host::share_flow::VirtualPrepareOutcome::Abort { reason } => {
-                anyhow::bail!(
-                    "{}",
-                    lighting_host::share_flow::virtual_prepare_abort_message(
-                        &format!("{} [{reason}]", lighting_host::ui_text::human_last_error(&reason))
-                    )
-                );
-            }
-        }
-    } else if let Err(err) = displays::apply_project_mode(req.share_mode) {
-        tracing::warn!("DisplaySwitch failed ({err:#}); continuing with current layout");
-    }
 
-    set_status(&status, "启动", "正在枚举显示器");
-    let displays = displays::list_displays()?;
-    req.display_index = displays::pick_display_index(&displays, req.share_mode)
-        .context("所选投屏模式没有可用显示器，请刷新列表")?;
-    let display = displays
-        .get(req.display_index)
-        .cloned()
-        .context("所选显示器不存在，请刷新列表")?;
-
+    // USB listen + reverse MUST beat IddCx/UAC. The tablet reconnects to
+    // 127.0.0.1 for only ~12s on 0.1.48; a 30s driver wait looks like
+    // 「重连中 / 等待 USB」 even though adb devices is fine.
     let ffmpeg = encoder::find_ffmpeg()?;
     let bind = if req.bind.is_empty() {
         format!("0.0.0.0:{}", protocol::PORT)
     } else {
         req.bind.clone()
     };
+    let listen_port = session_policy::listen_port_from_bind(&bind);
 
     set_status(&status, "监听", format!("绑定 {bind}"));
     let listener = TcpListener::bind(&bind).await.context("绑定端口")?;
@@ -457,7 +399,7 @@ async fn run_session_inner(
                 "等待设备",
                 format!("正在执行 adb reverse（{serial}）"),
             );
-            if let Err(err) = adb::reverse_port(adb_bin, &serial, protocol::PORT).await {
+            if let Err(err) = adb::reverse_port(adb_bin, &serial, listen_port).await {
                 set_transport(
                     &status,
                     "USB · adb reverse 失败，可改用 Wi-Fi（平板填电脑 IP）",
@@ -466,6 +408,8 @@ async fn run_session_inner(
             } else {
                 reverse_serial = Some(serial.clone());
                 set_transport(&status, format!("USB · adb reverse 已就绪（{serial}）"));
+                adb::launch_stream_client(adb_bin, &serial, listen_port).await;
+                wait_detail = format!("USB 已就绪（{serial}），正在打开平板投屏");
             }
         } else {
             set_transport(&status, "USB · 未检测到已授权设备，可走 Wi-Fi（填电脑 IP）");
@@ -528,21 +472,86 @@ async fn run_session_inner(
         }
     });
 
+    if req.share_mode.uses_virtual_display() {
+        set_status(&status, "准备虚拟屏", "正在检查并启用虚拟显示器…");
+        let mode = req.share_mode;
+        let status_prog = status.clone();
+        let preserve_for_drv = preserve.clone();
+        let ensure = tokio::task::spawn_blocking(move || {
+            displays::ensure_secondary_display_with_progress(
+                mode,
+                |step| {
+                    if let Ok(mut s) = status_prog.lock() {
+                        s.running = true;
+                        s.phase = "准备虚拟屏".into();
+                        s.detail = step.to_string();
+                    }
+                },
+                preserve_for_drv.as_ref(),
+            )
+        })
+        .await;
+        let ensure_result = match ensure {
+            Ok(inner) => inner,
+            Err(err) => Err(anyhow::anyhow!("启用虚拟屏任务中断: {err:#}")),
+        };
+        let (ensure_ok, ensure_err) = match &ensure_result {
+            Ok(()) => (true, String::new()),
+            Err(err) => (false, format!("{err:#}")),
+        };
+        let list = displays::list_displays().unwrap_or_default();
+        match lighting_host::share_flow::decide_after_virtual_prepare(
+            req.share_mode,
+            ensure_ok,
+            &ensure_err,
+            displays::has_secondary(&list),
+            displays::has_virtual_display(&list),
+        ) {
+            lighting_host::share_flow::VirtualPrepareOutcome::Ready => {
+                if let Some(idx) = displays::pick_display_index(&list, req.share_mode) {
+                    req.display_index = idx;
+                }
+                set_status(&status, "准备虚拟屏", "虚拟屏已就绪，开始等待平板…");
+            }
+            lighting_host::share_flow::VirtualPrepareOutcome::Abort { reason } => {
+                stop.store(true, Ordering::Relaxed);
+                cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref(), listen_port).await;
+                anyhow::bail!(
+                    "{}",
+                    lighting_host::share_flow::virtual_prepare_abort_message(
+                        &format!("{} [{reason}]", lighting_host::ui_text::human_last_error(&reason))
+                    )
+                );
+            }
+        }
+    } else if let Err(err) = displays::apply_project_mode(req.share_mode) {
+        tracing::warn!("DisplaySwitch failed ({err:#}); continuing with current layout");
+    }
+
+    set_status(&status, "启动", "正在枚举显示器");
+    let displays = displays::list_displays()?;
+    req.display_index = displays::pick_display_index(&displays, req.share_mode)
+        .context("所选投屏模式没有可用显示器，请刷新列表")?;
+    let display = displays
+        .get(req.display_index)
+        .cloned()
+        .context("所选显示器不存在，请刷新列表")?;
+
     let mut stop_rx = stop_rx;
     loop {
         if !session_policy::continue_accept_loop(stop.load(Ordering::Relaxed)) {
-            cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref()).await;
+            cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref(), listen_port).await;
             return Ok(());
         }
 
         let incoming = tokio::select! {
             _ = stop_rx.changed() => {
-                cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref()).await;
+                cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref(), listen_port).await;
                 return Ok(());
             }
             incoming = video_rx.recv() => {
                 let Some(c) = incoming else {
-                    cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref()).await;
+                    cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref(), listen_port).await;
                     anyhow::bail!("listen loop ended");
                 };
                 if let Ok(mut st) = status.lock() {
@@ -611,7 +620,7 @@ async fn run_session_inner(
         }
 
         if !session_policy::continue_accept_loop(stop.load(Ordering::Relaxed)) {
-            cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref()).await;
+            cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref(), listen_port).await;
             return Ok(());
         }
 
@@ -619,7 +628,7 @@ async fn run_session_inner(
         // without stalling the already-running accept task.
         if let (Some(adb_bin), Some(serial)) = (adb_path.clone(), reverse_serial.clone()) {
             tokio::spawn(async move {
-                if let Err(err) = adb::reverse_port(&adb_bin, &serial, protocol::PORT).await {
+                if let Err(err) = adb::reverse_port(&adb_bin, &serial, listen_port).await {
                     tracing::warn!("re-apply adb reverse failed: {err:#}");
                 }
             });
@@ -631,9 +640,13 @@ async fn run_session_inner(
     }
 }
 
-async fn cleanup_reverse(adb: Option<&std::path::PathBuf>, serial: Option<&str>) {
+async fn cleanup_reverse(
+    adb: Option<&std::path::PathBuf>,
+    serial: Option<&str>,
+    port: u16,
+) {
     if let (Some(adb), Some(serial)) = (adb, serial) {
-        let _ = adb::remove_reverse(adb, serial, protocol::PORT).await;
+        let _ = adb::remove_reverse(adb, serial, port).await;
     }
 }
 

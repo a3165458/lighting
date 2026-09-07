@@ -348,6 +348,34 @@ async fn launch_client(adb: &Path, serial: &str) {
     .await;
 }
 
+/// Open the landscape stream activity on 127.0.0.1 so the user does not have
+/// to tap USB 一键连接 after 开始共享. `am start` from adb shell can launch
+/// the non-exported DisplayActivity.
+pub async fn launch_stream_client(adb: &Path, serial: &str, port: u16) {
+    let port_s = port.to_string();
+    let display = lighting_host::apk_install::display_component();
+    let _ = adb_args(
+        adb,
+        &[
+            "-s",
+            serial,
+            "shell",
+            "am",
+            "start",
+            "-n",
+            display,
+            "--es",
+            "host",
+            "127.0.0.1",
+            "--ei",
+            "port",
+            &port_s,
+        ],
+        probe_timeout(),
+    )
+    .await;
+}
+
 fn combined_output(output: &std::process::Output) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -464,20 +492,25 @@ pub async fn install_apk(adb: &Path, serial: &str, apk: &Path) -> Result<String>
 
 pub async fn reverse_port(adb: &Path, serial: &str, port: u16) -> Result<()> {
     let spec = format!("tcp:{port}");
-    let output = adb_args(
-        adb,
-        &["-s", serial, "reverse", &spec, &spec],
-        probe_timeout(),
-    )
-    .await
-    .map_err(|err| anyhow::anyhow!("adb reverse: {err}"))?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "adb reverse 失败: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+    let max = Duration::from_secs(lighting_host::apk_install::adb_reverse_timeout_secs());
+    let mut last = String::from("adb reverse 失败");
+    for _ in 0..2 {
+        let output = match adb_args(adb, &["-s", serial, "reverse", &spec, &spec], max).await {
+            Ok(out) => out,
+            Err(err) => {
+                last = err;
+                continue;
+            }
+        };
+        if output.status.success() {
+            return Ok(());
+        }
+        last = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if last.is_empty() {
+            last = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        }
     }
-    Ok(())
+    anyhow::bail!("adb reverse 失败: {last}")
 }
 
 pub async fn remove_reverse(adb: &Path, serial: &str, port: u16) -> Result<()> {

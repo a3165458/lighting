@@ -181,6 +181,7 @@ pub fn activity_steps(mode: ShareMode, phase: &str, running: bool) -> Vec<Activi
 /// Linux-side dry run of the tablet-only session copy (no DXGI).
 pub fn simulated_tablet_only_timeline() -> Vec<(&'static str, &'static str)> {
     vec![
+        ("等待设备", "正在打开 USB 通道…"),
         ("准备虚拟屏", "正在检查是否已有扩展屏…"),
         (
             "准备虚拟屏",

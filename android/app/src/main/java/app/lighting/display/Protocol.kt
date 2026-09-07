@@ -362,6 +362,11 @@ fun parseCursor(payload: ByteArray): CursorUpdate? {
 
 fun isEof(t: Throwable): Boolean = t is EOFException || t.message?.contains("Broken pipe", true) == true
 
+/** Keep retrying USB long enough for host IddCx / UAC. 12s used to expire first. */
+fun usbReconnectAttempts(): Int = 24
+
+fun usbReconnectBudgetMs(): Long = 90_000L
+
 /** `failIndex` 0 = first retry after a drop. Includes caller-supplied jitter (0–200ms). */
 fun reconnectBackoffMs(failIndex: Int, jitterMs: Int): Long {
     val base = when {

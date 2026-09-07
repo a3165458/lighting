@@ -17,6 +17,20 @@ pub fn launcher_component() -> &'static str {
     "app.lighting.display/app.lighting.display.MainActivity"
 }
 
+pub fn display_component() -> &'static str {
+    "app.lighting.display/app.lighting.display.DisplayActivity"
+}
+
+/// `adb reverse` on Honor/Huawei pads is often slower than `adb devices`.
+/// 0.1.48 reused the 8s probe timeout and killed reverse mid-flight.
+pub fn adb_reverse_timeout_secs() -> u64 {
+    45
+}
+
+pub fn default_stream_port() -> u16 {
+    17400
+}
+
 /// `adb install` flags after `-s <serial> install`.
 /// `-r` replace, `-d` downgrade, `-g` grant, `-t` test-only (CI debug APK).
 pub fn install_replace_flags() -> &'static [&'static str] {
@@ -199,6 +213,9 @@ mod tests {
         assert!(!uninstall_before_install());
         assert!(install_replace_attempts()[0].contains(&"--no-incremental"));
         assert!(install_timeout_secs() >= 30);
+        assert!(adb_reverse_timeout_secs() > adb_probe_timeout_secs());
+        assert!(display_component().contains("DisplayActivity"));
+        assert_eq!(default_stream_port(), 17400);
     }
 
     #[test]
