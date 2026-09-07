@@ -317,9 +317,17 @@ class VideoDecoder {
                         format.setInteger("vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-rdy", -1)
                     }
                 }
-                n.startsWith("omx.exynos") || n.startsWith("c2.exynos") || n.contains(".sec.") -> {
+                n.startsWith("omx.exynos") || n.startsWith("c2.exynos") || n.contains(".sec.") || n.contains("samsung") -> {
                     if (tryNumber < 4) {
                         format.setInteger("vendor.rtc-ext-dec-low-latency.enable", 1)
+                        // Pixel Tensor is also c2.exynos (Google). sec-ext is
+                        // Samsung C2; an unknown vendor key fails configure()
+                        // and skips rtc-ext. Only Samsung/SEC get both.
+                        if (n.contains(".sec.") || n.contains("samsung") ||
+                            android.os.Build.MANUFACTURER.equals("samsung", true)
+                        ) {
+                            format.setInteger("vendor.sec-ext-dec-low-latency.enable", 1)
+                        }
                     }
                 }
                 n.startsWith("omx.amlogic") || n.startsWith("c2.amlogic") -> {
@@ -372,8 +380,13 @@ class VideoDecoder {
                 poke("vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-req", 1)
                 poke("vendor.hisi-ext-low-latency-video-dec.video-scene-for-low-latency-rdy", -1)
             }
-            n.startsWith("omx.exynos") || n.startsWith("c2.exynos") || n.contains(".sec.") -> {
+            n.startsWith("omx.exynos") || n.startsWith("c2.exynos") || n.contains(".sec.") || n.contains("samsung") -> {
                 poke("vendor.rtc-ext-dec-low-latency.enable", 1)
+                if (n.contains(".sec.") || n.contains("samsung") ||
+                    android.os.Build.MANUFACTURER.equals("samsung", true)
+                ) {
+                    poke("vendor.sec-ext-dec-low-latency.enable", 1)
+                }
             }
             n.startsWith("omx.amlogic") || n.startsWith("c2.amlogic") -> {
                 poke("vendor.low-latency.enable", 1)

@@ -93,6 +93,15 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setGameplayState(true)
+        // HDR composition is a full extra Hardware Composer pass.
+        // GlideX / Moonlight pin COLOR_MODE_DEFAULT so SDR video is
+        // overlayed, not tone-mapped — one refresh on HDR pads.
+        if (Build.VERSION.SDK_INT >= 26) {
+            try {
+                window.colorMode = android.content.pm.ActivityInfo.COLOR_MODE_DEFAULT
+            } catch (_: Throwable) {
+            }
+        }
         // Lock peak Hz before the first vsync. After setContentView the
         // compositor has already picked 60 Hz on many pads.
         lockPeakRefresh()
@@ -155,6 +164,12 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
      */
     private fun reassertPeakPresentation() {
         setGameplayState(true)
+        if (Build.VERSION.SDK_INT >= 26) {
+            try {
+                window.colorMode = android.content.pm.ActivityInfo.COLOR_MODE_DEFAULT
+            } catch (_: Throwable) {
+            }
+        }
         lockPeakRefresh()
         hideSystemUi()
         if (this::surface.isInitialized && surface.holder.surface.isValid) {
