@@ -384,6 +384,15 @@ pub fn amf_forced_idr() -> bool {
     true
 }
 
+/// ffmpeg encoder `-flags:v`. Global `-flags low_delay` sits before `-i`,
+/// and h264_amf/hevc_amf default `flags=+loop` then clears LOW_DELAY.
+/// amfenc `output_delay = max_b_frames + (LOW_DELAY ? 0 : 1)` — one extra
+/// encoded picture every AMD frame. `+low_delay` adds the bit without
+/// dropping loop filter. Sunshine sets `AV_CODEC_FLAG_LOW_DELAY`.
+pub fn encoder_video_flags() -> &'static str {
+    "+low_delay"
+}
+
 /// h264_qsv `-a53cc`. Default 1 walks A/53 caption SEI on every picture.
 /// ddagrab has none; NVENC already turns this off. Not an hevc_qsv option.
 pub fn qsv_a53cc() -> bool {
@@ -1140,6 +1149,7 @@ mod tests {
         assert!(!amf_enforce_hrd());
         assert!(!amf_filler_data());
         assert!(amf_forced_idr());
+        assert_eq!(encoder_video_flags(), "+low_delay");
         assert!(!qsv_a53cc());
         assert!(qsv_vcm());
         assert!(!qsv_recovery_point_sei());

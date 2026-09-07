@@ -526,6 +526,12 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
     let mut flags = vec![
         "-r".into(),
         lighting_host::session_policy::ffmpeg_output_fps(settings.fps).to_string(),
+        // After -c:v: h264_amf/hevc_amf default flags=+loop clears the
+        // global -flags low_delay. amfenc then uses output_delay =
+        // max_b_frames + 1 (one extra encoded picture vs the laptop).
+        // Sunshine sets AV_CODEC_FLAG_LOW_DELAY on the encoder context.
+        "-flags:v".into(),
+        lighting_host::session_policy::encoder_video_flags().into(),
     ];
     flags.extend(if encoder.contains("nvenc") {
         vec![
