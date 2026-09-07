@@ -634,11 +634,13 @@ pub fn boost_ffmpeg_child_threads() -> bool {
 /// ffmpeg stdout used to land as many short `Read`s and PeekNamedPipe went
 /// quiet between them. 256 KB hid ~10 pictures at 120 Hz; 64 KB still hid
 /// a second P-frame after encoded/annexb queues were already 1-deep —
-/// one extra refresh next to the laptop. 32 KB is one P-frame. IDR still
-/// uses the n==buf.len() spin (it never fit in 64 KB either); 4 KB
-/// fragments every picture and Quiet-truncates the AU.
+/// one extra refresh next to the laptop. 32 KB is smaller than a 40 Mbps
+/// P (~42 KB, the UI max): n==buf.len() then Quiet truncated the AU
+/// every picture. 48 KB matches `tcp_send_buffer_bytes` — one 40 Mbps P
+/// plus PCM, not two default P-frames (~52 KB). IDR still uses the
+/// n==buf.len() spin; 4 KB fragments every picture and Quiet-truncates.
 pub fn ffmpeg_pipe_buffer_bytes() -> u32 {
-    32 * 1024
+    48 * 1024
 }
 
 /// Never drop a P-frame from a live GOP: the decoder would show 1 fps until the
@@ -1298,7 +1300,12 @@ mod tests {
         assert_ne!(ffmpeg_output_fps(120), dda_poll_hz(120));
         assert_eq!(ffmpeg_output_fps(45), 45);
         assert!(!ffmpeg_muxer_sets_output_fps());
-        assert_eq!(ffmpeg_pipe_buffer_bytes(), 32 * 1024);
+        assert_eq!(ffmpeg_pipe_buffer_bytes(), 48 * 1024);
+        assert_eq!(ffmpeg_pipe_buffer_bytes() as usize, tcp_send_buffer_bytes());
+        let pipe_p25 = 25_000 * 1000 / 8 / 120;
+        let pipe_p40 = 40_000 * 1000 / 8 / 120;
+        assert!(ffmpeg_pipe_buffer_bytes() as usize > pipe_p40);
+        assert!((ffmpeg_pipe_buffer_bytes() as usize) < 2 * pipe_p25);
         assert!(ffmpeg_pipe_buffer_bytes() > 16 * 1024);
         // annexb read vec must be this size: larger and n==buf.len() never
         // fires, so a full-pipe IDR Quiet-flushes a truncated slice.
