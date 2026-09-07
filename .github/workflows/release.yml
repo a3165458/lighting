@@ -30,8 +30,9 @@ jobs:
           $version = $tag.TrimStart('v')
           $uiVersion = (Get-Content host-ui/package.json -Raw | ConvertFrom-Json).version
           $hostVersion = (Select-String -Path host-windows/Cargo.toml -Pattern '^version = "([^"]+)"').Matches[0].Groups[1].Value
-          if ($uiVersion -ne $version -or $hostVersion -ne $version) {
-            throw "Version mismatch: input=$version UI=$uiVersion host=$hostVersion"
+          $apkVersion = (Select-String -Path android/app/build.gradle.kts -Pattern 'versionName = "([^"]+)"').Matches[0].Groups[1].Value
+          if ($uiVersion -ne $version -or $hostVersion -ne $version -or $apkVersion -ne $version) {
+            throw "Version mismatch: input=$version UI=$uiVersion host=$hostVersion apk=$apkVersion"
           }
           "tag=v$version" >> $env:GITHUB_OUTPUT
           "name=$version" >> $env:GITHUB_OUTPUT

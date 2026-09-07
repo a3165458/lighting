@@ -350,7 +350,7 @@ impl HostService {
         let pending = g.pending_notice.clone();
         self.rt.spawn(async move {
             let notice = match adb::install_apk(&adb, &serial, &apk).await {
-                Ok(()) => (Tone::Ok, ui_text::client_app_installed_ok()),
+                Ok(ver) => (Tone::Ok, ui_text::client_app_installed_ok_version(&ver)),
                 Err(err) => (
                     Tone::Bad,
                     format!("安装失败：{err:#}。也可把 APK 拷到平板里手动安装"),
@@ -529,7 +529,10 @@ impl HostService {
             .is_some_and(|installed| !installed);
         if !missing && !g.install_inflight {
             let session_running = g.status.lock().ok().is_some_and(|s| s.running);
-            if !session_running {
+            let keep_install_result = g.notice.as_ref().is_some_and(|(tone, _)| {
+                matches!(tone, Tone::Ok | Tone::Bad)
+            });
+            if !session_running && !keep_install_result {
                 g.notice = None;
             }
         }

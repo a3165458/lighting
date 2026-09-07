@@ -202,7 +202,18 @@ pub fn client_app_installing_hint() -> String {
 }
 
 pub fn client_app_installed_ok() -> String {
-    "客户端已安装。打开平板上的 Lighting，再点「开始共享」".into()
+    "客户端已安装。请完全退出平板上的 Lighting 再打开，然后点「开始共享」".into()
+}
+
+pub fn client_app_installed_ok_version(ver: &str) -> String {
+    let ver = ver.trim().trim_start_matches('v');
+    if ver.is_empty() {
+        client_app_installed_ok()
+    } else {
+        format!(
+            "客户端 v{ver} 已覆盖安装。请完全退出平板上的 Lighting 再打开，然后点「开始共享」"
+        )
+    }
 }
 
 /// Footer health line: one glance answer to "is this working right now?".
@@ -506,6 +517,9 @@ mod tests {
         assert!(!no_apk.contains("adb"));
         assert!(!client_app_installing_hint().contains("adb"));
         assert!(client_app_installed_ok().contains("开始共享"));
+        assert!(client_app_installed_ok().contains("完全退出"));
+        assert!(client_app_installed_ok_version("0.1.47").contains("v0.1.47"));
+        assert!(client_app_installed_ok_version("").contains("开始共享"));
     }
 
     #[test]

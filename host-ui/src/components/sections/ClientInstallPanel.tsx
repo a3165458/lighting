@@ -11,6 +11,11 @@ type Props = {
 /** Always-visible APK install / upgrade controls for the Settings page. */
 export function ClientInstallPanel({ host, busy, onInstallClient }: Props) {
   const apkVersion = host.clientAppVersion?.trim()
+  const expected = (host.hostVersion || host.appVersion || '').trim()
+  const stale =
+    Boolean(apkVersion) &&
+    Boolean(expected) &&
+    apkVersion.replace(/^v/, '') !== expected.replace(/^v/, '')
   const hint = !host.connected
     ? '等待本地主机就绪…'
     : !host.canInstallApk
@@ -19,9 +24,11 @@ export function ClientInstallPanel({ host, busy, onInstallClient }: Props) {
         ? '请用数据线连接平板并开启 USB 调试。'
         : host.clientAppMissing
           ? '平板上还没有客户端，点下方安装。'
-          : apkVersion
-            ? `当前平板客户端 v${apkVersion}。版本偏旧时可覆盖安装。`
-            : '已检测到客户端。若版本偏旧，可覆盖安装。'
+          : stale
+            ? `平板还是 v${apkVersion}，便携包是 v${expected}。请点重新安装（会先卸载再装）。`
+            : apkVersion
+              ? `当前平板客户端 v${apkVersion}。版本偏旧时可覆盖安装。`
+              : '已检测到客户端。若版本偏旧，可覆盖安装。'
 
   return (
     <section className="glass-card-lg p-8" aria-label="安装客户端">
@@ -35,6 +42,9 @@ export function ClientInstallPanel({ host, busy, onInstallClient }: Props) {
           {apkVersion && !host.clientAppMissing && (
             <p className="mt-2 text-sm font-medium text-text">
               平板版本 <span className="text-brand">v{apkVersion}</span>
+              {stale ? (
+                <span className="text-danger">（低于便携包 v{expected}）</span>
+              ) : null}
             </p>
           )}
         </div>
