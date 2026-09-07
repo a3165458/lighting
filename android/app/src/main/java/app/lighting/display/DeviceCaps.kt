@@ -208,13 +208,32 @@ data class DeviceCaps(
             }
         }
 
-        fun isSoftwareName(info: MediaCodecInfo, name: String): Boolean {
-            try {
-                if (info.isSoftwareOnly) return true
-            } catch (_: Throwable) {
-            }
+        /**
+         * Moonlight: `omx.google` / `c2.android` are AOSP software.
+         * `c2.google` is Tensor hardware. A blanket `contains("google")`
+         * skipped KEY_LOW_LATENCY and held a decoded picture — one refresh
+         * vs the laptop. API 29+ isSoftwareOnly / isHardwareAccelerated
+         * win over the name.
+         */
+        fun isSoftwareDecoderName(name: String): Boolean {
             val n = name.lowercase()
-            return n.contains("google") || n.contains("c2.android") || n.contains("software")
+            if (n.contains("c2.android") || n.contains("software")) return true
+            if (n.contains("omx.google") || n.contains("google.goldfish")) return true
+            return false
+        }
+
+        fun isSoftwareName(info: MediaCodecInfo, name: String): Boolean {
+            if (Build.VERSION.SDK_INT >= 29) {
+                try {
+                    if (info.isSoftwareOnly) return true
+                } catch (_: Throwable) {
+                }
+                try {
+                    if (info.isHardwareAccelerated) return false
+                } catch (_: Throwable) {
+                }
+            }
+            return isSoftwareDecoderName(name)
         }
 
         fun detectSoc(hardware: String, avcName: String?, hevcName: String?): String {
