@@ -60,6 +60,8 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     @Volatile private var everVideo = false
     @Volatile private var lastError: String? = null
     @Volatile private var lastFail: UserFacingError? = null
+    /** Host recreated adb reverse; skip the remaining reconnect sleep. */
+    @Volatile private var skipBackoff = false
     private val decoder = VideoDecoder()
     private var audio: AudioPlayer? = null
     private var streamW = 0
@@ -174,10 +176,14 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         super.onNewIntent(intent)
         setIntent(intent)
         // Host re-issues am start after VDD restores adb reverse.
-        // If the 90s USB window already expired, restart; otherwise the
-        // live reconnect loop must keep its budget.
+        // If the 90s USB window already expired, restart. While the
+        // reconnect loop is already running, do not tear it down (Honor
+        // 闪退) — just skip the backoff so the next 127.0.0.1 connect
+        // hits the rebuilt reverse immediately.
         if (awaitingManual || !running) {
             startSession()
+        } else if (!everVideo) {
+            skipBackoff = true
         }
     }
 
@@ -454,6 +460,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         startSender()
         val gen = ++sessionGen
         running = true
+        skipBackoff = false
         showManualReconnect(false)
         val host = intent.getStringExtra(EXTRA_HOST)?.ifBlank { null } ?: ConnectCopy.USB_HOST
         val port = intent.getIntExtra(EXTRA_PORT, LitProtocol.PORT)
@@ -687,6 +694,10 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private fun sleepBackoff(ms: Long, gen: Int) {
         val end = SystemClock.uptimeMillis() + ms
         while (running && sessionGen == gen && SystemClock.uptimeMillis() < end) {
+            if (skipBackoff) {
+                skipBackoff = false
+                return
+            }
             try {
                 Thread.sleep(50)
             } catch (_: InterruptedException) {

@@ -771,6 +771,28 @@ pub async fn reverse_port(adb: &Path, serial: &str, port: u16) -> Result<()> {
     {
         return Ok(());
     }
+    apply_reverse_port(adb, serial, port).await
+}
+
+/// Honor after IddCx: `reverse --list` still shows tcp:PORT while
+/// 127.0.0.1:PORT is dead. Skip-if-listed then never rebuilds the tunnel.
+pub async fn recreate_reverse_port(adb: &Path, serial: &str, port: u16) -> Result<()> {
+    wait_for_device(adb, serial).await;
+    let spec = format!("tcp:{port}");
+    let _ = adb_args(
+        adb,
+        &["-s", serial, "reverse", "--remove", &spec],
+        probe_timeout(),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(
+        lighting_host::session_policy::usb_reverse_settle_ms(),
+    ))
+    .await;
+    apply_reverse_port(adb, serial, port).await
+}
+
+async fn apply_reverse_port(adb: &Path, serial: &str, port: u16) -> Result<()> {
     let spec = format!("tcp:{port}");
     let max = Duration::from_secs(lighting_host::apk_install::adb_reverse_timeout_secs());
     let mut last = String::from("adb reverse 失败");
