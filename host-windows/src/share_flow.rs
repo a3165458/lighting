@@ -66,8 +66,10 @@ pub fn activity_stage(phase: &str) -> ActivityStage {
         "已连接" | "编码" | "回退" | "共享中" => ActivityStage::Streaming,
         "仅平板" => ActivityStage::BlankPc,
         "独立第二屏" | "适配平板" => ActivityStage::SetTabletMode,
-        "准备虚拟屏" | "启用驱动" | "启动" | "启动中" => ActivityStage::PrepareVirtual,
-        "等待设备" | "监听" | "USB" | "USB 警告" | "等待" => ActivityStage::WaitTablet,
+        "准备虚拟屏" | "启用驱动" => ActivityStage::PrepareVirtual,
+        "启动" | "启动中" | "等待设备" | "监听" | "USB" | "USB 警告" | "等待" => {
+            ActivityStage::WaitTablet
+        }
         _ => {
             if phase.contains("虚拟") {
                 ActivityStage::PrepareVirtual
@@ -284,6 +286,14 @@ mod tests {
         assert_eq!(wait[0].state, "done");
         assert_eq!(wait[1].state, "current");
 
+        // After VDD the host used to sit on phase "启动" / 正在枚举显示器,
+        // which pinned the checklist on 启用虚拟屏 forever.
+        let after_enum = activity_steps(ShareMode::External, "启动", true);
+        assert_eq!(after_enum[0].id, "prepare");
+        assert_eq!(after_enum[0].state, "done");
+        assert_eq!(after_enum[1].id, "wait");
+        assert_eq!(after_enum[1].state, "current");
+
         let blank = activity_steps(ShareMode::External, "仅平板", true);
         assert_eq!(blank.iter().find(|s| s.id == "blank").unwrap().state, "current");
 
@@ -295,6 +305,9 @@ mod tests {
     #[test]
     fn titles_explain_the_current_action() {
         assert_eq!(activity_title(true, "准备虚拟屏"), "正在启用虚拟屏");
+        assert_eq!(activity_title(true, "启动"), "等待平板连接");
+        assert_eq!(activity_title(true, "启动中"), "等待平板连接");
+        assert_eq!(activity_title(true, "等待设备"), "等待平板连接");
         assert_eq!(activity_title(true, "仅平板"), "正在关闭电脑屏");
         assert_eq!(activity_title(true, "编码"), "正在投屏");
         assert_eq!(activity_title(false, ""), "未开始共享");

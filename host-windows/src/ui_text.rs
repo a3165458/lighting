@@ -218,6 +218,14 @@ pub fn client_app_installing_hint() -> String {
     "正在通过 USB 安装 Lighting。多数平板不会弹「允许安装」，请保持亮屏。开发者选项里若有「USB安装」，请打开。".into()
 }
 
+pub fn client_app_installing_after_stop_hint() -> String {
+    "正在先停止当前共享，再通过 USB 安装客户端。请保持平板亮屏。".into()
+}
+
+pub fn share_busy_install_hint() -> String {
+    "共享还在占用 USB，没有卸载旧客户端。请点「停止共享」，等几秒后再点重新安装。".into()
+}
+
 pub fn client_app_installed_ok() -> String {
     "客户端已安装，平板上会自动打开 Lighting 副屏。若没看到，到应用列表里找这个名字，然后回电脑点「开始共享」".into()
 }
@@ -623,5 +631,12 @@ mod tests {
             display_choice_label(0, true, 1920, 1080),
             "主显示器 #1  (1920 × 1080)"
         );
+    }
+
+    #[test]
+    fn reinstall_copy_asks_to_stop_share() {
+        assert!(client_app_installing_after_stop_hint().contains("停止"));
+        assert!(share_busy_install_hint().contains("停止共享"));
+        assert!(!share_busy_install_hint().contains("adb"));
     }
 }
