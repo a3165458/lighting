@@ -937,6 +937,33 @@ async fn handle_client(
         audio_channels: 2,
         host_name: protocol::host_name(),
     };
+    let settings = EncodeSettings {
+        width,
+        height,
+        fps,
+        bitrate_kbps: cfg.bitrate_kbps,
+        codec: codec.clone(),
+        encoder: encoder::pick_encoder(&codec).into(),
+        profile: if codec.eq_ignore_ascii_case("hevc") || codec.eq_ignore_ascii_case("h265") {
+            "main".into()
+        } else if hw {
+            "main".into()
+        } else {
+            "baseline".into()
+        },
+        draw_mouse: !hello.cursor_overlay,
+        nvenc_surfaces: lighting_host::session_policy::nvenc_surfaces(),
+        nvenc_rc: lighting_host::session_policy::nvenc_rc().into(),
+        amf_rc: lighting_host::session_policy::amf_rc().into(),
+    };
+    // ffmpeg must emit codec-config+IDR *before* CONFIG. Sending CONFIG first
+    // parked the tablet on "avc … 等待关键帧" for the whole graph bootstrap,
+    // then reconnect if the pipe died before IDR.
+    let hevc = codec.eq_ignore_ascii_case("hevc") || codec.eq_ignore_ascii_case("h265");
+    let (mut session, bootstrap, mut capture_kind) =
+        start_live_encoder(&ffmpeg, &display, &settings, hevc).await?;
+    let mut dda_retries = 0u8;
+
     let payload = serde_json::to_vec(&cfg)?;
     protocol::write_message(&mut writer, protocol::MSG_CONFIG, 0, &payload).await?;
     if let Ok(mut s) = status.lock() {
@@ -967,26 +994,6 @@ async fn handle_client(
         ),
     );
     set_bitrate(&status, cfg.bitrate_kbps);
-
-    let settings = EncodeSettings {
-        width,
-        height,
-        fps,
-        bitrate_kbps: cfg.bitrate_kbps,
-        codec: codec.clone(),
-        encoder: encoder::pick_encoder(&codec).into(),
-        profile: if codec.eq_ignore_ascii_case("hevc") || codec.eq_ignore_ascii_case("h265") {
-            "main".into()
-        } else if hw {
-            "main".into()
-        } else {
-            "baseline".into()
-        },
-        draw_mouse: !hello.cursor_overlay,
-        nvenc_surfaces: lighting_host::session_policy::nvenc_surfaces(),
-        nvenc_rc: lighting_host::session_policy::nvenc_rc().into(),
-        amf_rc: lighting_host::session_policy::amf_rc().into(),
-    };
 
     let cursor_slot: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>> =
         std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -1032,10 +1039,6 @@ async fn handle_client(
     let mux_cursor_on_video =
         session_policy::mux_cursor_on_video(hello.cursor_overlay, control_task.is_some());
 
-    let hevc = codec.eq_ignore_ascii_case("hevc") || codec.eq_ignore_ascii_case("h265");
-    let (mut session, bootstrap, mut capture_kind) =
-        start_live_encoder(&ffmpeg, &display, &settings, hevc).await?;
-    let mut dda_retries = 0u8;
     if capture_kind == CaptureKind::Gdi {
         tracing::warn!("using gdigrab; games will look like 10–20 fps");
         set_status(

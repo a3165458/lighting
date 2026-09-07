@@ -33,6 +33,11 @@ pub fn find_adb() -> Result<PathBuf> {
 /// Look for a shippable APK next to the host or in the local android build tree.
 pub fn find_bundled_apk() -> Option<PathBuf> {
     let mut candidates = Vec::new();
+    // Electron sets this to `resources/` (Lighting.apk lives next to lighting-host.exe).
+    // LIGHTING_RUNTIME_DIR is adb/ffmpeg only — never look there first.
+    if let Ok(dir) = std::env::var("LIGHTING_RESOURCES_DIR") {
+        candidates.push(PathBuf::from(dir).join("Lighting.apk"));
+    }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             for name in [
@@ -248,39 +253,88 @@ pub async fn package_version(adb: &Path, serial: &str, package: &str) -> Option<
 
 /// Extract `versionName=` from `dumpsys package` output.
 pub fn parse_version_name(dumpsys: &str) -> Option<String> {
-    for line in dumpsys.lines() {
-        let trimmed = line.trim();
-        let Some(rest) = trimmed.strip_prefix("versionName=") else {
-            continue;
-        };
-        let ver = rest.trim().trim_matches('"').trim();
-        if !ver.is_empty() {
-            return Some(ver.to_string());
-        }
-    }
-    None
+    lighting_host::apk_install::parse_version_name(dumpsys)
 }
 
-pub async fn install_apk(adb: &Path, serial: &str, apk: &Path) -> Result<()> {
+async fn uninstall_package(adb: &Path, serial: &str, package: &str) -> Result<()> {
     let output = adb_command(adb)
-        .args(["-s", serial, "install", "-r"])
-        .arg(apk)
+        .args(["-s", serial, "uninstall", package])
         .output()
         .await
-        .context("adb install")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        anyhow::bail!(
-            "安装失败: {}",
-            if !stderr.trim().is_empty() {
-                stderr.trim().to_string()
-            } else {
-                stdout.trim().to_string()
-            }
-        );
+        .context("adb uninstall")?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if output.status.success()
+        || stdout.to_ascii_lowercase().contains("success")
+        || stderr.to_ascii_lowercase().contains("not found")
+        || stdout.to_ascii_lowercase().contains("not found")
+    {
+        return Ok(());
     }
-    Ok(())
+    anyhow::bail!(
+        "卸载旧客户端失败: {}",
+        if !stderr.trim().is_empty() {
+            stderr.trim().to_string()
+        } else {
+            stdout.trim().to_string()
+        }
+    )
+}
+
+async fn force_stop_package(adb: &Path, serial: &str, package: &str) {
+    let _ = adb_command(adb)
+        .args(["-s", serial, "shell", "am", "force-stop", package])
+        .output()
+        .await;
+}
+
+async fn adb_install_once(adb: &Path, serial: &str, apk: &Path) -> Result<(), String> {
+    let mut cmd = adb_command(adb);
+    cmd.args(["-s", serial, "install"]);
+    cmd.args(lighting_host::apk_install::install_replace_flags());
+    cmd.arg(apk);
+    let output = cmd.output().await.map_err(|err| format!("{err:#}"))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let combined = format!("{stdout}\n{stderr}");
+    if output.status.success() || combined.to_ascii_lowercase().contains("success") {
+        return Ok(());
+    }
+    Err(if !stderr.trim().is_empty() {
+        stderr.trim().to_string()
+    } else {
+        stdout.trim().to_string()
+    })
+}
+
+/// Force-replace the client. CI debug keystores change per runner, so `-r`
+/// alone leaves v0.1.0 on the pad and "重新安装" looks like a no-op.
+pub async fn install_apk(adb: &Path, serial: &str, apk: &Path) -> Result<String> {
+    let package = CLIENT_PACKAGE;
+    if package_installed(adb, serial, package).await {
+        force_stop_package(adb, serial, package).await;
+        uninstall_package(adb, serial, package)
+            .await
+            .context("覆盖安装前卸载旧客户端")?;
+    }
+    if let Err(err) = adb_install_once(adb, serial, apk).await {
+        if lighting_host::apk_install::needs_uninstall_reinstall(&err) {
+            let _ = uninstall_package(adb, serial, package).await;
+            adb_install_once(adb, serial, apk)
+                .await
+                .map_err(|retry| anyhow::anyhow!("安装失败: {retry}"))?;
+        } else {
+            anyhow::bail!("安装失败: {err}");
+        }
+    }
+    force_stop_package(adb, serial, package).await;
+    let version = package_version(adb, serial, package)
+        .await
+        .unwrap_or_default();
+    if !package_installed(adb, serial, package).await {
+        anyhow::bail!("安装命令已返回，但平板上仍没有 Lighting 客户端");
+    }
+    Ok(version)
 }
 
 pub async fn reverse_port(adb: &Path, serial: &str, port: u16) -> Result<()> {

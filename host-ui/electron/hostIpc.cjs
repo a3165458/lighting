@@ -57,7 +57,9 @@ class HostIpcClient {
       const expected = app.getVersion()
       const state = await this.rawInvoke('getState')
       const hostVersion = String(state?.hostVersion || '')
-      if (hostVersion && expected && hostVersion !== expected) {
+      // Empty hostVersion is the 0.1.0 host that predates the field.
+      // Reusing it made the UI show v0.1.0 and install the leftover APK.
+      if (app.isPackaged && expected && hostVersion !== expected) {
         await this.replaceStaleHost()
       }
     } catch {
@@ -140,7 +142,7 @@ class HostIpcClient {
     if (this.child && !this.child.killed) return
     // Admin UI must not keep talking to a leftover non-elevated host on 17401
     // (that process cannot show UAC, so driver install looks frozen).
-    if (isElevated()) {
+    if (app.isPackaged || isElevated()) {
       await this.killStrayHosts()
       await this.spawnBundledHost()
       return
