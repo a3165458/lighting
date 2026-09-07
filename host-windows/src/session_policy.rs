@@ -998,6 +998,38 @@ pub fn compute_encode_size(
     fit_resolution(src_w, src_h, out_w, out_h)
 }
 
+/// MediaCodec / IddCx both want even multiples of `alignment` (often 16).
+pub fn align_dim(v: u32, alignment: u32) -> u32 {
+    let align = alignment.max(2);
+    let aligned = (v.max(align) / align * align).max(align);
+    aligned.max(16) & !1
+}
+
+/// Virtual panel size that matches the encoder output, so `ddagrab` is 1:1.
+///
+/// Hello.alignment (often 16) used to be applied *after* IddCx was already
+/// on the raw tablet timing. 2340×1080 then encoded as 2336×1080, which
+/// turns on ffmpeg `scale_d3d11` (hardcoded 10-frame GPU pool — GlideX
+/// native DDA has none). Quality scale < 1 used to keep a 2K desktop and
+/// scale in the filter graph for the same reason.
+pub fn virtual_panel_size(
+    tablet_w: u32,
+    tablet_h: u32,
+    max_w: u32,
+    max_h: u32,
+    scale: f32,
+    dec_w: u32,
+    dec_h: u32,
+    alignment: u32,
+) -> (u32, u32) {
+    let src_w = tablet_w.max(16);
+    let src_h = tablet_h.max(16);
+    let (w, h) = compute_encode_size(
+        src_w, src_h, tablet_w, tablet_h, max_w, max_h, scale, dec_w, dec_h,
+    );
+    (align_dim(w, alignment), align_dim(h, alignment))
+}
+
 /// Parse AC/DC lid-close action indices from `powercfg /q SCHEME_CURRENT SUB_BUTTONS`.
 /// Looks up the LIDACTION block (language-independent GUID / alias), then the
 /// current AC and DC index lines (`Index:` or `索引:`).
@@ -1397,6 +1429,40 @@ mod tests {
     fn missing_screen_falls_back_to_res_cap() {
         let (w, h) = compute_encode_size(2560, 1440, 0, 0, 1920, 1080, 1.0, 3840, 2160);
         assert!(w <= 1920 && h <= 1080, "{w}×{h}");
+    }
+
+    #[test]
+    fn virtual_panel_uses_decoder_alignment_not_raw_tablet() {
+        // 1080 is not a multiple of 16 (1080/16=67.5) — 1072 is.
+        let (w, h) = virtual_panel_size(2340, 1080, 3840, 2160, 1.0, 3840, 2160, 16);
+        assert_eq!((w, h), (2336, 1072));
+        assert_eq!(align_dim(2340, 16), 2336);
+        assert_eq!(align_dim(1080, 16), 1072);
+    }
+
+    #[test]
+    fn virtual_panel_quality_scale_matches_encode() {
+        let (w, h) = virtual_panel_size(2560, 1600, 3840, 2160, 0.75, 3840, 2160, 16);
+        assert_eq!((w, h), (1920, 1200));
+    }
+
+    #[test]
+    fn virtual_panel_already_aligned_stays_identity() {
+        let (w, h) = virtual_panel_size(1920, 1200, 3840, 2160, 1.0, 3840, 2160, 16);
+        assert_eq!((w, h), (1920, 1200));
+    }
+
+    #[test]
+    fn aligned_virtual_encode_does_not_need_filter_scale() {
+        let tablet = (2340u32, 1080u32);
+        let (enc_w, enc_h) =
+            virtual_panel_size(tablet.0, tablet.1, 3840, 2160, 1.0, 3840, 2160, 16);
+        let (w, h) = compute_encode_size(
+            enc_w, enc_h, tablet.0, tablet.1, 3840, 2160, 1.0, 3840, 2160,
+        );
+        let (w, h) = (align_dim(w, 16), align_dim(h, 16));
+        assert_eq!((w, h), (enc_w, enc_h));
+        assert!(!crate::capture_graph::needs_scale(enc_w, enc_h, w, h));
     }
 
     #[test]
