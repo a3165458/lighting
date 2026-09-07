@@ -589,6 +589,11 @@ pub async fn install_apk(
 
 pub async fn reverse_port(adb: &Path, serial: &str, port: u16) -> Result<()> {
     wait_for_device(adb, serial).await;
+    if lighting_host::session_policy::verify_adb_reverse_list()
+        && reverse_list_contains(adb, serial, port).await
+    {
+        return Ok(());
+    }
     let spec = format!("tcp:{port}");
     let max = Duration::from_secs(lighting_host::apk_install::adb_reverse_timeout_secs());
     let mut last = String::from("adb reverse 失败");
@@ -601,7 +606,13 @@ pub async fn reverse_port(adb: &Path, serial: &str, port: u16) -> Result<()> {
             }
         };
         if output.status.success() {
-            return Ok(());
+            if !lighting_host::session_policy::verify_adb_reverse_list()
+                || reverse_list_contains(adb, serial, port).await
+            {
+                return Ok(());
+            }
+            last = "adb reverse 已返回成功，但 reverse --list 没有该端口".into();
+            continue;
         }
         last = String::from_utf8_lossy(&output.stderr).trim().to_string();
         if last.is_empty() {
@@ -609,6 +620,22 @@ pub async fn reverse_port(adb: &Path, serial: &str, port: u16) -> Result<()> {
         }
     }
     anyhow::bail!("adb reverse 失败: {last}")
+}
+
+async fn reverse_list_contains(adb: &Path, serial: &str, port: u16) -> bool {
+    let output = adb_args(
+        adb,
+        &["-s", serial, "reverse", "--list"],
+        probe_timeout(),
+    )
+    .await;
+    match output {
+        Ok(out) => lighting_host::apk_install::reverse_list_has_port(
+            &combined_output(&out),
+            port,
+        ),
+        Err(_) => false,
+    }
 }
 
 pub async fn remove_reverse(adb: &Path, serial: &str, port: u16) -> Result<()> {

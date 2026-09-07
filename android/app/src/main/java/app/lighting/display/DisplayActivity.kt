@@ -515,7 +515,9 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         caps: DeviceCaps,
         gen: Int,
     ): Boolean {
-        val sock = LitSocket(host, port)
+        val connectMs =
+            if (ConnectCopy.isUsbHost(host)) usbConnectTimeoutMs() else 1_500
+        val sock = LitSocket(host, port, connectMs)
         lit = sock
         val hello = LitProtocol.helloJson(
             caps = caps,

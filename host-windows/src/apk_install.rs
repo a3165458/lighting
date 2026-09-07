@@ -77,6 +77,21 @@ pub fn parse_adb_ready_serials(stdout: &str) -> Vec<String> {
         .collect()
 }
 
+/// `adb reverse --list` must actually contain tcp:PORT. Honor/Huawei often
+/// exits 0 with an empty list after IddCx re-enum — host then waits forever
+/// while the pad sits on 重连中 / 正在通过 USB 连接.
+pub fn reverse_list_has_port(list: &str, port: u16) -> bool {
+    let needle = format!("tcp:{port}");
+    list.lines().any(|line| {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('*') {
+            return false;
+        }
+        line.split_whitespace()
+            .any(|tok| tok.eq_ignore_ascii_case(&needle))
+    })
+}
+
 /// `adb install` flags after `-s <serial> install`.
 /// `-r` replace, `-d` downgrade, `-g` grant, `-t` test-only (CI debug APK).
 pub fn install_replace_flags() -> &'static [&'static str] {
@@ -297,6 +312,14 @@ mod tests {
         let stdout = "List of devices attached\nHA18C874\tdevice\nemulator-5554\toffline\nXYZ\tunauthorized\n";
         assert_eq!(parse_adb_ready_serials(stdout), vec!["HA18C874".to_string()]);
         assert!(parse_adb_ready_serials("List of devices attached\n").is_empty());
+    }
+
+    #[test]
+    fn reverse_list_requires_the_stream_port() {
+        assert!(reverse_list_has_port("UsbFfs tcp:17400 tcp:17400\n", 17400));
+        assert!(reverse_list_has_port("tcp:17400 tcp:17400\n", 17400));
+        assert!(!reverse_list_has_port("UsbFfs tcp:5037 tcp:5037\n", 17400));
+        assert!(!reverse_list_has_port("", 17400));
     }
 
     #[test]

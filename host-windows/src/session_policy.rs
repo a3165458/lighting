@@ -135,6 +135,27 @@ pub fn launch_stream_client_does_not_block_listen() -> bool {
     true
 }
 
+/// IddCx can drop reverse a few seconds after a successful `adb reverse`.
+/// Host used to wait forever on video_rx with a dead 127.0.0.1 — tablet
+/// stays on 重连中, host title still looks fine.
+pub fn refresh_usb_while_waiting_for_hello() -> bool {
+    true
+}
+
+pub fn verify_adb_reverse_list() -> bool {
+    true
+}
+
+pub fn usb_wait_refresh_ms() -> u64 {
+    2_000
+}
+
+/// Stale `reverse --list` can still show tcp:17400 after the host socket
+/// behind it is gone. Recreate (remove + add) if no Hello arrives.
+pub fn usb_reverse_recreate_after_ms() -> u64 {
+    8_000
+}
+
 pub fn listen_port_from_bind(bind: &str) -> u16 {
     bind.rsplit_once(':')
         .and_then(|(_, p)| p.parse().ok())
@@ -1248,6 +1269,10 @@ mod tests {
         assert!(drop_parked_hellos_after_virtual_prepare());
         assert!(usb_reverse_skips_package_probe());
         assert!(launch_stream_client_does_not_block_listen());
+        assert!(refresh_usb_while_waiting_for_hello());
+        assert!(verify_adb_reverse_list());
+        assert!(usb_wait_refresh_ms() >= 1_000 && usb_wait_refresh_ms() <= 5_000);
+        assert!(usb_reverse_recreate_after_ms() >= 5_000);
         assert_eq!(listen_port_from_bind("0.0.0.0:17400"), 17400);
         assert_eq!(listen_port_from_bind("127.0.0.1:17400"), 17400);
         assert_eq!(listen_port_from_bind(""), 17400);
