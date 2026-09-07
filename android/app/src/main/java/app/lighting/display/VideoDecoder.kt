@@ -183,8 +183,7 @@ class VideoDecoder {
         codecName: String,
     ): List<MediaFormat> {
         val out = ArrayList<MediaFormat>()
-        val n = codecName.lowercase()
-        val software = n.contains("google") || n.contains("c2.android") || n.contains("software")
+        val software = DeviceCaps.isSoftwareDecoderName(codecName)
         // Moonlight setDecoderLowLatencyOptions(tryNumber): most-to-least
         // risky. Try 0 is official + matching SoC vendor key. Dumping every
         // vendor key on try 0 used to fail FEATURE_LowLatency configure().
