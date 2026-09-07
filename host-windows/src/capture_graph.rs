@@ -32,6 +32,12 @@ impl DxgiCapture {
         ["-init_hw_device".into(), "cuda=cuda@capture".into()]
     }
 
+    /// Derive QSV from the D3D11 capture device. Same dual-GPU trap as
+    /// CUDA: `qsv:0` is the first Intel adapter, not DXGI adapter_index.
+    pub fn qsv_device_args(self) -> [String; 2] {
+        ["-init_hw_device".into(), "qsv=qsv@capture".into()]
+    }
+
     /// Derive AMF from the D3D11 capture device for `vpp_amf`.
     pub fn amf_device_args(self) -> [String; 2] {
         ["-init_hw_device".into(), "amf=amf@capture".into()]
@@ -43,6 +49,9 @@ pub fn extra_hw_device_args(capture: DxgiCapture, graph: &str) -> Vec<String> {
     let mut extra = Vec::new();
     if graph.contains("cuda") {
         extra.extend(capture.cuda_device_args());
+    }
+    if graph.contains("derive_device=qsv") || graph.contains("scale_qsv") {
+        extra.extend(capture.qsv_device_args());
     }
     if graph.contains("vpp_amf") || graph.contains("derive_device=amf") {
         extra.extend(capture.amf_device_args());
@@ -164,16 +173,15 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
         } else {
             "scale_qsv=format=nv12".to_string()
         };
-        for extra in &extras {
-            graphs.push(format!(
-                "{dda},hwmap=derive_device=qsv:extra_hw_frames={extra},{qsv}:extra_hw_frames={extra}"
-            ));
-        }
-        for extra in &extras {
-            graphs.push(format!(
-                "{dda},hwupload=extra_hw_frames={extra},hwmap=derive_device=qsv,{qsv}:extra_hw_frames={extra}"
-            ));
-        }
+        // extra=0 only. extra=1/2 cannot beat a working extra=0 graph, and
+        // unkeyed hwmap keeps ffmpeg's 16-frame default. Encoder adds
+        // qsv@capture so this is not a 3s reject into hwupload sysmem.
+        graphs.push(format!(
+            "{dda},hwmap=derive_device=qsv:extra_hw_frames=0,{qsv}:extra_hw_frames=0"
+        ));
+        graphs.push(format!(
+            "{dda},hwupload=extra_hw_frames=0,hwmap=derive_device=qsv,{qsv}:extra_hw_frames=0"
+        ));
     }
     if encoder.contains("amf") {
         if scale {
@@ -312,6 +320,12 @@ mod tests {
         assert!(!graphs[0].contains("hwupload"));
         assert!(!graphs.iter().any(|g| g.contains("derive_device=qsv") && !g.contains("extra_hw_frames")));
         assert!(graphs.iter().any(|g| g.contains("hwupload")));
+        let cap = DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x8086 };
+        assert_eq!(
+            extra_hw_device_args(cap, &graphs[0]),
+            ["-init_hw_device", "qsv=qsv@capture"]
+        );
+        assert!(extra_hw_device_args(cap, "ddagrab=output_idx=0").is_empty());
     }
 
     #[test]
