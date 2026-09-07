@@ -327,6 +327,10 @@ class VideoDecoder {
                             android.os.Build.MANUFACTURER.equals("samsung", true)
                         ) {
                             format.setInteger("vendor.sec-ext-dec-low-latency.enable", 1)
+                            // Same display-order bypass as Qualcomm
+                            // qti-ext-dec-picture-order: SEC otherwise
+                            // holds a reconstructed picture for VUI.
+                            format.setInteger("vendor.sec-ext-dec-picture-order.enable", 1)
                         }
                     }
                 }
@@ -335,9 +339,16 @@ class VideoDecoder {
                         format.setInteger("vendor.low-latency.enable", 1)
                     }
                 }
-                n.startsWith("omx.mtk") || n.startsWith("c2.mtk") || n.contains(".mtk.") -> {
+                n.startsWith("omx.mtk") || n.startsWith("c2.mtk") || n.contains(".mtk.") || n.contains("mediatek") -> {
                     if (tryNumber < 4) {
                         format.setInteger("vendor.mtk.vdec.low.latency", 1)
+                    }
+                    // Dimensity C2 ignores the OMX-era mtk.vdec key.
+                    // Without mtk-ext the decoder holds a reconstructed
+                    // picture — one refresh vs the laptop. Try 4 keeps
+                    // this if mtk.vdec itself was the reject.
+                    if (tryNumber < 5) {
+                        format.setInteger("vendor.mtk-ext-dec-low-latency.enable", 1)
                     }
                 }
             }
@@ -386,13 +397,18 @@ class VideoDecoder {
                     android.os.Build.MANUFACTURER.equals("samsung", true)
                 ) {
                     poke("vendor.sec-ext-dec-low-latency.enable", 1)
+                    poke("vendor.sec-ext-dec-picture-order.enable", 1)
                 }
             }
             n.startsWith("omx.amlogic") || n.startsWith("c2.amlogic") -> {
                 poke("vendor.low-latency.enable", 1)
             }
-            n.startsWith("omx.mtk") || n.startsWith("c2.mtk") || n.contains(".mtk.") -> {
+            n.startsWith("omx.mtk") || n.startsWith("c2.mtk") || n.contains(".mtk.") || n.contains("mediatek") -> {
                 poke("vendor.mtk.vdec.low.latency", 1)
+                poke("vendor.mtk-ext-dec-low-latency.enable", 1)
+                // ByteVU display path still queues a vsync unless this
+                // sibling is on. setParameters ignores an unknown key.
+                poke("vendor.mtk.vdec.bytevu.low-latency.enable", 1)
             }
         }
     }
