@@ -209,20 +209,22 @@ data class DeviceCaps(
         }
 
         /**
-         * Moonlight: `omx.google` / `c2.android` are AOSP software.
-         * `c2.google` is Tensor hardware. A blanket `contains("google")`
-         * skipped KEY_LOW_LATENCY and held a decoded picture — one refresh
-         * vs the laptop. API 29+ isSoftwareOnly / isHardwareAccelerated
-         * win over the name.
+         * Moonlight / AOSP: `omx.google`, `c2.android`, `c2.google` are
+         * software. Tensor hardware is `c2.exynos.*` (Pixel tablet). Treating
+         * `c2.google` as HW ranked it first on soc=tensor; C2SoftAvcDec then
+         * held a decoded picture — one refresh vs the laptop. Name blacklist
+         * wins over a ROM that lies with isHardwareAccelerated.
          */
         fun isSoftwareDecoderName(name: String): Boolean {
             val n = name.lowercase()
-            if (n.contains("c2.android") || n.contains("software")) return true
+            if (n.contains("c2.android") || n.contains("c2.google")) return true
             if (n.contains("omx.google") || n.contains("google.goldfish")) return true
+            if (n.contains("software")) return true
             return false
         }
 
         fun isSoftwareName(info: MediaCodecInfo, name: String): Boolean {
+            if (isSoftwareDecoderName(name)) return true
             if (Build.VERSION.SDK_INT >= 29) {
                 try {
                     if (info.isSoftwareOnly) return true
@@ -233,7 +235,7 @@ data class DeviceCaps(
                 } catch (_: Throwable) {
                 }
             }
-            return isSoftwareDecoderName(name)
+            return false
         }
 
         fun detectSoc(hardware: String, avcName: String?, hevcName: String?): String {
@@ -283,13 +285,13 @@ data class DeviceCaps(
             val vendor = when {
                 n.contains("qti") || n.contains("qcom") -> "qcom"
                 n.contains("mtk") -> "mtk"
-                n.contains("exynos") || n.contains("sec.") || n.contains("samsung") -> "exynos"
+                n.contains("exynos") || n.contains("sec.") || n.contains("samsung") ->
+                    if (soc == "tensor") "tensor" else "exynos"
                 n.contains("hisi") || n.contains("kirin") || n.contains("msvdx") -> "hisi"
                 n.contains("amlogic") -> "amlogic"
                 n.contains("sprd") || n.contains("unisoc") -> "unisoc"
                 n.contains("rk") || n.contains("rockchip") -> "rockchip"
-                n.contains("google") && n.contains("c2.") -> "tensor"
-                n.contains("c2.") && !n.contains("android") -> "other-hw"
+                n.contains("c2.") && !n.contains("android") && !n.contains("google") -> "other-hw"
                 else -> "other"
             }
             val match = if (vendor == soc) 0 else 10
