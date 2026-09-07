@@ -367,6 +367,9 @@ fun usbReconnectAttempts(): Int = 24
 
 fun usbReconnectBudgetMs(): Long = 90_000L
 
+/** Reverse restore after VDD is often slower than the old 1.5s connect. */
+fun usbConnectTimeoutMs(): Int = 4_000
+
 /** `failIndex` 0 = first retry after a drop. Includes caller-supplied jitter (0–200ms). */
 fun reconnectBackoffMs(failIndex: Int, jitterMs: Int): Long {
     val base = when {

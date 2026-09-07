@@ -383,16 +383,8 @@ async fn run_session_inner(
     let _restore_pc = TabletOnlyRestoreGuard(tablet_only.clone(), preserve.clone());
 
     let adb_path = adb::find_adb().ok();
-    let first_usb = open_usb_tunnel(
-        adb_path.as_ref(),
-        req.device_serial.as_deref(),
-        listen_port,
-        &status,
-    )
-    .await;
-    let mut reverse_serial = first_usb.serial;
-    let mut usb_wait_detail = first_usb.wait_detail;
-
+    let mut reverse_serial: Option<String> = req.device_serial.clone();
+    let mut usb_wait_detail = String::new();
 
     let (stop_tx, stop_rx) = watch::channel(false);
     let stop2 = stop.clone();
@@ -443,6 +435,18 @@ async fn run_session_inner(
             }
         }
     });
+
+    // Accept is live before reverse/launch so the pad's first TCP SYN is
+    // classified, not left in the kernel backlog during IddCx.
+    let first_usb = open_usb_tunnel(
+        adb_path.as_ref(),
+        reverse_serial.as_deref(),
+        listen_port,
+        &status,
+    )
+    .await;
+    reverse_serial = first_usb.serial;
+    usb_wait_detail = first_usb.wait_detail;
 
     let mut prepared_displays: Option<Vec<displays::DisplayInfo>> = None;
     if req.share_mode.uses_virtual_display() {
@@ -547,6 +551,8 @@ async fn run_session_inner(
         .context("所选显示器不存在，请刷新列表")?;
 
     let mut stop_rx = stop_rx;
+    let usb_refresh_busy = Arc::new(AtomicBool::new(false));
+    let mut last_reverse_recreate = std::time::Instant::now();
     loop {
         if !session_policy::continue_accept_loop(stop.load(Ordering::Relaxed)) {
             cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref(), listen_port).await;
@@ -569,6 +575,67 @@ async fn run_session_inner(
                 }
                 set_status(&status, "已连接", format!("{}", c.addr));
                 c
+            }
+            _ = tokio::time::sleep(Duration::from_millis(
+                session_policy::usb_wait_refresh_ms(),
+            )) => {
+                if session_policy::refresh_usb_while_waiting_for_hello() {
+                    if let (Some(adb_bin), Some(serial)) =
+                        (adb_path.clone(), reverse_serial.clone())
+                    {
+                        let recreate = last_reverse_recreate.elapsed()
+                            >= Duration::from_millis(
+                                session_policy::usb_reverse_recreate_after_ms(),
+                            );
+                        if recreate {
+                            last_reverse_recreate = std::time::Instant::now();
+                        }
+                        if usb_refresh_busy
+                            .compare_exchange(
+                                false,
+                                true,
+                                Ordering::Relaxed,
+                                Ordering::Relaxed,
+                            )
+                            .is_ok()
+                        {
+                            let busy = usb_refresh_busy.clone();
+                            let status_ref = status.clone();
+                            tokio::spawn(async move {
+                                if recreate {
+                                    let _ = adb::remove_reverse(
+                                        &adb_bin,
+                                        &serial,
+                                        listen_port,
+                                    )
+                                    .await;
+                                }
+                                match adb::reverse_port(&adb_bin, &serial, listen_port).await
+                                {
+                                    Ok(()) => {
+                                        set_transport(
+                                            &status_ref,
+                                            format!("USB · adb reverse 已就绪（{serial}）"),
+                                        );
+                                        adb::launch_stream_client(
+                                            &adb_bin,
+                                            &serial,
+                                            listen_port,
+                                        )
+                                        .await;
+                                    }
+                                    Err(err) => {
+                                        tracing::warn!(
+                                            "wait-hello reverse refresh failed: {err:#}"
+                                        );
+                                    }
+                                }
+                                busy.store(false, Ordering::Relaxed);
+                            });
+                        }
+                    }
+                }
+                continue;
             }
         };
 
