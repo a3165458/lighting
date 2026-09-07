@@ -555,12 +555,16 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                                 applySurfaceFrameRate(surface.holder.surface)
                             } catch (_: Throwable) {
                             }
+                            val vs = videoSurface ?: surface.holder.surface
+                            // setFixedSize above rebuilt the BufferQueue.
+                            // Cap the exact Surface MediaCodec will connect.
+                            DisplayApis.setMaxDequeuedBufferCount(vs, 2)
                             decoder.configure(
                                 cfg.codec,
                                 cfg.width,
                                 cfg.height,
                                 nal,
-                                (videoSurface ?: surface.holder.surface),
+                                vs,
                             )
                             configured = true
                             reachedVideo = true
@@ -792,6 +796,9 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
      */
     private fun applySurfaceFrameRate(surfaceObj: Surface) {
         if (Build.VERSION.SDK_INT < 30 || !surfaceObj.isValid) return
+        // Producer-side 2-slot cap. Must land before MediaCodec.configure.
+        // setFixedSize resets the queue, so callers re-run this after it.
+        DisplayApis.setMaxDequeuedBufferCount(surfaceObj, 2)
         val hz = panelFps.toFloat().coerceAtLeast(30f)
         try {
             if (Build.VERSION.SDK_INT >= 31) {
