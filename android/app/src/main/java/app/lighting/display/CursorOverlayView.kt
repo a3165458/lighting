@@ -167,13 +167,11 @@ class CursorOverlayView @JvmOverloads constructor(
                     Surface.CHANGE_FRAME_RATE_ALWAYS,
                 )
             DisplayApis.overrideChildrenFrameRate(tx, sc)
-                        if (Build.VERSION.SDK_INT >= 34) {
-                // SurfaceView default BufferQueue is 3. The extra slot
-                // holds a decoded picture until the next vsync — one
-                // refresh vs the laptop. 2 is ping-pong; 1 tears.
-                // @hide on compileSdk — call reflectively.
-                DisplayApis.setBufferMaxCount(tx, sc, 2)
-            }
+            // SurfaceView default BufferQueue is 3. The extra slot
+            // holds a decoded picture until the next vsync — one
+            // refresh vs the laptop. 2 is ping-pong; 1 tears.
+            // Public on API 34; reflection no-ops on older builds.
+            DisplayApis.setBufferMaxCount(tx, sc, 2)
 
             tx.apply()
         } catch (_: Throwable) {
