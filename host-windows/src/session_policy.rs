@@ -421,6 +421,14 @@ pub fn encoder_video_flags() -> &'static str {
     "+low_delay"
 }
 
+/// ffmpeg muxer `-max_interleave_delta`. Default is 10 seconds: with
+/// `-an` the muxer still waits that window before flushing a lone
+/// video AU when DTS gaps appear (ddagrab 8000 Hz poll vs 120 fps
+/// encode). GlideX has no muxer. 0 emits each packet immediately.
+pub fn ffmpeg_max_interleave_delta() -> i64 {
+    0
+}
+
 /// h264_qsv `-a53cc`. Default 1 walks A/53 caption SEI on every picture.
 /// ddagrab has none; NVENC already turns this off. Not an hevc_qsv option.
 pub fn qsv_a53cc() -> bool {
@@ -1266,6 +1274,7 @@ mod tests {
         assert!(!amf_filler_data());
         assert!(amf_forced_idr());
         assert_eq!(encoder_video_flags(), "+low_delay");
+        assert_eq!(ffmpeg_max_interleave_delta(), 0);
         assert!(!qsv_a53cc());
         assert!(qsv_vcm());
         assert!(!qsv_recovery_point_sei());

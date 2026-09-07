@@ -325,6 +325,13 @@ class VideoDecoder {
                 // does not switch the realtime bin.
                 format.setInteger(MediaFormat.KEY_PRIORITY, 0)
             }
+            if (Build.VERSION.SDK_INT >= 31) {
+                // Moonlight min-latency: 1 lets the Surface drop an
+                // undisplayed picture. OEM C2 that defaults to 0 holds
+                // that buffer until the next vsync — one refresh vs
+                // the laptop. Try -1 stays bare if this key rejects.
+                format.setInteger(MediaFormat.KEY_ALLOW_FRAME_DROP, 1)
+            }
             if (tryNumber < 3) {
                 format.setInteger("low-latency", 1)
                 if (Build.VERSION.SDK_INT >= 30) {
@@ -455,6 +462,9 @@ class VideoDecoder {
             // DVFS bin and hold a reconstructed picture. Moonlight pokes
             // this after start() so those tries still run unbounded.
             poke(MediaFormat.KEY_OPERATING_RATE, 32767)
+        }
+        if (Build.VERSION.SDK_INT >= 31) {
+            poke(MediaFormat.KEY_ALLOW_FRAME_DROP, 1)
         }
         // Configure try 2+ omits vdec-lowlatency. Without this poke,
         // MTK/Amazon C2 holds a decoded picture (Moonlight MediaCodecHelper).

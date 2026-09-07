@@ -421,6 +421,8 @@ fn output_mux_args(encoder: &str) -> Vec<String> {
         "0".into(),
         "-max_delay".into(),
         "0".into(),
+        "-max_interleave_delta".into(),
+        lighting_host::session_policy::ffmpeg_max_interleave_delta().to_string(),
         "-fps_mode".into(),
         "passthrough".into(),
         "-bsf:v".into(),
