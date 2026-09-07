@@ -215,11 +215,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 val peakHz = peak?.refreshRate ?: hz.toFloat()
                 lp.preferredRefreshRate = peakHz
                 if (Build.VERSION.SDK_INT >= 31) {
-                    try {
-                        lp.preferredMinRefreshRate = peakHz
-                        lp.preferredMaxRefreshRate = peakHz
-                    } catch (_: Throwable) {
-                    }
+                    DisplayApis.setPreferredRefreshRange(lp, peakHz)
                 }
                 window.attributes = lp
                 // AppCompat PhoneWindow exists only after super.onCreate.
@@ -765,13 +761,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
                     Surface.CHANGE_FRAME_RATE_ALWAYS,
                 )
-            try {
-                tx.setFrameRateSelectionStrategy(
-                    sc,
-                    SurfaceControl.FRAME_RATE_SELECTION_STRATEGY_OVERRIDE_CHILDREN,
-                )
-            } catch (_: Throwable) {
-            }
+            DisplayApis.overrideChildrenFrameRate(tx, sc)
             tx.apply()
         } catch (_: Throwable) {
         }
