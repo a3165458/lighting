@@ -25,12 +25,13 @@ internal object DisplayApis {
     /**
      * DEFAULT lets SurfaceFlinger pick 60 on a 120 Hz VRR panel (one
      * refresh vs the laptop). FIXED_SOURCE made it wait a vsync like a
-     * movie. AT_LEAST (API 31) is a lower bound: keep peak Hz without
-     * movie pacing. GlideX / game windows vote this way.
+     * movie. AT_LEAST is a lower bound: keep peak Hz without movie pacing.
+     * The named constant is only public in API 36; android.jar 35 used by
+     * CI does not compile `Surface.FRAME_RATE_COMPATIBILITY_AT_LEAST`.
      */
     fun peakFrameRateCompatibility(): Int {
         return if (Build.VERSION.SDK_INT >= 31) {
-            Surface.FRAME_RATE_COMPATIBILITY_AT_LEAST
+            2 // Surface.FRAME_RATE_COMPATIBILITY_AT_LEAST
         } else {
             Surface.FRAME_RATE_COMPATIBILITY_DEFAULT
         }
