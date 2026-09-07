@@ -91,6 +91,12 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Letterboxing around a punch-hole / camera cutout leaves a View
+        // that is not the decoder SurfaceView. HWC then GPU-composes the
+        // picture — one refresh GlideX / Moonlight do not pay.
+        if (Build.VERSION.SDK_INT >= 30) {
+            window.setDecorFitsSystemWindows(false)
+        }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setGameplayState(true)
         // HDR composition is a full extra Hardware Composer pass.
@@ -238,6 +244,14 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 if (Build.VERSION.SDK_INT >= 30) {
                     lp.preferMinimalPostProcessing = true
                 }
+                if (Build.VERSION.SDK_INT >= 28) {
+                    lp.layoutInDisplayCutoutMode =
+                        if (Build.VERSION.SDK_INT >= 30) {
+                            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                        } else {
+                            WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                        }
+                }
                 window.attributes = lp
                 if (Build.VERSION.SDK_INT >= 30) {
                     window.setPreferMinimalPostProcessing(true)
@@ -248,6 +262,14 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 if (Build.VERSION.SDK_INT >= 35) {
                     try {
                         window.setFrameRatePowerSavingsBalanced(false)
+                    } catch (_: Throwable) {
+                    }
+                    // Default ON: OEM boosts to 120 on touch, then drops
+                    // back to 60. View vote is ignored on some ColorOS /
+                    // HyperOS pads without this sibling of the balanced
+                    // throttle.
+                    try {
+                        window.setFrameRateBoostOnTouchEnabled(false)
                     } catch (_: Throwable) {
                     }
                 }
