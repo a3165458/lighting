@@ -114,6 +114,19 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         setContentView(R.layout.activity_display)
         hideSystemUi()
         surface = findViewById(R.id.surface)
+        // ViewRoot only counts a View vote. lockPeakRefresh voted the
+        // decor before this SurfaceView existed. Waiting for surfaceCreated
+        // lets Android 15 VRR latch 60 on the first vsyncs — one refresh
+        // vs the laptop. Surface.setFrameRate still waits for a valid
+        // BufferQueue in applySurfaceFrameRate / surfaceCreated.
+        DisplayApis.requestViewFrameRate(
+            surface,
+            panelFps.toFloat().coerceAtLeast(30f),
+        )
+        DisplayApis.requestViewFrameRate(
+            window.decorView,
+            panelFps.toFloat().coerceAtLeast(30f),
+        )
         status = findViewById(R.id.status)
         statusReason = findViewById(R.id.statusReason)
         statusBar = findViewById(R.id.statusBar)
