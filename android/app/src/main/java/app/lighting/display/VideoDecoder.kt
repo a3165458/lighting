@@ -343,7 +343,12 @@ class VideoDecoder {
                 // applyRuntimeLowLatency still pokes this after start().
                 format.setInteger(MediaFormat.KEY_ALLOW_FRAME_DROP, 1)
             }
-            if (tryNumber < 3) {
+            // Official KEY through try 3 so a FEATURE / operating-rate
+            // reject still configure()s realtime. C2 reads KEY at
+            // configure(); the post-start poke used to land after the
+            // first reconstructed picture (one refresh vs the laptop).
+            // Try 4 keeps vendor-only if KEY itself rejects.
+            if (tryNumber < 4) {
                 format.setInteger("low-latency", 1)
                 if (Build.VERSION.SDK_INT >= 30) {
                     format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
