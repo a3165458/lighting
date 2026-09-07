@@ -367,7 +367,7 @@ impl HostService {
         let status = g.status.clone();
         let wait_ms = lighting_host::apk_install::install_wait_share_stop_ms();
         self.rt.spawn(async move {
-            let mut share_idle = __omp_shell("share_running;")
+            let mut share_idle = share_running == false;
             if share_running {
                 let deadline = tokio::time::Instant::now() + Duration::from_millis(wait_ms);
                 while tokio::time::Instant::now() < deadline {
