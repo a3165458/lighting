@@ -91,8 +91,10 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
         // adds extra_hw_frames when > 0. extra_hw_frames=0 is still ten GPU
         // pictures in flight — GlideX / Sunshine native DDA has none.
         // Identity: ddagrab is already D3D11 BGRA and NVENC accepts D3D11.
-        // Try that first. BGRA reject falls through to scale_d3d11 NV12.
-        // Resize still needs scale_d3d11 (pool of 10 is ffmpeg's floor).
+        // Try that first. BGRA reject must NOT fall into scale_d3d11:
+        // that filter hardcodes a 10-frame pool and always *succeeds*,
+        // so a later CUDA graph is never live. scale_cuda's pool is
+        // dynamic (Sunshine / GlideX native DDA has none).
         let d3d11 = if scale {
             format!("scale_d3d11=width={dst_w}:height={dst_h}:format=nv12")
         } else {
@@ -105,6 +107,23 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
         };
         if !scale {
             graphs.push(dda.to_string());
+        }
+        // D3D11→CUDA map first: input is already a D3D11 frame, so
+        // hwupload_cuda often FATAL-rejects and burned 3s per try.
+        for extra in &extras {
+            graphs.push(format!(
+                "{dda},hwmap=derive_device=cuda:mode=direct:extra_hw_frames={extra},{cuda}:extra_hw_frames={extra}"
+            ));
+        }
+        graphs.push(format!(
+            "{dda},hwmap=derive_device=cuda:mode=direct,{cuda}"
+        ));
+        for extra in &extras {
+            graphs.push(format!(
+                "{dda},hwupload_cuda=extra_hw_frames={extra},{cuda}:extra_hw_frames={extra}"
+            ));
+        }
+        if !scale {
             for extra in &extras {
                 graphs.push(format!(
                     "{dda},hwmap=derive_device=d3d11:extra_hw_frames={extra}"
@@ -115,19 +134,6 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
             graphs.push(format!("{dda},{d3d11}:extra_hw_frames={extra}"));
         }
         graphs.push(format!("{dda},{d3d11}"));
-        for extra in &extras {
-            graphs.push(format!(
-                "{dda},hwupload_cuda=extra_hw_frames={extra},{cuda}:extra_hw_frames={extra}"
-            ));
-        }
-        for extra in &extras {
-            graphs.push(format!(
-                "{dda},hwmap=derive_device=cuda:mode=direct:extra_hw_frames={extra},{cuda}:extra_hw_frames={extra}"
-            ));
-        }
-        graphs.push(format!(
-            "{dda},hwmap=derive_device=cuda:mode=direct,{cuda}"
-        ));
     }
     if encoder.contains("qsv") {
         // ddagrab is D3D11. hwmap first avoids a sysmem upload (~1–2 ms).
@@ -255,21 +261,24 @@ mod tests {
     }
 
     #[test]
-    fn nvenc_prefers_d3d11_before_cuda() {
+    fn nvenc_prefers_cuda_before_d3d11_pool() {
         let graphs = dda_capture_graphs(Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0 }), 60, 2560, 1440, 1920, 1080, "h264_nvenc");
         assert!(graphs.len() >= 4);
-        assert!(graphs[0].contains("scale_d3d11"));
-        assert!(graphs[0].contains("format=nv12"));
-        assert!(graphs[0].contains("extra_hw_frames=0"));
+        // Resize: scale_d3d11 always succeeds with a 10-frame GPU pool, so
+        // it must not be first or CUDA is never live.
+        assert!(graphs[0].contains("hwmap=derive_device=cuda:mode=direct:extra_hw_frames=0"));
+        assert!(graphs[0].contains("scale_cuda=1920:1080:format=nv12"));
+        assert!(!graphs[0].contains("scale_d3d11"));
         assert!(!graphs[0].contains("hwupload_cuda"));
+        let cuda_at = graphs.iter().position(|g| g.contains("scale_cuda")).unwrap();
+        let d3d_at = graphs.iter().position(|g| g.contains("scale_d3d11")).unwrap();
+        assert!(cuda_at < d3d_at);
         assert!(graphs.iter().any(|g| g.contains("scale_d3d11") && !g.contains("extra_hw_frames")));
-        assert!(graphs.iter().any(|g| g.contains("hwupload_cuda") && g.contains("scale_cuda") && g.contains("extra_hw_frames=0")));
         assert!(graphs.iter().any(|g| g.contains("hwmap=derive_device=cuda:mode=direct:extra_hw_frames=0")));
         assert!(graphs.iter().any(|g| g.contains("extra_hw_frames=1")));
         assert!(graphs.iter().any(|g| g.contains("hwmap=derive_device=cuda:mode=direct,") && !g.contains("extra_hw_frames")));
         assert!(graphs.iter().any(|g| g.contains("extra_hw_frames=2")));
         assert!(graphs.last().unwrap().contains("hwdownload"));
-        // Same bitrate path — graphs must not embed bitrate/fps quality knobs.
         for g in &graphs {
             assert!(!g.contains("bitrate"));
             assert!(!g.contains("crf"));
@@ -302,6 +311,9 @@ mod tests {
         assert!(!same[0].contains("scale_cuda"));
         assert!(!same[0].contains("hwmap"));
         assert!(same[0].starts_with("ddagrab="));
+        let cuda_at = same.iter().position(|g| g.contains("scale_cuda")).unwrap();
+        let d3d_at = same.iter().position(|g| g.contains("scale_d3d11")).unwrap();
+        assert!(cuda_at < d3d_at, "BGRA reject must try CUDA before scale_d3d11");
         assert!(same.iter().any(|g| g.contains("scale_d3d11=format=nv12:extra_hw_frames=0")));
         assert!(!same.iter().any(|g| g.contains("scale_d3d11") && g.contains("width=")));
         assert!(same.iter().any(|g| g.contains("scale_cuda=format=nv12") && !g.contains("1920:1080")));
@@ -309,7 +321,9 @@ mod tests {
             Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x10DE }),
             60, 2560, 1440, 1920, 1080, "h264_nvenc",
         );
-        assert!(scaled[0].contains("scale_d3d11=width=1920:height=1080:format=nv12:extra_hw_frames=0"));
+        assert!(scaled[0].contains("hwmap=derive_device=cuda:mode=direct:extra_hw_frames=0"));
+        assert!(scaled[0].contains("scale_cuda=1920:1080:format=nv12"));
+        assert!(!scaled[0].contains("scale_d3d11"));
     }
 
     #[test]
