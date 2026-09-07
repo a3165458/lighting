@@ -376,7 +376,12 @@ class VideoDecoder {
                 // allowVendor=false and still skip the SoC keys below.
                 if (!allowVendor) return
             }
-            if (tryNumber < 2 &&
+            // Official KEY now rides try 0–3. vdec-lowlatency used to stop
+            // at try 1, so a FEATURE reject (try 2/3) configured() without
+            // it and MTK/Amazon C2 held a reconstructed picture until the
+            // post-start poke. Try 4 stays vendor-only if this key rejects.
+            // Xiaomi Android 6 crash: same skip as Moonlight.
+            if (tryNumber < 4 &&
                 (!android.os.Build.MANUFACTURER.equals("xiaomi", true) ||
                     Build.VERSION.SDK_INT > 23)
             ) {
@@ -486,7 +491,7 @@ class VideoDecoder {
             // and drops the 2-picture default reorder (~16–32 ms).
             poke(MediaFormat.KEY_OUTPUT_REORDER_DEPTH, 0)
         }
-        // Configure try 2+ omits vdec-lowlatency. Without this poke,
+        // Configure try 4+ omits vdec-lowlatency. Without this poke,
         // MTK/Amazon C2 holds a decoded picture (Moonlight MediaCodecHelper).
         poke("vdec-lowlatency", 1)
         val n = codecName.lowercase()
