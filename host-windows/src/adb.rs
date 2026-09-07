@@ -368,7 +368,31 @@ pub async fn launch_stream_client(adb: &Path, serial: &str, port: u16) {
     let port_s = port.to_string();
     let display = lighting_host::apk_install::display_component();
     let launcher = lighting_host::apk_install::launcher_component();
+    let stream = lighting_host::apk_install::stream_action();
     let timeout = Duration::from_secs(lighting_host::apk_install::am_start_timeout_secs());
+    let stream_user = [
+        "-s",
+        serial,
+        "shell",
+        "am",
+        "start",
+        "--user",
+        "0",
+        "--activity-single-top",
+        "-a",
+        stream,
+        "-n",
+        display,
+        "--es",
+        "host",
+        "127.0.0.1",
+        "--ei",
+        "port",
+        &port_s,
+    ];
+    if try_am_start(adb, &stream_user, timeout).await {
+        return;
+    }
     let display_user = [
         "-s",
         serial,
@@ -585,6 +609,20 @@ pub async fn install_apk(
         launch_client(adb, serial).await;
     }
     Ok(verified)
+}
+
+/// `Ok(true)` if the mapping was missing and we added it; `Ok(false)` if
+/// `reverse --list` already had tcp:PORT. Callers must not `am start` on false —
+/// that is the 0.1.53 Honor 闪退 (DisplayActivity torn down every 2s).
+pub async fn ensure_reverse_port(adb: &Path, serial: &str, port: u16) -> Result<bool> {
+    wait_for_device(adb, serial).await;
+    if lighting_host::session_policy::verify_adb_reverse_list()
+        && reverse_list_contains(adb, serial, port).await
+    {
+        return Ok(false);
+    }
+    reverse_port(adb, serial, port).await?;
+    Ok(true)
 }
 
 pub async fn reverse_port(adb: &Path, serial: &str, port: u16) -> Result<()> {

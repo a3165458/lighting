@@ -93,7 +93,10 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         // that is not the decoder SurfaceView. HWC then GPU-composes the
         // picture — one refresh GlideX / Moonlight do not pay.
         if (Build.VERSION.SDK_INT >= 30) {
-            window.setDecorFitsSystemWindows(false)
+            try {
+                window.setDecorFitsSystemWindows(false)
+            } catch (_: Throwable) {
+            }
         }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         setGameplayState(true)
@@ -458,9 +461,14 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         @Suppress("DEPRECATION")
         windowManager.defaultDisplay.getRealMetrics(metrics)
         val refresh = lockPeakRefresh()
-        val caps = DeviceCaps.probe()
         worker = thread(name = "lighting-session") {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
+            val caps = try {
+                DeviceCaps.probe()
+            } catch (t: Throwable) {
+                Log.e("Lighting", "caps probe failed", t)
+                DeviceCaps.fallback()
+            }
             var fails = 0
             var windowStart = 0L
             while (running && sessionGen == gen) {

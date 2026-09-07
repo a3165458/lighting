@@ -66,12 +66,36 @@ data class DeviceCaps(
             cached?.let { return it }
             synchronized(this) {
                 cached?.let { return it }
-                val caps = measure()
+                val caps = try {
+                    measure()
+                } catch (t: Throwable) {
+                    Log.e(TAG, "caps probe failed", t)
+                    fallback()
+                }
                 cached = caps
                 Log.i(TAG, "caps=$caps")
                 return caps
             }
         }
+
+        /** Honor MediaCodecList can throw; still send Hello so USB can connect. */
+        fun fallback(): DeviceCaps = DeviceCaps(
+            brand = Build.BRAND.orEmpty(),
+            manufacturer = Build.MANUFACTURER.orEmpty(),
+            model = Build.MODEL.orEmpty(),
+            hardware = Build.HARDWARE.orEmpty(),
+            soc = "unknown",
+            gsi = false,
+            codecs = listOf("avc"),
+            decoderMaxWidth = 1920,
+            decoderMaxHeight = 1080,
+            decoderMaxFps = 60,
+            hwDecode = false,
+            alignment = 16,
+            lowLatencySafe = false,
+            avc = null,
+            hevc = null,
+        )
 
         private fun measure(): DeviceCaps {
             val brand = Build.BRAND.orEmpty()

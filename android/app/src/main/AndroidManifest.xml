@@ -31,11 +31,16 @@
         <activity
             android:name=".DisplayActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
-            android:exported="false"
+            android:exported="true"
             android:launchMode="singleTop"
             android:preferMinimalPostProcessing="true"
             android:colorMode="default"
             android:screenOrientation="sensorLandscape"
-            android:theme="@style/Theme.Lighting.Immersive" />
+            android:theme="@style/Theme.Lighting.Immersive">
+            <intent-filter>
+                <action android:name="app.lighting.display.STREAM" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>

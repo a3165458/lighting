@@ -552,7 +552,6 @@ async fn run_session_inner(
 
     let mut stop_rx = stop_rx;
     let usb_refresh_busy = Arc::new(AtomicBool::new(false));
-    let mut last_reverse_recreate = std::time::Instant::now();
     loop {
         if !session_policy::continue_accept_loop(stop.load(Ordering::Relaxed)) {
             cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref(), listen_port).await;
@@ -583,13 +582,6 @@ async fn run_session_inner(
                     if let (Some(adb_bin), Some(serial)) =
                         (adb_path.clone(), reverse_serial.clone())
                     {
-                        let recreate = last_reverse_recreate.elapsed()
-                            >= Duration::from_millis(
-                                session_policy::usb_reverse_recreate_after_ms(),
-                            );
-                        if recreate {
-                            last_reverse_recreate = std::time::Instant::now();
-                        }
                         if usb_refresh_busy
                             .compare_exchange(
                                 false,
@@ -602,27 +594,31 @@ async fn run_session_inner(
                             let busy = usb_refresh_busy.clone();
                             let status_ref = status.clone();
                             tokio::spawn(async move {
-                                if recreate {
-                                    let _ = adb::remove_reverse(
-                                        &adb_bin,
-                                        &serial,
-                                        listen_port,
-                                    )
-                                    .await;
-                                }
-                                match adb::reverse_port(&adb_bin, &serial, listen_port).await
+                                match adb::ensure_reverse_port(
+                                    &adb_bin,
+                                    &serial,
+                                    listen_port,
+                                )
+                                .await
                                 {
-                                    Ok(()) => {
-                                        set_transport(
-                                            &status_ref,
-                                            format!("USB · adb reverse 已就绪（{serial}）"),
-                                        );
-                                        adb::launch_stream_client(
-                                            &adb_bin,
-                                            &serial,
-                                            listen_port,
-                                        )
-                                        .await;
+                                    Ok(added) => {
+                                        if added {
+                                            set_transport(
+                                                &status_ref,
+                                                format!(
+                                                    "USB · adb reverse 已就绪（{serial}）"
+                                                ),
+                                            );
+                                            if session_policy::relaunch_client_when_reverse_restored()
+                                            {
+                                                adb::launch_stream_client(
+                                                    &adb_bin,
+                                                    &serial,
+                                                    listen_port,
+                                                )
+                                                .await;
+                                            }
+                                        }
                                     }
                                     Err(err) => {
                                         tracing::warn!(

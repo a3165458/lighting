@@ -150,10 +150,21 @@ pub fn usb_wait_refresh_ms() -> u64 {
     2_000
 }
 
-/// Stale `reverse --list` can still show tcp:17400 after the host socket
-/// behind it is gone. Recreate (remove + add) if no Hello arrives.
+/// 0.1.53 `adb reverse --remove` every 8s while waiting for Hello. Honor
+/// then killed 127.0.0.1:17400 mid-connect (重连中 forever) and the
+/// follow-up `am start` force-restarted the APK (闪退).
 pub fn usb_reverse_recreate_after_ms() -> u64 {
-    8_000
+    0
+}
+
+/// Re-`am start` only after reverse was actually missing. A 2s heartbeat
+/// launch destroyed DisplayActivity on Honor/MagicOS.
+pub fn relaunch_client_while_waiting_for_hello() -> bool {
+    false
+}
+
+pub fn relaunch_client_when_reverse_restored() -> bool {
+    true
 }
 
 pub fn listen_port_from_bind(bind: &str) -> u16 {
@@ -1272,7 +1283,9 @@ mod tests {
         assert!(refresh_usb_while_waiting_for_hello());
         assert!(verify_adb_reverse_list());
         assert!(usb_wait_refresh_ms() >= 1_000 && usb_wait_refresh_ms() <= 5_000);
-        assert!(usb_reverse_recreate_after_ms() >= 5_000);
+        assert_eq!(usb_reverse_recreate_after_ms(), 0);
+        assert!(!relaunch_client_while_waiting_for_hello());
+        assert!(relaunch_client_when_reverse_restored());
         assert_eq!(listen_port_from_bind("0.0.0.0:17400"), 17400);
         assert_eq!(listen_port_from_bind("127.0.0.1:17400"), 17400);
         assert_eq!(listen_port_from_bind(""), 17400);
