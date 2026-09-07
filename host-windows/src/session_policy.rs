@@ -149,6 +149,27 @@ pub fn ffmpeg_filter_threads() -> u32 {
     1
 }
 
+/// ffmpeg default ON auto-inserts scale/format between filter pads when
+/// pixfmts do not match. That inserted `scale_d3d11` hardcodes a 10-frame
+/// pool (the graph we never emit). Identity NVENC then looks successful
+/// while every picture sits in that pool — one extra refresh vs GlideX.
+/// Off: mismatch fails over to the explicit CUDA/QSV/AMF convert with
+/// extra_hw_frames=0.
+pub fn ffmpeg_auto_conversion_filters() -> bool {
+    false
+}
+
+pub fn ffmpeg_auto_conversion_filter_args() -> [&'static str; 2] {
+    [
+        "-auto_conversion_filters",
+        if ffmpeg_auto_conversion_filters() {
+            "1"
+        } else {
+            "0"
+        },
+    ]
+}
+
 /// GlideX / SuperDisplay / Moonlight: pointer and HID never share the video
 /// TCP stream. A second LIT1 connection on the same port with this Hello.role
 /// is the control plane. Video AUs cannot HOL-block the pointer.
@@ -1201,6 +1222,11 @@ mod tests {
     fn capture_queue_is_single_frame() {
         assert_eq!(capture_thread_queue_size(), 1);
         assert_eq!(ffmpeg_filter_threads(), 1);
+        assert!(!ffmpeg_auto_conversion_filters());
+        assert_eq!(
+            ffmpeg_auto_conversion_filter_args(),
+            ["-auto_conversion_filters", "0"]
+        );
         assert_eq!(cursor_sample_interval_ms(), 1);
         assert!(gpu_scheduling_priority_high());
         assert!(mmcss_capture_threads());
