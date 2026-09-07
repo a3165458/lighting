@@ -152,13 +152,16 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
             "scale_qsv=format=nv12".to_string()
         };
         // extra=0 only. Encoder adds qsv@capture so this is not a 3s reject
-        // into hwupload sysmem. Key the hwupload-path hwmap too — an
-        // unkeyed derive still allocates ffmpeg's 16-frame default.
+        // into hwupload sysmem. mode=direct maps D3D11 textures on the
+        // same Intel adapter; copy hwmap if that FATAL-rejects.
+        // hwupload wants sysmem — a D3D11 graph that survived configure()
+        // copies GPU→CPU→GPU every picture, same trap as hwupload_cuda.
+        // Miss goes to CPU bilinear.
         graphs.push(format!(
-            "{dda},hwmap=derive_device=qsv:extra_hw_frames=0,{qsv}:extra_hw_frames=0"
+            "{dda},hwmap=derive_device=qsv:mode=direct:extra_hw_frames=0,{qsv}:extra_hw_frames=0"
         ));
         graphs.push(format!(
-            "{dda},hwupload=extra_hw_frames=0,hwmap=derive_device=qsv:extra_hw_frames=0,{qsv}:extra_hw_frames=0"
+            "{dda},hwmap=derive_device=qsv:extra_hw_frames=0,{qsv}:extra_hw_frames=0"
         ));
     }
     if encoder.contains("amf") {
@@ -289,13 +292,15 @@ mod tests {
             Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x8086 }),
             60, 1920, 1080, 1920, 1080, "h264_qsv",
         );
-        assert!(graphs[0].contains("hwmap=derive_device=qsv:extra_hw_frames=0"));
+        assert!(graphs[0].contains("hwmap=derive_device=qsv:mode=direct:extra_hw_frames=0"));
         assert!(graphs[0].contains("scale_qsv=format=nv12:extra_hw_frames=0"));
         assert!(!graphs[0].contains("w=1920"));
         assert!(!graphs[0].contains("h=1080"));
-        assert!(!graphs[0].contains("hwupload"));
+        assert!(!graphs.iter().any(|g| g.contains("hwupload")));
         assert!(!graphs.iter().any(|g| g.contains("derive_device=qsv") && !g.contains("extra_hw_frames")));
-        assert!(graphs.iter().any(|g| g.contains("hwupload")));
+        assert!(graphs.iter().any(|g| {
+            g.contains("hwmap=derive_device=qsv:extra_hw_frames=0") && !g.contains("mode=direct")
+        }));
         let cap = DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x8086 };
         assert_eq!(
             extra_hw_device_args(cap, &graphs[0]),
