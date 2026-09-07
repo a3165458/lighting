@@ -165,10 +165,11 @@ pub fn start_encoder(
 
     let hevc = is_hevc(&settings.codec);
     let rx = spawn_annexb_pump(stdout, hevc);
+    let pid = child.id();
     Ok(EncoderSession {
         child: Some(child),
         rx,
-        boost_stop: spawn_ffmpeg_thread_boost(child.id()),
+        boost_stop: spawn_ffmpeg_thread_boost(pid),
     })
 }
 
@@ -498,10 +499,11 @@ pub fn start_encoder_gdigrab(
     });
     let hevc = is_hevc(&settings.codec);
     let rx = spawn_annexb_pump(stdout, hevc);
+    let pid = child.id();
     Ok(EncoderSession {
         child: Some(child),
         rx,
-        boost_stop: spawn_ffmpeg_thread_boost(child.id()),
+        boost_stop: spawn_ffmpeg_thread_boost(pid),
     })
 }
 
