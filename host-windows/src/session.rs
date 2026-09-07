@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, watch, Notify};
@@ -552,6 +552,8 @@ async fn run_session_inner(
 
     let mut stop_rx = stop_rx;
     let usb_refresh_busy = Arc::new(AtomicBool::new(false));
+    let mut hello_wait = Instant::now();
+    let mut last_reverse_recreate: Option<Instant> = None;
     loop {
         if !session_policy::continue_accept_loop(stop.load(Ordering::Relaxed)) {
             cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref(), listen_port).await;
@@ -593,16 +595,39 @@ async fn run_session_inner(
                         {
                             let busy = usb_refresh_busy.clone();
                             let status_ref = status.clone();
+                            let recreate_after =
+                                session_policy::usb_reverse_recreate_after_ms();
+                            let force_stale = recreate_after > 0
+                                && hello_wait.elapsed()
+                                    >= Duration::from_millis(recreate_after)
+                                && last_reverse_recreate
+                                    .map(|t| {
+                                        t.elapsed() >= Duration::from_millis(recreate_after)
+                                    })
+                                    .unwrap_or(true);
+                            if force_stale {
+                                last_reverse_recreate = Some(Instant::now());
+                            }
                             tokio::spawn(async move {
-                                match adb::ensure_reverse_port(
-                                    &adb_bin,
-                                    &serial,
-                                    listen_port,
-                                )
-                                .await
-                                {
-                                    Ok(added) => {
-                                        if added {
+                                let result = if force_stale {
+                                    adb::recreate_reverse_port(
+                                        &adb_bin,
+                                        &serial,
+                                        listen_port,
+                                    )
+                                    .await
+                                    .map(|_| true)
+                                } else {
+                                    adb::ensure_reverse_port(
+                                        &adb_bin,
+                                        &serial,
+                                        listen_port,
+                                    )
+                                    .await
+                                };
+                                match result {
+                                    Ok(restored) => {
+                                        if restored {
                                             set_transport(
                                                 &status_ref,
                                                 format!(
@@ -697,10 +722,13 @@ async fn run_session_inner(
         }
 
         // Refresh reverse in the background so USB 127.0.0.1 is restored
-        // without stalling the already-running accept task.
+        // without stalling the already-running accept task. Do not trust
+        // a leftover --list entry from the dropped session.
         if let (Some(adb_bin), Some(serial)) = (adb_path.clone(), reverse_serial.clone()) {
             tokio::spawn(async move {
-                if let Err(err) = adb::reverse_port(&adb_bin, &serial, listen_port).await {
+                if let Err(err) =
+                    adb::recreate_reverse_port(&adb_bin, &serial, listen_port).await
+                {
                     tracing::warn!("re-apply adb reverse failed: {err:#}");
                 }
             });
@@ -708,6 +736,8 @@ async fn run_session_inner(
         if let Ok(mut st) = status.lock() {
             clear_peer_metrics(&mut st);
         }
+        hello_wait = Instant::now();
+        last_reverse_recreate = None;
         set_status(&status, "等待设备", "上一台已断开，等待重新连接");
     }
 }
@@ -775,7 +805,13 @@ async fn open_usb_tunnel(
         "等待设备",
         format!("正在执行 adb reverse（{serial}）"),
     );
-    if let Err(err) = adb::reverse_port(adb_bin, &serial, listen_port).await {
+    let reverse_result = if lighting_host::session_policy::force_usb_reverse_after_virtual_prepare()
+    {
+        adb::recreate_reverse_port(adb_bin, &serial, listen_port).await
+    } else {
+        adb::reverse_port(adb_bin, &serial, listen_port).await
+    };
+    if let Err(err) = reverse_result {
         let wait_detail = format!("adb reverse 失败，仍可走局域网：{err:#}");
         set_transport(
             status,

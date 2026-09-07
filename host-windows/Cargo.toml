@@ -1,6 +1,6 @@
 [package]
 name = "lighting-host"
-version = "0.1.55"
+version = "0.1.56"
 edition = "2021"
 description = "Lighting USB/LAN second-display host for Windows"
 

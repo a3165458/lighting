@@ -150,11 +150,24 @@ pub fn usb_wait_refresh_ms() -> u64 {
     2_000
 }
 
-/// 0.1.53 `adb reverse --remove` every 8s while waiting for Hello. Honor
-/// then killed 127.0.0.1:17400 mid-connect (重连中 forever) and the
-/// follow-up `am start` force-restarted the APK (闪退).
+/// 0.1.53 `adb reverse --remove` every 8s *and* `am start` every 2s.
+/// Honor killed 127.0.0.1:17400 mid-connect and force-restarted the APK.
+/// 0.1.54/55 then trusted `reverse --list`: after IddCx the list still
+/// shows tcp:17400 while the tunnel is dead (HA18C874 visible, pad on
+/// 重连中 / 没检测到电脑). Recreate at most this often, only while
+/// still waiting for the first Hello — not a 2s launch heartbeat.
 pub fn usb_reverse_recreate_after_ms() -> u64 {
-    0
+    4_000
+}
+
+/// Honor adbd needs a beat after `reverse --remove` before bind works.
+pub fn usb_reverse_settle_ms() -> u64 {
+    250
+}
+
+/// IddCx re-enumerates USB. A listed reverse from before VDD is stale.
+pub fn force_usb_reverse_after_virtual_prepare() -> bool {
+    true
 }
 
 /// Re-`am start` only after reverse was actually missing. A 2s heartbeat
@@ -1283,7 +1296,10 @@ mod tests {
         assert!(refresh_usb_while_waiting_for_hello());
         assert!(verify_adb_reverse_list());
         assert!(usb_wait_refresh_ms() >= 1_000 && usb_wait_refresh_ms() <= 5_000);
-        assert_eq!(usb_reverse_recreate_after_ms(), 0);
+        assert!(usb_reverse_recreate_after_ms() >= 3_000);
+        assert!(usb_reverse_recreate_after_ms() <= 8_000);
+        assert!(usb_reverse_settle_ms() > 0 && usb_reverse_settle_ms() <= 1_000);
+        assert!(force_usb_reverse_after_virtual_prepare());
         assert!(!relaunch_client_while_waiting_for_hello());
         assert!(relaunch_client_when_reverse_restored());
         assert_eq!(listen_port_from_bind("0.0.0.0:17400"), 17400);
