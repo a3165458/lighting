@@ -350,30 +350,106 @@ async fn launch_client(adb: &Path, serial: &str) {
 
 /// Open the landscape stream activity on 127.0.0.1 so the user does not have
 /// to tap USB 一键连接 after 开始共享. `am start` from adb shell can launch
-/// the non-exported DisplayActivity.
+/// the non-exported DisplayActivity. Honor sometimes rejects `--user 0` or
+/// the non-exported component; fall back to the exported MainActivity.
 pub async fn launch_stream_client(adb: &Path, serial: &str, port: u16) {
+    wait_for_device(adb, serial).await;
     let port_s = port.to_string();
     let display = lighting_host::apk_install::display_component();
-    let _ = adb_args(
-        adb,
-        &[
-            "-s",
-            serial,
-            "shell",
-            "am",
-            "start",
-            "-n",
-            display,
-            "--es",
-            "host",
-            "127.0.0.1",
-            "--ei",
-            "port",
-            &port_s,
-        ],
-        probe_timeout(),
-    )
-    .await;
+    let launcher = lighting_host::apk_install::launcher_component();
+    let timeout = Duration::from_secs(lighting_host::apk_install::am_start_timeout_secs());
+    let display_user = [
+        "-s",
+        serial,
+        "shell",
+        "am",
+        "start",
+        "--user",
+        "0",
+        "--activity-single-top",
+        "-n",
+        display,
+        "--es",
+        "host",
+        "127.0.0.1",
+        "--ei",
+        "port",
+        &port_s,
+    ];
+    if try_am_start(adb, &display_user, timeout).await {
+        return;
+    }
+    let display_plain = [
+        "-s",
+        serial,
+        "shell",
+        "am",
+        "start",
+        "--activity-single-top",
+        "-n",
+        display,
+        "--es",
+        "host",
+        "127.0.0.1",
+        "--ei",
+        "port",
+        &port_s,
+    ];
+    if try_am_start(adb, &display_plain, timeout).await {
+        return;
+    }
+    let launcher_auto = [
+        "-s",
+        serial,
+        "shell",
+        "am",
+        "start",
+        "--user",
+        "0",
+        "--activity-single-top",
+        "-n",
+        launcher,
+        "--ez",
+        "lightingAutoUsb",
+        "true",
+    ];
+    if try_am_start(adb, &launcher_auto, timeout).await {
+        return;
+    }
+    let launcher_plain = [
+        "-s",
+        serial,
+        "shell",
+        "am",
+        "start",
+        "-n",
+        launcher,
+        "-a",
+        "android.intent.action.MAIN",
+        "-c",
+        "android.intent.category.LAUNCHER",
+        "--ez",
+        "lightingAutoUsb",
+        "true",
+    ];
+    let _ = try_am_start(adb, &launcher_plain, timeout).await;
+}
+
+async fn try_am_start(adb: &Path, args: &[&str], max: Duration) -> bool {
+    match adb_args(adb, args, max).await {
+        Ok(out) => {
+            let combined = combined_output(&out);
+            let ok = lighting_host::apk_install::am_start_succeeded(&combined);
+            if !ok {
+                tracing::warn!("am start rejected: {}", combined.trim());
+            }
+            ok
+        }
+        Err(err) => {
+            tracing::warn!("am start failed: {err}");
+            false
+        }
+    }
 }
 
 fn combined_output(output: &std::process::Output) -> String {
@@ -491,6 +567,7 @@ pub async fn install_apk(adb: &Path, serial: &str, apk: &Path) -> Result<String>
 }
 
 pub async fn reverse_port(adb: &Path, serial: &str, port: u16) -> Result<()> {
+    wait_for_device(adb, serial).await;
     let spec = format!("tcp:{port}");
     let max = Duration::from_secs(lighting_host::apk_install::adb_reverse_timeout_secs());
     let mut last = String::from("adb reverse 失败");
