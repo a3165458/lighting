@@ -333,11 +333,13 @@ class VideoDecoder {
                 // does not switch the realtime bin.
                 format.setInteger(MediaFormat.KEY_PRIORITY, 0)
             }
-            if (Build.VERSION.SDK_INT >= 31) {
+            if (Build.VERSION.SDK_INT >= 31 && tryNumber < 6) {
                 // Moonlight min-latency: 1 lets the Surface drop an
                 // undisplayed picture. OEM C2 that defaults to 0 holds
                 // that buffer until the next vsync — one refresh vs
-                // the laptop. Try -1 stays bare if this key rejects.
+                // the laptop. Not on try 6: a reject used to skip the
+                // pool-only fallback and land on bare try -1 (4–8 slots).
+                // applyRuntimeLowLatency still pokes this after start().
                 format.setInteger(MediaFormat.KEY_ALLOW_FRAME_DROP, 1)
             }
             if (tryNumber < 3) {
