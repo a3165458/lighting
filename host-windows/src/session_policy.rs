@@ -116,7 +116,9 @@ pub fn usb2_can_carry_bitrate_kbps(bitrate_kbps: u32) -> bool {
 /// previous picture — one extra refresh vs GlideX. 0 is a std
 /// `sync_channel` rendezvous: ffmpeg's pipe backs up one picture
 /// earlier and ddagrab skips *input*. Do not `.max(1)` at the call
-/// site. IDR spikes wait on the socket instead of hiding a GOP in RAM.
+/// site. Recv lives on `lighting-video-write` so a ready AU is not
+/// parked on spawn_blocking. IDR spikes wait on the socket instead of
+/// hiding a GOP in RAM.
 pub fn encoded_queue_capacity() -> usize {
     0
 }

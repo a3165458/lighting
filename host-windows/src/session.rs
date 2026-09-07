@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, watch, Notify};
+use tokio::sync::{mpsc, oneshot, watch, Notify};
 
 use crate::adb;
 use crate::displays::{self, DisplayInfo};
@@ -1029,7 +1029,7 @@ async fn handle_client(
         false,
     )
     .await;
-    let mut mux_cursor_on_video =
+    let mux_cursor_on_video =
         session_policy::mux_cursor_on_video(hello.cursor_overlay, control_task.is_some());
 
     let hevc = codec.eq_ignore_ascii_case("hevc") || codec.eq_ignore_ascii_case("h265");
@@ -1105,148 +1105,81 @@ async fn handle_client(
         Err(err) => anyhow::bail!("发送首帧失败: {err:#}"),
     }
 
-    let mut last_ping = std::time::Instant::now();
-    while !stop.load(Ordering::Relaxed) {
-        if control_task.is_none() {
-            control_task = attach_control_plane(
-                ctrl_rx,
-                cursor_slot.clone(),
-                cursor_notify.clone(),
-                cursor_stop.clone(),
-                touch_for_control.clone(),
-                controls.clone(),
-                false,
-            )
-            .await;
-            if control_task.is_some() {
-                mux_cursor_on_video = false;
+    // Dedicated write thread sits in recv() so a ready AU is not parked
+    // until tokio's blocking pool picks up spawn_blocking. Control attach
+    // stays on this async task (ctrl_rx is borrowed across reconnects).
+    let mux_cursor = Arc::new(AtomicBool::new(mux_cursor_on_video));
+    let (done_tx, mut done_rx) = oneshot::channel::<encoder::EncoderSession>();
+    let rt = tokio::runtime::Handle::current();
+    let stop_w = stop.clone();
+    let mux_w = mux_cursor.clone();
+    let slot_w = cursor_slot.clone();
+    let status_w = status.clone();
+    let ping_w = ping_sent.clone();
+    let ffmpeg_w = ffmpeg.clone();
+    let display_w = display.clone();
+    let settings_w = settings.clone();
+    std::thread::Builder::new()
+        .name("lighting-video-write".into())
+        .spawn(move || {
+            unsafe {
+                let _ = windows::Win32::System::Threading::SetThreadPriority(
+                    windows::Win32::System::Threading::GetCurrentThread(),
+                    windows::Win32::System::Threading::THREAD_PRIORITY_HIGHEST,
+                );
             }
-        }
-        if mux_cursor_on_video {
-            let cursor_payload = cursor_slot.lock().ok().and_then(|mut slot| slot.take());
-            if let Some(payload) = cursor_payload {
-                if protocol::write_message(&mut writer, protocol::MSG_CURSOR, 0, &payload)
-                    .await
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        }
-        if last_ping.elapsed() >= Duration::from_millis(1_000) {
-            last_ping = std::time::Instant::now();
-            if protocol::write_message(&mut writer, protocol::MSG_HEARTBEAT, 0, &[])
-                .await
-                .is_ok()
-            {
-                if let Ok(mut slot) = ping_sent.lock() {
-                    slot.get_or_insert_with(std::time::Instant::now);
-                }
-                // Keeps the footer clock ticking even if the encoder stalls.
-                if let Ok(mut s) = status.lock() {
-                    s.connected_secs = t0.elapsed().as_secs();
-                }
-            }
-        }
-        // Wake as soon as ffmpeg emits an AU. tokio mpsc cannot rendezvous
-        // (min cap 1); blocking recv_timeout on std sync_channel(0) runs on
-        // the blocking pool so this worker can still attach control / mux
-        // a fallback cursor. A 1 ms poll left every picture on a tick.
-        let tick = if mux_cursor_on_video || control_task.is_none() {
-            Duration::from_millis(1)
-        } else {
-            Duration::from_millis(1_000)
-        };
-        let (next_session, recv_result) = recv_encoded_timeout(session, tick).await;
-        session = next_session;
-        match recv_result {
-            Ok(pkt) => {
-                // One TCP write for this picture plus latest PCM. Separate
-                // write_all on a TCP_NODELAY USB socket was a second reverse
-                // RTT after the AU. Do not try_recv more video: a rendezvous
-                // send is already waiting, and coalescing it here parks the
-                // first picture for a whole encode. GlideX emits one picture
-                // per send.
-                let mut out = encode_video_packet(t0, &pkt);
-                if session_policy::coalesce_extra_video_on_write() {
-                    while let Ok(more) = session.rx.try_recv() {
-                        out.extend_from_slice(&encode_video_packet(t0, &more));
-                    }
-                }
-                if session_policy::audio_packets_per_video_frame() > 0 {
-                    if let Some(ap) = take_latest_audio(&audio_rx) {
-                        let audio_payload = protocol::with_pts(ap.pts_us, &ap.pcm);
-                        out.extend_from_slice(&session_policy::lit1_encode(
-                            protocol::MSG_AUDIO,
-                            0,
-                            &audio_payload,
-                        ));
-                    }
-                }
-                let sent = out.len();
-                if writer.write_all(&out).await.is_err() {
-                    break;
-                }
-                if writer.flush().await.is_err() {
-                    break;
-                }
-                if let Ok(mut s) = status.lock() {
-                    s.frames += 1;
-                    s.bytes_sent += sent as u64;
-                    s.connected_secs = t0.elapsed().as_secs();
-                }
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                session.stop();
-                let retry_dda = capture_kind == CaptureKind::Dda && dda_retries < 1;
-                dda_retries = dda_retries.saturating_add(1);
-                if retry_dda {
-                    tracing::warn!("encoder pipe closed, retrying Desktop Duplication");
-                    set_status(&status, "抓屏恢复", "Desktop Duplication 中断，正在重连…");
-                } else {
-                    tracing::warn!("encoder pipe closed, falling back to gdigrab");
-                    set_status(&status, "回退", "改用 gdigrab 抓屏");
-                }
-                let restarted = if retry_dda {
-                    start_live_encoder(&ffmpeg, &display, &settings, hevc).await
-                } else {
-                    restart_encoder_with_bootstrap(&ffmpeg, &display, &settings, hevc)
-                        .await
-                        .map(|(s, b)| (s, b, CaptureKind::Gdi))
+            lighting_host::annexb::enter_mmcss();
+            let session = video_write_loop(
+                rt,
+                writer,
+                session,
+                capture_kind,
+                dda_retries,
+                stop_w,
+                mux_w,
+                slot_w,
+                audio_rx,
+                status_w,
+                ping_w,
+                t0,
+                ffmpeg_w,
+                display_w,
+                settings_w,
+                hevc,
+            );
+            let _ = done_tx.send(session);
+        })
+        .context("video write thread")?;
+
+    let mut wait_control = control_task.is_none();
+    let session = loop {
+        tokio::select! {
+            biased;
+            back = &mut done_rx => {
+                break match back {
+                    Ok(s) => s,
+                    Err(_) => anyhow::bail!("video write thread panicked"),
                 };
-                match restarted {
-                    Ok((new_session, bootstrap, kind)) => {
-                        session = new_session;
-                        capture_kind = kind;
-                        match write_bootstrap(&mut writer, t0, &bootstrap).await {
-                            Ok(sent) => add_wire_bytes(&status, sent),
-                            Err(err) => {
-                                tracing::warn!(
-                                    "send bootstrap after encoder restart failed: {err:#}"
-                                );
-                                break;
-                            }
-                        }
-                        set_status(
-                            &status,
-                            "编码",
-                            if kind == CaptureKind::Dda {
-                                "Desktop Duplication 已重发 codec-config + IDR"
-                            } else {
-                                "gdigrab 已重发 codec-config + IDR"
-                            },
-                        );
+            }
+            ctrl = ctrl_rx.recv(), if wait_control => {
+                match ctrl {
+                    Some(ctrl) => {
+                        control_task = Some(bind_control(
+                            ctrl,
+                            cursor_slot.clone(),
+                            cursor_notify.clone(),
+                            cursor_stop.clone(),
+                            touch_for_control.clone(),
+                            controls.clone(),
+                        ));
+                        mux_cursor.store(false, Ordering::Relaxed);
+                        wait_control = false;
                     }
-                    Err(err) => {
-                        tracing::warn!("encoder restart failed: {err:#}");
-                        set_status(&status, "错误", "抓屏重启失败，请查看日志");
-                        break;
-                    }
+                    None => wait_control = false,
                 }
             }
         }
-    }
+    };
 
     cursor_stop.store(true, Ordering::Relaxed);
     audio_stop.store(true, Ordering::Relaxed);
@@ -1255,7 +1188,6 @@ async fn handle_client(
     }
     while ctrl_rx.try_recv().is_ok() {}
     reader_task.abort();
-    let _ = writer.shutdown().await;
     // Must wait for ffmpeg to release DXGI before any topology restore.
     // Killing it in the background and immediately CCD-ing is the GPU hang
     // that only Win+Ctrl+Shift+B could clear after the tablet slept.
@@ -1292,21 +1224,160 @@ async fn write_video_packet<W: tokio::io::AsyncWrite + Unpin>(
     Ok(payload.len() + HEADER_BYTES)
 }
 
-/// tokio mpsc cannot rendezvous (min cap 1). Move the std receiver onto the
-/// blocking pool so this async worker is free for control-plane attach.
-async fn recv_encoded_timeout(
-    session: encoder::EncoderSession,
-    tick: Duration,
-) -> (
-    encoder::EncoderSession,
-    Result<EncodedPacket, std::sync::mpsc::RecvTimeoutError>,
-) {
-    tokio::task::spawn_blocking(move || {
-        let r = session.rx.recv_timeout(tick);
-        (session, r)
-    })
-    .await
-    .unwrap_or_else(|err| panic!("encoded recv worker: {err}"))
+/// Sit in `recv_timeout` on this thread. spawn_blocking-per-picture used to
+/// leave a ready AU parked until the blocking pool ran — one scheduler
+/// slice vs the laptop, which GlideX does not pay. Writes still hop to the
+/// runtime via `Handle::block_on` so control-plane attach can keep `ctrl_rx`.
+fn video_write_loop(
+    handle: tokio::runtime::Handle,
+    mut writer: tokio::net::tcp::OwnedWriteHalf,
+    mut session: encoder::EncoderSession,
+    mut capture_kind: CaptureKind,
+    mut dda_retries: u8,
+    stop: Arc<AtomicBool>,
+    mux_cursor: Arc<AtomicBool>,
+    cursor_slot: Arc<Mutex<Option<Vec<u8>>>>,
+    audio_rx: std::sync::mpsc::Receiver<crate::audio::AudioPacket>,
+    status: Arc<Mutex<SessionStatus>>,
+    ping_sent: Arc<Mutex<Option<std::time::Instant>>>,
+    t0: std::time::Instant,
+    ffmpeg: std::path::PathBuf,
+    display: DisplayInfo,
+    settings: EncodeSettings,
+    hevc: bool,
+) -> encoder::EncoderSession {
+    let mut last_ping = std::time::Instant::now();
+    while !stop.load(Ordering::Relaxed) {
+        let mux = mux_cursor.load(Ordering::Relaxed);
+        if mux {
+            let cursor_payload = cursor_slot.lock().ok().and_then(|mut slot| slot.take());
+            if let Some(payload) = cursor_payload {
+                if handle
+                    .block_on(protocol::write_message(
+                        &mut writer,
+                        protocol::MSG_CURSOR,
+                        0,
+                        &payload,
+                    ))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }
+        if last_ping.elapsed() >= Duration::from_millis(1_000) {
+            last_ping = std::time::Instant::now();
+            if handle
+                .block_on(protocol::write_message(
+                    &mut writer,
+                    protocol::MSG_HEARTBEAT,
+                    0,
+                    &[],
+                ))
+                .is_ok()
+            {
+                if let Ok(mut slot) = ping_sent.lock() {
+                    slot.get_or_insert_with(std::time::Instant::now);
+                }
+                if let Ok(mut s) = status.lock() {
+                    s.connected_secs = t0.elapsed().as_secs();
+                }
+            }
+        }
+        let tick = if mux {
+            Duration::from_millis(1)
+        } else {
+            Duration::from_millis(1_000)
+        };
+        match session.rx.recv_timeout(tick) {
+            Ok(pkt) => {
+                let mut out = encode_video_packet(t0, &pkt);
+                if session_policy::coalesce_extra_video_on_write() {
+                    while let Ok(more) = session.rx.try_recv() {
+                        out.extend_from_slice(&encode_video_packet(t0, &more));
+                    }
+                }
+                if session_policy::audio_packets_per_video_frame() > 0 {
+                    if let Some(ap) = take_latest_audio(&audio_rx) {
+                        let audio_payload = protocol::with_pts(ap.pts_us, &ap.pcm);
+                        out.extend_from_slice(&session_policy::lit1_encode(
+                            protocol::MSG_AUDIO,
+                            0,
+                            &audio_payload,
+                        ));
+                    }
+                }
+                let sent = out.len();
+                if handle.block_on(writer.write_all(&out)).is_err() {
+                    break;
+                }
+                if handle.block_on(writer.flush()).is_err() {
+                    break;
+                }
+                if let Ok(mut s) = status.lock() {
+                    s.frames += 1;
+                    s.bytes_sent += sent as u64;
+                    s.connected_secs = t0.elapsed().as_secs();
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                session.stop();
+                let retry_dda = capture_kind == CaptureKind::Dda && dda_retries < 1;
+                dda_retries = dda_retries.saturating_add(1);
+                if retry_dda {
+                    tracing::warn!("encoder pipe closed, retrying Desktop Duplication");
+                    set_status(&status, "抓屏恢复", "Desktop Duplication 中断，正在重连…");
+                } else {
+                    tracing::warn!("encoder pipe closed, falling back to gdigrab");
+                    set_status(&status, "回退", "改用 gdigrab 抓屏");
+                }
+                let restarted = if retry_dda {
+                    handle.block_on(start_live_encoder(&ffmpeg, &display, &settings, hevc))
+                } else {
+                    handle
+                        .block_on(restart_encoder_with_bootstrap(
+                            &ffmpeg,
+                            &display,
+                            &settings,
+                            hevc,
+                        ))
+                        .map(|(s, b)| (s, b, CaptureKind::Gdi))
+                };
+                match restarted {
+                    Ok((new_session, bootstrap, kind)) => {
+                        session = new_session;
+                        capture_kind = kind;
+                        match handle.block_on(write_bootstrap(&mut writer, t0, &bootstrap)) {
+                            Ok(sent) => add_wire_bytes(&status, sent),
+                            Err(err) => {
+                                tracing::warn!(
+                                    "send bootstrap after encoder restart failed: {err:#}"
+                                );
+                                break;
+                            }
+                        }
+                        set_status(
+                            &status,
+                            "编码",
+                            if kind == CaptureKind::Dda {
+                                "Desktop Duplication 已重发 codec-config + IDR"
+                            } else {
+                                "gdigrab 已重发 codec-config + IDR"
+                            },
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!("encoder restart failed: {err:#}");
+                        set_status(&status, "错误", "抓屏重启失败，请查看日志");
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    let _ = handle.block_on(writer.shutdown());
+    session
 }
 
 async fn wait_encoder_bootstrap(
