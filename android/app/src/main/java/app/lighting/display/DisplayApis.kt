@@ -1,6 +1,7 @@
 package app.lighting.display
 
 import android.os.Build
+import android.view.Surface
 import android.view.SurfaceControl
 import android.view.View
 import android.view.WindowManager
@@ -45,6 +46,27 @@ internal object DisplayApis {
                     Int::class.javaPrimitiveType,
                 )
                 .invoke(tx, sc, count)
+        } catch (_: Throwable) {
+        }
+    }
+
+    /**
+     * API 34 producer-side BufferQueue cap. SurfaceView defaults to 3
+     * slots; MediaCodec then holds a decoded picture until the next
+     * vsync — one refresh vs the laptop. 2 is ping-pong; 1 tears.
+     * Must run before MediaCodec.configure connects the producer.
+     * setBufferMaxCount is the consumer/layer twin; both are needed
+     * because BLAST keeps a child queue the SurfaceControl cap misses.
+     */
+    fun setMaxDequeuedBufferCount(surface: Surface, count: Int) {
+        if (Build.VERSION.SDK_INT < 34) return
+        try {
+            Surface::class.java
+                .getMethod(
+                    "setMaxDequeuedBufferCount",
+                    Int::class.javaPrimitiveType,
+                )
+                .invoke(surface, count)
         } catch (_: Throwable) {
         }
     }
