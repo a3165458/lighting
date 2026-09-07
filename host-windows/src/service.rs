@@ -656,7 +656,7 @@ fn usb_hint_locked(g: &HostInner, snap: &SessionStatus) -> (String, Tone) {
             .find(|d| d.state == "device")
             .map(|d| d.serial.as_str())
             .unwrap_or("");
-        return (format!("已找到设备，将自动连接 · {name}"), Tone::Ok);
+        return ui_text::device_ready_hint(name);
     }
     if ready > 1 {
         return ("检测到多台设备，请选择一台".into(), Tone::Info);

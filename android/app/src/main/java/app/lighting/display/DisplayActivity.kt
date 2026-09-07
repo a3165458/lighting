@@ -37,8 +37,6 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         const val EXTRA_ERROR = "error"
         const val EXTRA_ERROR_HINT = "error_hint"
         const val EXTRA_ERROR_DETAIL = "error_detail"
-        private const val RECONNECT_ATTEMPTS = 7
-        private const val RECONNECT_BUDGET_MS = 12_000L
         private const val HUD_HIDE_MS = 400L
     }
 
@@ -484,7 +482,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     windowStart = SystemClock.uptimeMillis()
                 }
                 val spent = SystemClock.uptimeMillis() - windowStart
-                if (fails > RECONNECT_ATTEMPTS || spent >= RECONNECT_BUDGET_MS) {
+                if (fails > usbReconnectAttempts() || spent >= usbReconnectBudgetMs()) {
                     setHud("已断开 · 点此重连", reason = lastError, keep = true)
                     showManualReconnect(true)
                     break

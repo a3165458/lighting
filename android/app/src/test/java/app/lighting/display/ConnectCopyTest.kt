@@ -65,6 +65,8 @@ class ConnectCopyTest {
         assertEquals(650L, reconnectBackoffMs(0, 0))
         assertEquals(850L, reconnectBackoffMs(0, 999))
         assertTrue(reconnectBackoffMs(4, 0) > reconnectBackoffMs(0, 0))
+        assertTrue(usbReconnectBudgetMs() >= 60_000L)
+        assertTrue(usbReconnectAttempts() >= 12)
     }
 }
 
