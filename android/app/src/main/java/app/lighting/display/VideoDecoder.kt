@@ -374,6 +374,13 @@ class VideoDecoder {
                 n.startsWith("omx.mtk") || n.startsWith("c2.mtk") || n.contains(".mtk.") || n.contains("mediatek") -> {
                     if (tryNumber < 4) {
                         format.setInteger("vendor.mtk.vdec.low.latency", 1)
+                        // ByteVU is the display-path sibling of mtk.vdec.
+                        // C2 reads it at configure(); the post-start poke
+                        // used to land after the decoder already queued a
+                        // reconstructed picture (one refresh vs the laptop).
+                        // Try 4 stays mtk-ext-only so an unknown ByteVU
+                        // key cannot skip the Dimensity fallback.
+                        format.setInteger("vendor.mtk.vdec.bytevu.low-latency.enable", 1)
                     }
                     // Dimensity C2 ignores the OMX-era mtk.vdec key.
                     // Without mtk-ext the decoder holds a reconstructed
@@ -438,8 +445,8 @@ class VideoDecoder {
             n.startsWith("omx.mtk") || n.startsWith("c2.mtk") || n.contains(".mtk.") || n.contains("mediatek") -> {
                 poke("vendor.mtk.vdec.low.latency", 1)
                 poke("vendor.mtk-ext-dec-low-latency.enable", 1)
-                // ByteVU display path still queues a vsync unless this
-                // sibling is on. setParameters ignores an unknown key.
+                // Configure try 4+ omits ByteVU so an unknown key can
+                // still win on mtk-ext. Poke covers try 4 / 5 / -1.
                 poke("vendor.mtk.vdec.bytevu.low-latency.enable", 1)
             }
         }
