@@ -383,44 +383,15 @@ async fn run_session_inner(
     let _restore_pc = TabletOnlyRestoreGuard(tablet_only.clone(), preserve.clone());
 
     let adb_path = adb::find_adb().ok();
-    let mut reverse_serial: Option<String> = None;
-    let mut wait_detail = "请在平板上打开 Lighting 并连接".to_string();
-    if let Some(adb_bin) = adb_path.as_ref() {
-        let devices = adb::list_devices(adb_bin).await.unwrap_or_default();
-        let serial = req.device_serial.clone().or_else(|| {
-            devices
-                .into_iter()
-                .find(|d| d.state == "device")
-                .map(|d| d.serial)
-        });
-        if let Some(serial) = serial {
-            set_status(
-                &status,
-                "等待设备",
-                format!("正在执行 adb reverse（{serial}）"),
-            );
-            if let Err(err) = adb::reverse_port(adb_bin, &serial, listen_port).await {
-                set_transport(
-                    &status,
-                    "USB · adb reverse 失败，可改用 Wi-Fi（平板填电脑 IP）",
-                );
-                wait_detail = format!("adb reverse 失败，仍可走局域网：{err:#}");
-            } else {
-                reverse_serial = Some(serial.clone());
-                set_transport(&status, format!("USB · adb reverse 已就绪（{serial}）"));
-                adb::launch_stream_client(adb_bin, &serial, listen_port).await;
-                wait_detail = format!("USB 已就绪（{serial}），正在打开平板投屏");
-            }
-        } else {
-            set_transport(&status, "USB · 未检测到已授权设备，可走 Wi-Fi（填电脑 IP）");
-            wait_detail = "未检测到已授权设备，平板可填电脑 IP".into();
-        }
-    } else {
-        set_transport(&status, "未找到 adb · 仅局域网可用（平板填电脑 IP）");
-        wait_detail = "未找到 adb，平板可填电脑 IP 用 Wi-Fi 测试".into();
-    }
+    let mut reverse_serial = open_usb_tunnel(
+        adb_path.as_ref(),
+        req.device_serial.as_deref(),
+        listen_port,
+        &status,
+    )
+    .await
+    .serial;
 
-    set_status(&status, "等待设备", wait_detail);
 
     let (stop_tx, stop_rx) = watch::channel(false);
     let stop2 = stop.clone();
@@ -526,6 +497,22 @@ async fn run_session_inner(
         }
     } else if let Err(err) = displays::apply_project_mode(req.share_mode) {
         tracing::warn!("DisplaySwitch failed ({err:#}); continuing with current layout");
+    }
+
+    // IddCx / UAC re-enumerates USB. Reverse from before VDD is then gone
+    // while adb devices still shows the pad — same 「等待 USB」 hang.
+    if session_policy::refresh_usb_after_virtual_prepare() {
+        let refreshed = open_usb_tunnel(
+            adb_path.as_ref(),
+            reverse_serial
+                .as_deref()
+                .or(req.device_serial.as_deref()),
+            listen_port,
+            &status,
+        )
+        .await;
+        reverse_serial = refreshed.serial;
+        set_status(&status, "等待设备", refreshed.wait_detail);
     }
 
     set_status(&status, "启动", "正在枚举显示器");
@@ -637,6 +624,81 @@ async fn run_session_inner(
             clear_peer_metrics(&mut st);
         }
         set_status(&status, "等待设备", "上一台已断开，等待重新连接");
+    }
+}
+
+struct UsbTunnel {
+    serial: Option<String>,
+    wait_detail: String,
+}
+
+/// Bind is already listening. Reverse 127.0.0.1:port and open the pad app.
+/// Called before VDD (so the 90s USB retry can start) and again after VDD
+/// (USB often re-enumerates during IddCx / UAC).
+async fn open_usb_tunnel(
+    adb_path: Option<&std::path::PathBuf>,
+    preferred_serial: Option<&str>,
+    listen_port: u16,
+    status: &Arc<Mutex<SessionStatus>>,
+) -> UsbTunnel {
+    let Some(adb_bin) = adb_path else {
+        let wait_detail = "未找到 adb，平板可填电脑 IP 用 Wi-Fi 测试".to_string();
+        set_transport(
+            status,
+            "未找到 adb · 仅局域网可用（平板填电脑 IP）",
+        );
+        set_status(status, "等待设备", wait_detail.clone());
+        return UsbTunnel {
+            serial: None,
+            wait_detail,
+        };
+    };
+    let devices = adb::list_devices(adb_bin).await.unwrap_or_default();
+    let serial = preferred_serial
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            devices
+                .into_iter()
+                .find(|d| d.state == "device")
+                .map(|d| d.serial)
+        });
+    let Some(serial) = serial else {
+        let wait_detail = "未检测到已授权设备，平板可填电脑 IP".to_string();
+        set_transport(
+            status,
+            "USB · 未检测到已授权设备，可走 Wi-Fi（填电脑 IP）",
+        );
+        set_status(status, "等待设备", wait_detail.clone());
+        return UsbTunnel {
+            serial: None,
+            wait_detail,
+        };
+    };
+    set_status(
+        status,
+        "等待设备",
+        format!("正在执行 adb reverse（{serial}）"),
+    );
+    if let Err(err) = adb::reverse_port(adb_bin, &serial, listen_port).await {
+        let wait_detail = format!("adb reverse 失败，仍可走局域网：{err:#}");
+        set_transport(
+            status,
+            "USB · adb reverse 失败，可改用 Wi-Fi（平板填电脑 IP）",
+        );
+        set_status(status, "等待设备", wait_detail.clone());
+        return UsbTunnel {
+            serial: Some(serial),
+            wait_detail,
+        };
+    }
+    set_transport(status, format!("USB · adb reverse 已就绪（{serial}）"));
+    adb::launch_stream_client(adb_bin, &serial, listen_port).await;
+    let wait_detail = format!("USB 已就绪（{serial}），正在打开平板投屏");
+    set_status(status, "等待设备", wait_detail.clone());
+    UsbTunnel {
+        serial: Some(serial),
+        wait_detail,
     }
 }
 

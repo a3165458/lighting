@@ -108,6 +108,13 @@ pub fn listen_before_virtual_prepare() -> bool {
     true
 }
 
+/// IddCx / UAC re-enumerates USB on Honor/Huawei. Reverse done *before*
+/// the virtual display is then gone; `adb devices` still lists HA18C874
+/// while 127.0.0.1:17400 is dead — same 「重连中 / 等待 USB」 hang.
+pub fn refresh_usb_after_virtual_prepare() -> bool {
+    true
+}
+
 pub fn listen_port_from_bind(bind: &str) -> u16 {
     bind.rsplit_once(':')
         .and_then(|(_, p)| p.parse().ok())
@@ -1217,6 +1224,7 @@ mod tests {
         assert_eq!(jitter_backoff_ms(650, 80, 200), 730);
         assert_eq!(jitter_backoff_ms(650, 999, 200), 850);
         assert!(listen_before_virtual_prepare());
+        assert!(refresh_usb_after_virtual_prepare());
         assert_eq!(listen_port_from_bind("0.0.0.0:17400"), 17400);
         assert_eq!(listen_port_from_bind("127.0.0.1:17400"), 17400);
         assert_eq!(listen_port_from_bind(""), 17400);

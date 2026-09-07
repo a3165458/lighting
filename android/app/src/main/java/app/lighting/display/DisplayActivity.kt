@@ -167,6 +167,17 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         reassertPeakPresentation()
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        // Host re-issues am start after VDD restores adb reverse.
+        // If the 90s USB window already expired, restart; otherwise the
+        // live reconnect loop must keep its budget.
+        if (awaitingManual || !running) {
+            startSession()
+        }
+    }
+
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) reassertPeakPresentation()

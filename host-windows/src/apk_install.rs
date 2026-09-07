@@ -27,6 +27,28 @@ pub fn adb_reverse_timeout_secs() -> u64 {
     45
 }
 
+/// `am start` after a fresh APK on Honor is slower than `adb devices`.
+/// 0.1.49 reused the 8s probe timeout and could drop the launch.
+pub fn am_start_timeout_secs() -> u64 {
+    20
+}
+
+pub fn am_start_succeeded(combined: &str) -> bool {
+    let lower = combined.to_lowercase();
+    if lower.contains("permission denial")
+        || lower.contains("does not exist")
+        || lower.contains("unable to resolve intent")
+    {
+        return false;
+    }
+    for line in lower.lines() {
+        if line.trim_start().starts_with("error:") {
+            return false;
+        }
+    }
+    true
+}
+
 pub fn default_stream_port() -> u16 {
     17400
 }
@@ -214,8 +236,23 @@ mod tests {
         assert!(install_replace_attempts()[0].contains(&"--no-incremental"));
         assert!(install_timeout_secs() >= 30);
         assert!(adb_reverse_timeout_secs() > adb_probe_timeout_secs());
+        assert!(am_start_timeout_secs() > adb_probe_timeout_secs());
         assert!(display_component().contains("DisplayActivity"));
         assert_eq!(default_stream_port(), 17400);
+        assert!(am_start_succeeded(
+            "Starting: Intent { act=android.intent.action.MAIN }"
+        ));
+        assert!(am_start_succeeded(
+            "Warning: Activity not started, intent has been delivered to currently running top-most instance."
+        ));
+        assert_eq!(
+            am_start_succeeded("Error: Activity class does not exist."),
+            false
+        );
+        assert_eq!(
+            am_start_succeeded("Permission Denial: starting Intent not exported"),
+            false
+        );
     }
 
     #[test]
