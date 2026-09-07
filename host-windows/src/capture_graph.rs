@@ -165,27 +165,34 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
         ));
     }
     if encoder.contains("amf") {
-        if scale {
-            // vpp_amf is AMF's own scaler (dynamic pool). scale_d3d11
-            // hardcodes 10 and always succeeds, so it must never be in
-            // the list or CPU bilinear never goes live.
-            graphs.push(format!(
-                "{dda},hwmap=derive_device=amf:extra_hw_frames=0,vpp_amf=w={dst_w}:h={dst_h}:format=nv12:extra_hw_frames=0"
-            ));
+        let vpp = if scale {
+            format!("vpp_amf=w={dst_w}:h={dst_h}:format=nv12")
         } else {
-            // Stay on D3D11. hwupload of an identity frame is a copy.
+            // Format convert only. w/h at 1:1 is still a VPP resize
+            // (same trap as scale_qsv with w/h on identity).
+            "vpp_amf=format=nv12".to_string()
+        };
+        if !scale {
             // Identity ddagrab is already D3D11 BGRA; h264_amf/hevc_amf
-            // advertise AV_PIX_FMT_D3D11 (ff_amf_pix_fmts). hwmap derive
-            // still wraps a derived frames context — try raw ddagrab
-            // first (same as identity NVENC). Device reject falls through.
+            // advertise AV_PIX_FMT_D3D11. Try raw first (same as NVENC).
             graphs.push(dda.to_string());
+        }
+        // extra=0 only. Encoder adds amf@capture. mode=direct maps D3D11
+        // textures; copy hwmap if that FATAL-rejects. Without this GPU
+        // NV12 convert, a BGRA reject used to skip straight to CPU
+        // hwdownload (GPU→CPU every picture). scale_d3d11 must never
+        // be in the list (hardcoded 10-frame pool).
+        graphs.push(format!(
+            "{dda},hwmap=derive_device=amf:mode=direct:extra_hw_frames=0,{vpp}:extra_hw_frames=0"
+        ));
+        graphs.push(format!(
+            "{dda},hwmap=derive_device=amf:extra_hw_frames=0,{vpp}:extra_hw_frames=0"
+        ));
+        if !scale {
             graphs.push(format!(
                 "{dda},hwmap=derive_device=d3d11:extra_hw_frames=0"
             ));
             graphs.push(format!("{dda},format=d3d11"));
-            // hwupload wants sysmem. A D3D11 graph that survived configure()
-            // copies GPU→CPU→GPU every picture — same trap as hwupload_cuda.
-            // Device reject falls through to CPU bilinear.
         }
     }
     if scale {
@@ -359,11 +366,25 @@ mod tests {
         assert!(!graphs.iter().any(|g| g.contains("hwmap=derive_device=d3d11") && !g.contains("extra_hw_frames")));
         assert!(graphs.iter().any(|g| g.contains("format=d3d11")));
         assert!(!graphs.iter().any(|g| g.contains("hwupload")));
+        // BGRA reject must try GPU NV12 before CPU download (NVENC CUDA analog).
+        assert!(graphs.iter().any(|g| {
+            g.contains("vpp_amf=format=nv12") && !g.contains("w=") && !g.contains("h=")
+        }));
+        assert!(graphs.iter().any(|g| {
+            g.contains("hwmap=derive_device=amf:mode=direct:extra_hw_frames=0")
+        }));
+        let amf_vpp = graphs.iter().position(|g| g.contains("vpp_amf")).unwrap();
+        let cpu_at = graphs.iter().position(|g| g.contains("hwdownload")).unwrap();
+        assert!(amf_vpp < cpu_at);
         let scaled = dda_capture_graphs(
             Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x1002 }),
             60, 2560, 1440, 1920, 1080, "h264_amf",
         );
+        assert!(scaled[0].contains("hwmap=derive_device=amf:mode=direct:extra_hw_frames=0"));
         assert!(scaled[0].contains("vpp_amf=w=1920:h=1080:format=nv12"));
+        assert!(scaled.iter().any(|g| {
+            g.contains("hwmap=derive_device=amf:extra_hw_frames=0") && !g.contains("mode=direct")
+        }));
         assert!(!scaled.iter().any(|g| g.contains("scale_d3d11")));
         let cap = DxgiCapture { adapter_index: 1, output_index: 0, vendor_id: 0x1002 };
         assert_eq!(
