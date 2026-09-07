@@ -679,18 +679,39 @@ async fn handle_client(
     }
 
     let mut mode_guard = displays::ModeRestoreGuard(None);
+    let codec = pick_codec(&hello, req.prefer_hevc);
+    let (dec_w, dec_h, dec_fps, hw) = codec_limit(&hello, &codec);
+    let scale = if req.match_device || req.share_mode.uses_virtual_display() {
+        req.scale
+    } else {
+        1.0
+    };
+    let align = hello.alignment.max(2);
+    // Size IddCx to the encoder output (alignment + quality scale), not the
+    // raw Hello panel. Mismatch used to force scale_d3d11's 10-frame pool.
+    let (panel_w, panel_h) = lighting_host::session_policy::virtual_panel_size(
+        hello.screen_width,
+        hello.screen_height,
+        req.max_width,
+        req.max_height,
+        if req.share_mode.uses_virtual_display() {
+            scale
+        } else {
+            1.0
+        },
+        dec_w,
+        dec_h,
+        align,
+    );
     if req.share_mode.uses_virtual_display() && hello.screen_width > 0 && hello.screen_height > 0 {
-        // Independent second screen: put the *virtual* monitor on tablet pixels so
+        // Independent second screen: virtual monitor = encode size so
         // capture is 1:1 (no scaling anywhere) and the PC monitor is untouched.
         set_status(
             &status,
             "独立第二屏",
-            format!(
-                "正在把虚拟屏设为平板分辨率 {}×{}",
-                hello.screen_width, hello.screen_height
-            ),
+            format!("正在把虚拟屏设为编码分辨率 {panel_w}×{panel_h}"),
         );
-        let (tw, th) = (hello.screen_width, hello.screen_height);
+        let (tw, th) = (panel_w, panel_h);
         let want_fps = hello.max_fps.max(req.fps).min(120);
         let preserve_for_mode = preserve.clone();
         match tokio::task::spawn_blocking(move || {
@@ -818,7 +839,7 @@ async fn handle_client(
                 tablet_only.store(true, Ordering::SeqCst);
                 // Win+P /external can reset the virtual mode to 30 Hz. Put 60+
                 // back and refresh DXGI *after* the topology change.
-                let (tw, th) = (hello.screen_width, hello.screen_height);
+                let (tw, th) = (panel_w, panel_h);
                 let want_fps = hello.max_fps.max(req.fps).min(120);
                 let preserve_for_hz = preserve.clone();
                 if tw > 0 && th > 0 {
@@ -864,15 +885,8 @@ async fn handle_client(
         }
     }
 
-    let codec = pick_codec(&hello, req.prefer_hevc);
-    let (dec_w, dec_h, dec_fps, hw) = codec_limit(&hello, &codec);
     // Always clamp to the tablet panel when Hello reports it — a 2K desktop
     // must not stream 2K to a 1080p/1200p pad just because ResCap is「最高 2K」.
-    let scale = if req.match_device || req.share_mode.uses_virtual_display() {
-        req.scale
-    } else {
-        1.0
-    };
     let (mut width, mut height) = lighting_host::session_policy::compute_encode_size(
         display.width,
         display.height,
@@ -884,9 +898,8 @@ async fn handle_client(
         dec_w,
         dec_h,
     );
-    let align = hello.alignment.max(2);
-    width = (width / align * align).max(align);
-    height = (height / align * align).max(align);
+    width = lighting_host::session_policy::align_dim(width, align);
+    height = lighting_host::session_policy::align_dim(height, align);
 
     let fps = adapted_fps(req.fps, hello.max_fps, dec_fps, hw);
     let auto_br = auto_bitrate(width, height, fps);
