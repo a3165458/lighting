@@ -364,6 +364,26 @@ pub fn amf_aud() -> bool {
     true
 }
 
+/// AMF `ENFORCE_HRD`. The `ultralowlatency` usage profile turns HRD on,
+/// so unset (`-1`) still holds a reconstructed picture for the CPB —
+/// one refresh vs the laptop. Sunshine `amd_enforce_hrd=disabled`.
+/// Valid on h264_amf and hevc_amf (`AV_OPT_TYPE_BOOL`).
+pub fn amf_enforce_hrd() -> bool {
+    false
+}
+
+/// AMF filler NAL stuffing. Default -1 follows HRD/CBR and pads every
+/// AU; Sunshine ULL sets 0.
+pub fn amf_filler_data() -> bool {
+    false
+}
+
+/// AMF `-forced_idr`. Default 0, so `-g` I-frames can be non-IDR and the
+/// tablet never recovers a torn GOP. NVENC/QSV already force IDR.
+pub fn amf_forced_idr() -> bool {
+    true
+}
+
 /// h264_qsv `-a53cc`. Default 1 walks A/53 caption SEI on every picture.
 /// ddagrab has none; NVENC already turns this off. Not an hevc_qsv option.
 pub fn qsv_a53cc() -> bool {
@@ -1117,6 +1137,9 @@ mod tests {
         assert_eq!(qsv_scenario(), "gamestreaming");
         assert!(qsv_aud());
         assert!(amf_aud());
+        assert!(!amf_enforce_hrd());
+        assert!(!amf_filler_data());
+        assert!(amf_forced_idr());
         assert!(!qsv_a53cc());
         assert!(qsv_vcm());
         assert!(!qsv_recovery_point_sei());

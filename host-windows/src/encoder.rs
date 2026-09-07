@@ -777,6 +777,26 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "0".into(),
             "-latency".into(),
             "1".into(),
+            // ULL usage enables HRD unless this is explicit 0. Sunshine
+            // `amd_enforce_hrd=disabled`. Unset is a 1-frame CPB hold.
+            "-enforce_hrd".into(),
+            if lighting_host::session_policy::amf_enforce_hrd() {
+                "1".into()
+            } else {
+                "0".into()
+            },
+            "-filler_data".into(),
+            if lighting_host::session_policy::amf_filler_data() {
+                "1".into()
+            } else {
+                "0".into()
+            },
+            "-forced_idr".into(),
+            if lighting_host::session_policy::amf_forced_idr() {
+                "1".into()
+            } else {
+                "0".into()
+            },
             "-async_depth".into(),
             lighting_host::session_policy::amf_async_depth().to_string(),
             "-vbaq".into(),
