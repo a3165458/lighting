@@ -135,6 +135,14 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
                 graphs.push(format!("{dda},hwmap=reverse=1:extra_hw_frames={extra}"));
             }
             graphs.push(dda.to_string());
+        } else {
+            // Resize: mode=direct derived inherits ddagrab's 8-pool and
+            // always configures, so reverse extra=0/1/2 must run first.
+            for extra in crate::session_policy::hw_extra_frame_attempts() {
+                graphs.push(format!(
+                    "{dda},hwmap=derive_device=cuda:reverse=1:extra_hw_frames={extra},{cuda}:extra_hw_frames=0"
+                ));
+            }
         }
         // extra=0 only. Unkeyed hwmap keeps ffmpeg's 16-frame default.
         // mode=direct maps D3D11 textures; copy hwmap if that FATAL-rejects.
@@ -198,6 +206,13 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
                 graphs.push(format!("{dda},hwmap=reverse=1:extra_hw_frames={extra}"));
             }
             graphs.push(dda.to_string());
+        } else {
+            // Resize: mode=direct derived inherits the 8-pool.
+            for extra in crate::session_policy::hw_extra_frame_attempts() {
+                graphs.push(format!(
+                    "{dda},hwmap=derive_device=amf:reverse=1:extra_hw_frames={extra},{vpp}:extra_hw_frames=0"
+                ));
+            }
         }
         // extra=0 only. Encoder adds amf@capture. mode=direct maps D3D11
         // textures; copy hwmap if that FATAL-rejects. Without this GPU
@@ -290,8 +305,13 @@ mod tests {
         assert!(graphs.len() >= 3);
         // Resize: scale_d3d11 always succeeds with a 10-frame GPU pool, so
         // it must not be in the list or CUDA / CPU never go live.
-        assert!(graphs[0].contains("hwmap=derive_device=cuda:mode=direct:extra_hw_frames=0"));
+        // reverse extra=0 first; mode=direct inherits ddagrab's 8-pool.
+        assert!(graphs[0].contains("hwmap=derive_device=cuda:reverse=1:extra_hw_frames=0"));
+        assert!(!graphs[0].contains("mode=direct"));
         assert!(graphs[0].contains("scale_cuda=1920:1080:format=nv12"));
+        let extra1 = graphs.iter().position(|g| g.contains("hwmap=derive_device=cuda:reverse=1:extra_hw_frames=1")).expect("cuda extra=1 reverse");
+        let direct = graphs.iter().position(|g| g.contains("hwmap=derive_device=cuda:mode=direct")).expect("cuda mode=direct");
+        assert!(extra1 < direct, "mode=direct 8-pool must not precede extra=1 reverse");
         assert!(!graphs[0].contains("scale_d3d11"));
         assert!(!graphs.iter().any(|g| g.contains("hwupload_cuda")));
         assert!(!graphs.iter().any(|g| g.contains("scale_d3d11")));
@@ -376,7 +396,8 @@ mod tests {
             Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x10DE }),
             60, 2560, 1440, 1920, 1080, "h264_nvenc",
         );
-        assert!(scaled[0].contains("hwmap=derive_device=cuda:mode=direct:extra_hw_frames=0"));
+        assert!(scaled[0].contains("hwmap=derive_device=cuda:reverse=1:extra_hw_frames=0"));
+        assert!(!scaled[0].contains("mode=direct"));
         assert!(scaled[0].contains("scale_cuda=1920:1080:format=nv12"));
         assert!(!scaled[0].contains("scale_d3d11"));
     }
@@ -387,6 +408,7 @@ mod tests {
             Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x8086 }),
             60, 2560, 1440, 1920, 1080, "h264_qsv",
         );
+        assert!(scaled[0].contains("hwmap=derive_device=qsv:reverse=1:extra_hw_frames=0"));
         assert!(scaled[0].contains("scale_qsv=w=1920:h=1080:format=nv12:extra_hw_frames=0"));
     }
 
@@ -424,7 +446,8 @@ mod tests {
             Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x1002 }),
             60, 2560, 1440, 1920, 1080, "h264_amf",
         );
-        assert!(scaled[0].contains("hwmap=derive_device=amf:mode=direct:extra_hw_frames=0"));
+        assert!(scaled[0].contains("hwmap=derive_device=amf:reverse=1:extra_hw_frames=0"));
+        assert!(!scaled[0].contains("mode=direct"));
         assert!(scaled[0].contains("vpp_amf=w=1920:h=1080:format=nv12"));
         assert!(scaled.iter().any(|g| {
             g.contains("hwmap=derive_device=amf:extra_hw_frames=0") && !g.contains("mode=direct")
