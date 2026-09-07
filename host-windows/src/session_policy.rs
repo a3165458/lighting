@@ -423,10 +423,22 @@ pub fn nvenc_a53cc() -> bool {
 
 /// libx265 still look-aheads unless these are explicit. `-tune zerolatency`
 /// is not enough on some builds (rc-lookahead stays ~20 → a GOP of glass wait).
+/// `aud=1` so annexb can cut the AU without Quiet / IDLE_FLUSH (1 ms).
 pub fn x265_params(gop: u32) -> String {
     let keyint = gop.max(1);
     format!(
-        "bframes=0:ref=1:no-open-gop:keyint={keyint}:min-keyint={keyint}:rc-lookahead=0:sync-lookahead=0:frame-threads=1:no-scenecut:repeat-headers=1"
+        "bframes=0:ref=1:no-open-gop:keyint={keyint}:min-keyint={keyint}:rc-lookahead=0:sync-lookahead=0:frame-threads=1:no-scenecut:repeat-headers=1:aud=1"
+    )
+}
+
+/// libx264. `-tune zerolatency` still leaves `frame-threads` at auto on some
+/// ffmpeg builds (one extra coded picture) and never inserts AUD, so annexb
+/// holds the VCL until Quiet / IDLE_FLUSH. Hardware NVENC/QSV/AMF already
+/// pass `-aud 1`; this is the last-resort chain.
+pub fn x264_params(gop: u32, level: &str) -> String {
+    let keyint = gop.max(1);
+    format!(
+        "bframes=0:ref=1:open-gop=0:keyint={keyint}:min-keyint={keyint}:rc-lookahead=0:sync-lookahead=0:sliced-threads=1:frame-threads=1:scenecut=0:repeat-headers=1:aud=1:level={level}"
     )
 }
 
@@ -1116,6 +1128,12 @@ mod tests {
         assert!(x265_params(120).contains("rc-lookahead=0"));
         assert!(x265_params(120).contains("bframes=0"));
         assert!(x265_params(120).contains("keyint=120"));
+        assert!(x265_params(120).contains("aud=1"));
+        assert!(x264_params(120, "4.2").contains("bframes=0"));
+        assert!(x264_params(120, "4.2").contains("frame-threads=1"));
+        assert!(x264_params(120, "4.2").contains("aud=1"));
+        assert!(x264_params(120, "4.2").contains("keyint=120"));
+        assert!(x264_params(120, "4.2").contains("level=4.2"));
         assert_eq!(nvenc_surface_attempts(), vec![1, 2]);
         assert!(!nvenc_spatial_aq());
         assert_eq!(wasapi_buffer_hns(), 200_000);

@@ -839,11 +839,10 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             "-level:v".into(),
             level,
             "-x264-params".into(),
-            format!(
-                "ref=1:repeat-headers=1:scenecut=0:sliced-threads=1:sync-lookahead=0:rc-lookahead=0:level={}",
-                avc_level(settings.width, settings.height, settings.fps)
-            )
-            .into(),
+            lighting_host::session_policy::x264_params(
+                settings.fps.max(30),
+                avc_level(settings.width, settings.height, settings.fps),
+            ),
         ]
     });
     flags
