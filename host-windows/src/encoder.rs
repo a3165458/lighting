@@ -519,13 +519,12 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
     // that IDR spikes do not dominate USB3 bandwidth.
     let gop = settings.fps.max(30).to_string();
     let level = avc_level(settings.width, settings.height, settings.fps).to_string();
-    // ddagrab advertises dda_poll_hz (8000) as filter frame_rate. Without
-    // `-r`, NVENC/QSV copy that into SPS/VUI and Qualcomm C2 holds frames
-    // like a movie. Panel rate, never the poll grid. fps_mode=passthrough
-    // keeps wall-clock PTS so this is VUI/RC metadata, not a cfr queue.
+    // Do not pass muxer `-r`. Current ffmpeg FATAL-rejects it with
+    // `-fps_mode passthrough`. Older builds then VSYNC_CFR and hold
+    // every picture until the next 1/fps tick — one refresh vs the
+    // laptop. SPS rewrite drops ddagrab's 8000 Hz VUI; Android sets
+    // KEY_FRAME_RATE 120. GOP/VBV already use settings.fps.
     let mut flags = vec![
-        "-r".into(),
-        lighting_host::session_policy::ffmpeg_output_fps(settings.fps).to_string(),
         // After -c:v: h264_amf/hevc_amf default flags=+loop clears the
         // global -flags low_delay. amfenc then uses output_delay =
         // max_b_frames + 1 (one extra encoded picture vs the laptop).
