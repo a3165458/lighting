@@ -223,9 +223,10 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 }
                 window.attributes = lp
                 // AppCompat PhoneWindow exists only after super.onCreate.
-                // Writing attributes here dropped ALLM (manifest/theme) on
-                // some pads, so SurfaceFlinger kept a post-processing vsync
-                // GlideX / Moonlight do not pay. Re-assert after every write.
+                // Writing attributes here dropped ALLM (manifest
+                // preferMinimalPostProcessing) on some pads, so
+                // SurfaceFlinger kept a post-processing vsync GlideX /
+                // Moonlight do not pay. Re-assert after every write.
                 if (Build.VERSION.SDK_INT >= 30) {
                     window.setPreferMinimalPostProcessing(true)
                 }
