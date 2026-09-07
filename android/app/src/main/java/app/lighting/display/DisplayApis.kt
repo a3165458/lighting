@@ -3,6 +3,7 @@ package app.lighting.display
 import android.os.Build
 import android.view.Surface
 import android.view.SurfaceControl
+import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
 
@@ -51,22 +52,62 @@ internal object DisplayApis {
     }
 
     /**
-     * API 34 producer-side BufferQueue cap. SurfaceView defaults to 3
-     * slots; MediaCodec then holds a decoded picture until the next
-     * vsync — one refresh vs the laptop. 2 is ping-pong; 1 tears.
+     * Producer-side BufferQueue cap. SurfaceView defaults to 3 slots;
+     * MediaCodec then holds a decoded picture until the next vsync —
+     * one refresh vs the laptop. 2 is ping-pong; 1 tears.
      * Must run before MediaCodec.configure connects the producer.
-     * setBufferMaxCount is the consumer/layer twin; both are needed
-     * because BLAST keeps a child queue the SurfaceControl cap misses.
+     * setBufferMaxCount is the consumer/layer twin; BLAST keeps a
+     * child queue the SurfaceControl cap misses (API 31–33 pads).
      */
+    fun capDecoderBuffers(view: SurfaceView?, surface: Surface, count: Int) {
+        setMaxDequeuedBufferCount(surface, count)
+        if (view != null) {
+            tryBlastMaxDequeued(view, count)
+        }
+    }
+
     fun setMaxDequeuedBufferCount(surface: Surface, count: Int) {
-        if (Build.VERSION.SDK_INT < 34) return
+        // Public on API 34. Some API 31–33 builds ship the same hidden
+        // method; the old SDK_INT < 34 return left a 3-slot queue on
+        // Android 12/13 tablets (one extra glass frame vs GlideX).
+        invokeIntMethod(surface, "setMaxDequeuedBufferCount", count)
+    }
+
+    /**
+     * BLASTBufferQueue (API 31+) is the SurfaceView child the
+     * Surface.setMaxDequeuedBufferCount call never sees. Hidden, so
+     * reflect; missing method is a no-op.
+     */
+    private fun tryBlastMaxDequeued(view: SurfaceView, count: Int) {
+        var cls: Class<*>? = view.javaClass
+        while (cls != null && cls != Any::class.java) {
+            for (field in cls.declaredFields) {
+                val name = field.name
+                if (!name.contains("Blast") && !name.contains("BLAST")) {
+                    continue
+                }
+                try {
+                    field.isAccessible = true
+                    val bbq = field.get(view) ?: continue
+                    invokeIntMethod(bbq, "setMaxDequeuedBufferCount", count)
+                } catch (_: Throwable) {
+                }
+            }
+            cls = cls.superclass
+        }
+    }
+
+    private fun invokeIntMethod(target: Any, method: String, value: Int) {
+        val cls = target.javaClass
         try {
-            Surface::class.java
-                .getMethod(
-                    "setMaxDequeuedBufferCount",
-                    Int::class.javaPrimitiveType,
-                )
-                .invoke(surface, count)
+            cls.getMethod(method, Int::class.javaPrimitiveType).invoke(target, value)
+            return
+        } catch (_: Throwable) {
+        }
+        try {
+            val m = cls.getDeclaredMethod(method, Int::class.javaPrimitiveType)
+            m.isAccessible = true
+            m.invoke(target, value)
         } catch (_: Throwable) {
         }
     }

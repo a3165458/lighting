@@ -558,7 +558,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                             val vs = videoSurface ?: surface.holder.surface
                             // setFixedSize above rebuilt the BufferQueue.
                             // Cap the exact Surface MediaCodec will connect.
-                            DisplayApis.setMaxDequeuedBufferCount(vs, 2)
+                            DisplayApis.capDecoderBuffers(surface, vs, 2)
                             decoder.configure(
                                 cfg.codec,
                                 cfg.width,
@@ -798,7 +798,11 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         if (Build.VERSION.SDK_INT < 30 || !surfaceObj.isValid) return
         // Producer-side 2-slot cap. Must land before MediaCodec.configure.
         // setFixedSize resets the queue, so callers re-run this after it.
-        DisplayApis.setMaxDequeuedBufferCount(surfaceObj, 2)
+        DisplayApis.capDecoderBuffers(
+            if (this::surface.isInitialized) surface else null,
+            surfaceObj,
+            2,
+        )
         val hz = panelFps.toFloat().coerceAtLeast(30f)
         try {
             if (Build.VERSION.SDK_INT >= 31) {
@@ -835,13 +839,11 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     Surface.CHANGE_FRAME_RATE_ALWAYS,
                 )
             DisplayApis.overrideChildrenFrameRate(tx, sc)
-                        if (Build.VERSION.SDK_INT >= 34) {
-                // SurfaceView default BufferQueue is 3. The extra slot
-                // holds a decoded picture until the next vsync — one
-                // refresh vs the laptop. 2 is ping-pong; 1 tears.
-                // @hide on compileSdk — call reflectively.
-                DisplayApis.setBufferMaxCount(tx, sc, 2)
-            }
+            // SurfaceView default BufferQueue is 3. The extra slot
+            // holds a decoded picture until the next vsync — one
+            // refresh vs the laptop. 2 is ping-pong; 1 tears.
+            // Public on API 34; reflection no-ops on older builds.
+            DisplayApis.setBufferMaxCount(tx, sc, 2)
 
             tx.apply()
         } catch (_: Throwable) {

@@ -209,6 +209,13 @@ pub fn nvenc_spatial_aq() -> bool {
     false
 }
 
+/// Sunshine ULL sets `rcParams.lowDelayKeyFrameScale = 1`. ffmpeg only
+/// writes the field when `-ldkfs` is non-zero; unset, NVENC keeps extra
+/// CPB around every IDR even with `-tune ull` / `-zerolatency 1`.
+pub fn nvenc_ldkfs() -> u32 {
+    1
+}
+
 /// Sunshine ULL: `CBR_LOWDELAY_HQ`. Plain `cbr` can keep a 1-frame RC delay
 /// even with `-zerolatency 1`.
 pub fn nvenc_rc() -> &'static str {
@@ -1169,6 +1176,7 @@ mod tests {
         assert!(x264_params(120, "4.2").contains("level=4.2"));
         assert_eq!(nvenc_surface_attempts(), vec![1, 2]);
         assert!(!nvenc_spatial_aq());
+        assert_eq!(nvenc_ldkfs(), 1);
         assert_eq!(wasapi_buffer_hns(), 200_000);
         assert_eq!(audio_capture_queue(), 2);
         assert!(!ddagrab_duplicate_frames());
