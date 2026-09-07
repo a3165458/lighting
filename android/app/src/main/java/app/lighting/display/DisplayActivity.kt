@@ -769,15 +769,14 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     Surface.CHANGE_FRAME_RATE_ALWAYS,
                 )
             DisplayApis.overrideChildrenFrameRate(tx, sc)
-            if (Build.VERSION.SDK_INT >= 34) {
-                try {
-                    // SurfaceView default BufferQueue is 3. The extra slot
-                    // holds a decoded picture until the next vsync — one
-                    // refresh vs the laptop. 2 is ping-pong; 1 tears.
-                    tx.setBufferMaxCount(sc, 2)
-                } catch (_: Throwable) {
-                }
+                        if (Build.VERSION.SDK_INT >= 34) {
+                // SurfaceView default BufferQueue is 3. The extra slot
+                // holds a decoded picture until the next vsync — one
+                // refresh vs the laptop. 2 is ping-pong; 1 tears.
+                // @hide on compileSdk — call reflectively.
+                DisplayApis.setBufferMaxCount(tx, sc, 2)
             }
+
             tx.apply()
         } catch (_: Throwable) {
         }
