@@ -129,11 +129,14 @@ pub fn coalesce_extra_video_on_write() -> bool {
 /// so ffmpeg never saw backpressure and `encoded_queue_capacity(1)` could
 /// not make it skip *input* frames. 2 still parked the next AU's
 /// Data+Quiet while `push_blocking` waited on the 1-deep encoded
-/// channel — one extra refresh next to the laptop. 1 makes Quiet
-/// (and the following picture) wait until the assembler is free, so
-/// ffmpeg sees a full pipe and skips *input* frames instead.
+/// channel — one extra refresh next to the laptop. 1 still parks one
+/// chunk (a full 25 Mbps P at the 48 KB pipe) while the assembler
+/// blocks on encoded-queue send. 0 is a rendezvous: the reader cannot
+/// take the next ffmpeg write until the assembler has the current
+/// chunk, so the pipe backs up one picture earlier and ddagrab skips
+/// *input* instead of hiding a refresh. GlideX has no such hop.
 pub fn annexb_raw_queue_capacity() -> usize {
-    1
+    0
 }
 
 /// ffmpeg `-thread_queue_size`. One queued capture is ~16 ms at 60 Hz;
@@ -185,6 +188,14 @@ pub fn cursor_sample_interval_ms() -> u64 {
 /// ffmpeg hwupload/hwmap extra pool. Default is often 16 frames (~250 ms).
 /// 0 = no extra (Sunshine native DDA has none). 1 then 2 if the graph
 /// never emits IDR. Unkeyed filters still keep the 16-frame default.
+///
+/// vf_hwmap reverse reads `AVFilterContext.extra_hw_frames` (pool = 2+N).
+/// That field is the generic AVFilter option in `avfilter_options[]`.
+/// `avfilter_init_dict` applies graph-string keys via
+/// `av_opt_set_dict2(ctx, SEARCH_CHILDREN)`, so
+/// `hwmap=reverse=1:extra_hw_frames=N` is the correct CLI. ffmpeg has no
+/// dedicated `-extra_hw_frames` flag: `opt_default` would set
+/// `AVCodecContext` (decode side) and never reach vf_hwmap.
 pub fn hw_extra_frames() -> u32 {
     0
 }
@@ -1736,7 +1747,7 @@ Current AC Power Setting Index: 0x00000003
     fn encoded_backpressure_does_not_tear_gop() {
         assert!(!drop_encoded_p_on_backpressure());
         assert_eq!(encoded_queue_capacity(), 1);
-        assert_eq!(annexb_raw_queue_capacity(), 1);
+        assert_eq!(annexb_raw_queue_capacity(), 0);
         assert_eq!(capture_thread_queue_size(), 1);
         assert!(!coalesce_extra_video_on_write());
     }

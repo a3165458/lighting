@@ -131,6 +131,9 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
             // first (Sunshine / GlideX). extra=1 then 2 if extra=0 never
             // emits IDR. Raw dda always configures, so it must sit after
             // every reverse attempt or those never run (8-pool forever).
+            // extra_hw_frames is the generic AVFilter option, applied by
+            // avfilter_init_dict. ffmpeg CLI `-extra_hw_frames` sets
+            // AVCodecContext and never reaches this pool.
             for extra in crate::session_policy::hw_extra_frame_attempts() {
                 graphs.push(format!("{dda},hwmap=reverse=1:extra_hw_frames={extra}"));
             }
