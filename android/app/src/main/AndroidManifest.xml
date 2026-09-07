@@ -32,6 +32,7 @@
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:exported="false"
             android:preferMinimalPostProcessing="true"
+            android:colorMode="default"
             android:screenOrientation="sensorLandscape"
             android:theme="@style/Theme.Lighting.Immersive" />
     </application>
