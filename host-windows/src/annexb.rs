@@ -354,8 +354,11 @@ where
     R: Read + Send + 'static,
     F: Fn(&R) -> Option<usize> + Send + 'static,
 {
+    // 0 is a rendezvous (std::sync::mpsc). `.max(1)` used to park one
+    // 48 KB P-frame in this hop while the assembler blocked on the
+    // encoded queue — one extra refresh vs GlideX. Do not clamp.
     let (raw_tx, raw_rx) = mpsc::sync_channel::<RawMsg>(
-        crate::session_policy::annexb_raw_queue_capacity().max(1),
+        crate::session_policy::annexb_raw_queue_capacity(),
     );
     let reader = thread::Builder::new()
         .name("lighting-annexb-read".into())
