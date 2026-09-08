@@ -27,10 +27,13 @@ pub fn encode_cursor(pkt: &CursorPacket) -> Vec<u8> {
     if pkt.visible {
         flags |= FLAG_VISIBLE;
     }
-    let shape = pkt
-        .bgra
-        .as_ref()
-        .filter(|b| pkt.width > 0 && pkt.height > 0 && !b.is_empty());
+    let source_row_bytes = (pkt.width as usize).checked_mul(4);
+    let source_len = source_row_bytes.and_then(|row| row.checked_mul(pkt.height as usize));
+    let shape = pkt.bgra.as_ref().filter(|bytes| {
+        pkt.width > 0
+            && pkt.height > 0
+            && source_len.is_some_and(|expected| bytes.len() >= expected)
+    });
     if shape.is_some() {
         flags |= FLAG_HAS_SHAPE;
     }
@@ -46,9 +49,11 @@ pub fn encode_cursor(pkt: &CursorPacket) -> Vec<u8> {
     out.extend_from_slice(&(w as u16).to_be_bytes());
     out.extend_from_slice(&(h as u16).to_be_bytes());
     if let Some(bgra) = shape {
-        let expect = (w as usize).saturating_mul(h as usize).saturating_mul(4);
-        if bgra.len() >= expect {
-            out.extend_from_slice(&bgra[..expect]);
+        let source_row_bytes = source_row_bytes.expect("validated cursor row size");
+        let cropped_row_bytes = w as usize * 4;
+        for row in 0..h as usize {
+            let start = row * source_row_bytes;
+            out.extend_from_slice(&bgra[start..start + cropped_row_bytes]);
         }
     }
     out
@@ -65,6 +70,9 @@ pub fn decode_cursor(buf: &[u8]) -> Option<CursorPacket> {
     let hotspot_y = u16::from_be_bytes([buf[8], buf[9]]);
     let width = u16::from_be_bytes([buf[10], buf[11]]) as u32;
     let height = u16::from_be_bytes([buf[12], buf[13]]) as u32;
+    if width > MAX_CURSOR_EDGE || height > MAX_CURSOR_EDGE {
+        return None;
+    }
     let has_shape = flags & FLAG_HAS_SHAPE != 0;
     let bgra = if has_shape {
         let expect = (width as usize)
