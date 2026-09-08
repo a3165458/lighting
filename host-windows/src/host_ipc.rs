@@ -151,12 +151,14 @@ mod tests {
             id: 7,
             method: "setSettings".into(),
             params: serde_json::json!({ "qualityPct": 80, "fps": 60 }),
+            token: "secret".into(),
         };
         let line = encode_line(&req).unwrap();
         let parsed = parse_request_line(&line).unwrap();
         assert_eq!(parsed.id, 7);
         assert_eq!(parsed.method, "setSettings");
         assert_eq!(parsed.params["qualityPct"], 80);
+        assert_eq!(parsed.token, "secret");
     }
 
     #[test]
@@ -171,5 +173,30 @@ mod tests {
         assert!(json.contains("\"usbHint\""));
         assert!(json.contains("\"sharing\":true"));
         assert!(json.contains("\"hostElevated\":true"));
+    }
+
+    #[test]
+    fn request_token_is_required_and_compared() {
+        let req = RpcRequest {
+            id: 1,
+            method: "ping".into(),
+            params: serde_json::json!({}),
+            token: "correct horse".into(),
+        };
+
+        assert!(request_is_authorized(&req, "correct horse"));
+        assert!(!request_is_authorized(&req, "wrong battery"));
+        assert!(!request_is_authorized(&req, ""));
+    }
+
+    #[tokio::test]
+    async fn oversized_request_line_is_rejected_before_parsing() {
+        let line = format!(
+            "{{\"id\":1,\"method\":\"{}\",\"params\":{{}}}}\n",
+            "x".repeat(MAX_REQUEST_LINE_BYTES),
+        );
+        let mut reader = tokio::io::BufReader::new(std::io::Cursor::new(line.into_bytes()));
+
+        assert!(read_request_line(&mut reader).await.is_err());
     }
 }

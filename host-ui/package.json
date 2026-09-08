@@ -10,6 +10,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "test": "vitest run && npm run test:electron",
     "test:electron": "node --test electron/*.test.cjs",
     "preview": "vite preview",
     "electron:dev": "concurrently -k \"vite\" \"wait-on http://127.0.0.1:5173 && electron .\"",
@@ -39,6 +40,7 @@
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.2",
     "vite": "^8.2.2",
+    "vitest": "^5.0.0",
     "wait-on": "^8.0.5"
   },
   "build": {

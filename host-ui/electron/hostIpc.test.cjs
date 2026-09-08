@@ -23,3 +23,21 @@ test('RPC requests time out and release their pending entry', async () => {
   assert.match(String(outcome?.message || outcome), /timeout|超时/i)
   assert.equal(client.pending.size, 0)
 })
+
+test('RPC requests include the per-process authentication token', async () => {
+  const client = new HostIpcClient({ requestTimeoutMs: 100, token: 'test-secret' })
+  let written = ''
+  client.socket = {
+    write(payload, callback) {
+      written = payload
+      callback(null)
+    },
+  }
+
+  const pending = client.rawInvoke('ping')
+  const request = JSON.parse(written)
+  client.onData(`${JSON.stringify({ id: request.id, ok: true, result: {} })}\n`)
+  await pending
+
+  assert.equal(request.token, 'test-secret')
+})
