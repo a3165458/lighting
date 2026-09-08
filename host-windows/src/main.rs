@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use eframe::egui;
 use lighting_host::host_ipc::{DEFAULT_PORT, PORT_ENV, TOKEN_ENV};
-use lighting_host::view::{self, Action};
 use lighting_host::theme;
+use lighting_host::view::{self, Action};
 use service::HostService;
 use tracing_subscriber::fmt::writer::BoxMakeWriter;
 
@@ -53,7 +53,7 @@ fn enable_process_priority() {
 /// laptop panel. Opt out of both: keep P-cores and honor timeBeginPeriod.
 fn disable_power_throttling() {
     use windows::Win32::System::Threading::{
-        GetCurrentProcess, SetProcessInformation, ProcessPowerThrottling,
+        GetCurrentProcess, ProcessPowerThrottling, SetProcessInformation,
         PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
         PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION, PROCESS_POWER_THROTTLING_STATE,
     };
@@ -130,7 +130,9 @@ fn main() -> eframe::Result<()> {
     enable_process_priority();
     enable_dwm_mmcss();
     init_tracing();
-    displays::raise_gpu_scheduling(unsafe { windows::Win32::System::Threading::GetCurrentProcess() });
+    displays::raise_gpu_scheduling(unsafe {
+        windows::Win32::System::Threading::GetCurrentProcess()
+    });
 
     let service = HostService::new();
     if wants_ipc_only() {
@@ -141,9 +143,7 @@ fn main() -> eframe::Result<()> {
         };
         ipc::write_port_file(port);
         ipc::spawn_background(service.clone_handle(), port, token);
-        tracing::info!(
-            "Lighting host IPC on 127.0.0.1:{port} (override with {PORT_ENV})"
-        );
+        tracing::info!("Lighting host IPC on 127.0.0.1:{port} (override with {PORT_ENV})");
         tracing::info!("running in --ipc-only mode (no egui window)");
         loop {
             service.tick();
@@ -181,9 +181,9 @@ impl eframe::App for LightingApp {
         self.service.tick();
         self.service.set_running_flag_from_status();
 
-        let actions = self.service.with_ui(|settings, snapshot| {
-            view::render(ctx, &snapshot, settings)
-        });
+        let actions = self
+            .service
+            .with_ui(|settings, snapshot| view::render(ctx, &snapshot, settings));
 
         for action in actions {
             match action {
@@ -200,10 +200,11 @@ impl eframe::App for LightingApp {
                 Action::TouchRelayChanged => {
                     // Settings already mutated by the view; push touch flag live.
                     let state = self.service.state();
-                    self.service.patch_settings(lighting_host::host_ipc::SettingsPatchDto {
-                        touch_relay: Some(state.settings.touch_relay),
-                        ..Default::default()
-                    });
+                    self.service
+                        .patch_settings(lighting_host::host_ipc::SettingsPatchDto {
+                            touch_relay: Some(state.settings.touch_relay),
+                            ..Default::default()
+                        });
                 }
             }
         }

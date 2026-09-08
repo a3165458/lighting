@@ -30,7 +30,11 @@ async fn adb_output(cmd: &mut Command, max: Duration) -> Result<std::process::Ou
     }
 }
 
-async fn adb_args(adb: &Path, args: &[&str], max: Duration) -> Result<std::process::Output, String> {
+async fn adb_args(
+    adb: &Path,
+    args: &[&str],
+    max: Duration,
+) -> Result<std::process::Output, String> {
     let mut cmd = adb_command(adb);
     cmd.args(args);
     adb_output(&mut cmd, max).await
@@ -114,7 +118,11 @@ fn adb_candidates() -> Vec<PathBuf> {
     }
 
     if let Ok(runtime) = std::env::var("LIGHTING_RUNTIME_DIR") {
-        push(PathBuf::from(&runtime).join("platform-tools").join("adb.exe"));
+        push(
+            PathBuf::from(&runtime)
+                .join("platform-tools")
+                .join("adb.exe"),
+        );
         push(PathBuf::from(&runtime).join("adb.exe"));
     }
 
@@ -165,8 +173,18 @@ fn adb_candidates() -> Vec<PathBuf> {
     );
 
     if let Some(home) = std::env::var_os("USERPROFILE") {
-        push(PathBuf::from(&home).join("Desktop").join("platform-tools").join("adb.exe"));
-        push(PathBuf::from(&home).join("Downloads").join("platform-tools").join("adb.exe"));
+        push(
+            PathBuf::from(&home)
+                .join("Desktop")
+                .join("platform-tools")
+                .join("adb.exe"),
+        );
+        push(
+            PathBuf::from(&home)
+                .join("Downloads")
+                .join("platform-tools")
+                .join("adb.exe"),
+        );
     }
     if let Some(appdata) = std::env::var_os("LOCALAPPDATA") {
         push(
@@ -262,11 +280,9 @@ pub async fn package_installed(adb: &Path, serial: &str, package: &str) -> bool 
     )
     .await;
     match output {
-        Ok(out) if out.status.success() => {
-            lighting_host::apk_install::pm_path_means_installed(&String::from_utf8_lossy(
-                &out.stdout,
-            ))
-        }
+        Ok(out) if out.status.success() => lighting_host::apk_install::pm_path_means_installed(
+            &String::from_utf8_lossy(&out.stdout),
+        ),
         _ => false,
     }
 }
@@ -587,8 +603,7 @@ async fn push_then_pm_install(adb: &Path, serial: &str, apk: &Path) -> Result<()
             }
             Ok(out) => {
                 let combined = combined_output(&out);
-                if extra.is_some() && lighting_host::apk_install::unknown_adb_option(&combined)
-                {
+                if extra.is_some() && lighting_host::apk_install::unknown_adb_option(&combined) {
                     last_push = combined;
                     continue;
                 }
@@ -614,8 +629,7 @@ async fn push_then_pm_install(adb: &Path, serial: &str, apk: &Path) -> Result<()
         match adb_args(adb, &args, pm_to).await {
             Ok(out) => {
                 let combined = combined_output(&out);
-                if out.status.success()
-                    || lighting_host::apk_install::install_succeeded(&combined)
+                if out.status.success() || lighting_host::apk_install::install_succeeded(&combined)
                 {
                     let _ = adb_args(
                         adb,
@@ -822,17 +836,9 @@ async fn apply_reverse_port(adb: &Path, serial: &str, port: u16) -> Result<()> {
 }
 
 async fn reverse_list_contains(adb: &Path, serial: &str, port: u16) -> bool {
-    let output = adb_args(
-        adb,
-        &["-s", serial, "reverse", "--list"],
-        probe_timeout(),
-    )
-    .await;
+    let output = adb_args(adb, &["-s", serial, "reverse", "--list"], probe_timeout()).await;
     match output {
-        Ok(out) => lighting_host::apk_install::reverse_list_has_port(
-            &combined_output(&out),
-            port,
-        ),
+        Ok(out) => lighting_host::apk_install::reverse_list_has_port(&combined_output(&out), port),
         Err(_) => false,
     }
 }

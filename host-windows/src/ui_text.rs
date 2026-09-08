@@ -167,7 +167,11 @@ pub fn connection_title(running: bool, phase: &str, client_name: &str) -> String
 }
 
 pub fn display_choice_label(index: usize, primary: bool, width: u32, height: u32) -> String {
-    let kind = if primary { "主显示器" } else { "扩展显示器" };
+    let kind = if primary {
+        "主显示器"
+    } else {
+        "扩展显示器"
+    };
     format!("{kind} #{n}  ({width} × {height})", n = index + 1)
 }
 pub fn is_streaming(phase: &str) -> bool {
@@ -270,7 +274,10 @@ pub fn humanize_transport(raw: &str) -> (String, Tone) {
             Tone::Warn,
         )
     } else if raw.contains("未检测") {
-        ("未检测到设备。请检查数据线是否支持传数据".into(), Tone::Warn)
+        (
+            "未检测到设备。请检查数据线是否支持传数据".into(),
+            Tone::Warn,
+        )
     } else {
         (raw.to_string(), Tone::Muted)
     }
@@ -281,7 +288,8 @@ pub fn human_detail_text(phase: &str, detail: &str) -> String {
     if detail.is_empty() {
         return String::new();
     }
-    if phase == "准备虚拟屏" || phase == "仅平板" || phase == "独立第二屏" || phase == "启用驱动" {
+    if phase == "准备虚拟屏" || phase == "仅平板" || phase == "独立第二屏" || phase == "启用驱动"
+    {
         return detail.to_string();
     }
     let lower = detail.to_lowercase();
@@ -336,13 +344,16 @@ pub fn human_vdd_error(raw: &str) -> Option<String> {
 
     let msg = if code_upper.contains("UAC_DENIED") {
         "需要管理员权限才能安装虚拟显示驱动。未提权时请在蓝底 UAC 窗口点「是」；已用管理员运行则不会再弹窗。"
-    } else if code_upper.contains("VDD_BUNDLE_MISSING") || code_upper.contains("BUNDLE_INF_MISSING") {
+    } else if code_upper.contains("VDD_BUNDLE_MISSING") || code_upper.contains("BUNDLE_INF_MISSING")
+    {
         "安装包缺少虚拟显示驱动文件。请从 GitHub 下载最新版 Lighting 便携版/安装包。"
     } else if code_upper.contains("VDD_SCRIPT_MISSING") {
         "虚拟显示驱动安装脚本缺失。请重新下载完整安装包。"
     } else if code_upper.contains("REBOOT_REQUIRED") {
         "Windows 要求重启后才能启用虚拟显示驱动。请保存工作并重启电脑，再开始共享。"
-    } else if code_upper.contains("BUNDLE_FILE_MISSING") || code_upper.contains("BUNDLE_HASH_MISMATCH") {
+    } else if code_upper.contains("BUNDLE_FILE_MISSING")
+        || code_upper.contains("BUNDLE_HASH_MISMATCH")
+    {
         "虚拟显示驱动包缺失或校验失败。请重新下载完整的 Windows x64 安装包。"
     } else if code_upper.contains("DISPLAY_TOPOLOGY_FAILED") {
         "Windows 无法启用扩展桌面。请在本机已登录桌面运行；远程桌面、锁屏或无显示会话可能不支持此操作。"
@@ -491,7 +502,10 @@ mod tests {
             transport_text(true, "未找到 adb · 仅局域网可用（平板填电脑 IP）"),
             "局域网"
         );
-        assert_eq!(transport_text(false, "USB · adb reverse 已就绪"), "自适应优化");
+        assert_eq!(
+            transport_text(false, "USB · adb reverse 已就绪"),
+            "自适应优化"
+        );
     }
 
     #[test]
@@ -563,8 +577,12 @@ mod tests {
             humanize_transport("USB · adb reverse 失败，可改用 Wi-Fi（平板填电脑 IP）").1,
             Tone::Warn
         );
-        assert!(!humanize_transport("USB · adb reverse 失败").0.contains("adb"));
-        assert!(!humanize_transport("未找到 adb · 仅局域网可用").0.contains("adb ·"));
+        assert!(!humanize_transport("USB · adb reverse 失败")
+            .0
+            .contains("adb"));
+        assert!(!humanize_transport("未找到 adb · 仅局域网可用")
+            .0
+            .contains("adb ·"));
     }
 
     #[test]
@@ -582,7 +600,10 @@ mod tests {
             human_detail_text("等待设备", "请在平板上打开 Lighting 并连接"),
             "请在平板点「USB 一键连接」"
         );
-        assert_eq!(human_detail_text("已连接", "192.168.1.105:53812"), "平板已连上");
+        assert_eq!(
+            human_detail_text("已连接", "192.168.1.105:53812"),
+            "平板已连上"
+        );
         assert_eq!(human_detail_text("已连接", "127.0.0.1:53812"), "平板已连上");
         assert_eq!(
             human_detail_text("编码", "avc 1920×1080@60 18000 kbps + 音频 [qcom 硬解]"),
@@ -617,7 +638,9 @@ mod tests {
         assert!(!looks_technical("没有可用显示器"));
         assert!(human_vdd_error("VDD_PIPE_DOWN").unwrap().contains("未响应"));
         assert!(human_vdd_error("REBOOT_REQUIRED").unwrap().contains("重启"));
-        assert!(human_vdd_error("DEVICE_STILL_MISSING").unwrap().contains("虚拟显示设备"));
+        assert!(human_vdd_error("DEVICE_STILL_MISSING")
+            .unwrap()
+            .contains("虚拟显示设备"));
         assert!(human_last_error("VDD_NO_MONITOR").contains("扩展桌面"));
     }
 

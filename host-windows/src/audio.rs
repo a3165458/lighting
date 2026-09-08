@@ -45,7 +45,8 @@ fn capture_loop(tx: SyncSender<AudioPacket>, stop: Arc<AtomicBool>, t0: Instant)
             .ok()
             .context("CoInitializeEx")?;
         let enumerator: IMMDeviceEnumerator =
-            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).context("MMDeviceEnumerator")?;
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+                .context("MMDeviceEnumerator")?;
         let device = enumerator
             .GetDefaultAudioEndpoint(eRender, eConsole)
             .context("GetDefaultAudioEndpoint")?;

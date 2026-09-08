@@ -31,13 +31,15 @@ struct HostInner {
     last_error: String,
     adb_path: String,
     last_poll: Instant,
-    pending_devices: Arc<Mutex<Option<Result<Vec<adb::AdbDevice>, String>>>>,
+    pending_devices: PendingDevices,
     device_refresh_inflight: bool,
     pending_notice: Arc<Mutex<Option<(Tone, String)>>>,
     install_inflight: bool,
     apk_available: bool,
     notice: Option<(Tone, String)>,
 }
+
+type PendingDevices = Arc<Mutex<Option<Result<Vec<adb::AdbDevice>, String>>>>;
 
 impl HostService {
     pub fn new() -> Self {
@@ -189,12 +191,7 @@ impl HostService {
                     .find(|d| d.state == "device")
                     .map(|d| d.serial.clone())
             });
-        let bind_host = g.settings.bind_host.trim();
-        let bind_host = if bind_host.is_empty() {
-            "0.0.0.0"
-        } else {
-            bind_host
-        };
+        let bind_host = lighting_host::view::effective_bind_host(&g.settings.bind_host);
         let bind_port = if g.settings.bind_port == 0 {
             protocol::PORT
         } else {
@@ -345,11 +342,7 @@ impl HostService {
                 return Err(msg);
             }
         };
-        let share_running = g.running
-            || g.status
-                .lock()
-                .ok()
-                .is_some_and(|s| s.running);
+        let share_running = g.running || g.status.lock().ok().is_some_and(|s| s.running);
         if share_running {
             g.stop.store(true, Ordering::Relaxed);
             g.running = false;
@@ -367,7 +360,7 @@ impl HostService {
         let status = g.status.clone();
         let wait_ms = lighting_host::apk_install::install_wait_share_stop_ms();
         self.rt.spawn(async move {
-            let mut share_idle = share_running == false;
+            let mut share_idle = !share_running;
             if share_running {
                 let deadline = tokio::time::Instant::now() + Duration::from_millis(wait_ms);
                 while tokio::time::Instant::now() < deadline {
@@ -563,9 +556,10 @@ impl HostService {
             .is_some_and(|installed| !installed);
         if !missing && !g.install_inflight {
             let session_running = g.status.lock().ok().is_some_and(|s| s.running);
-            let keep_install_result = g.notice.as_ref().is_some_and(|(tone, _)| {
-                matches!(tone, Tone::Ok | Tone::Bad)
-            });
+            let keep_install_result = g
+                .notice
+                .as_ref()
+                .is_some_and(|(tone, _)| matches!(tone, Tone::Ok | Tone::Bad));
             if !session_running && !keep_install_result {
                 g.notice = None;
             }
@@ -629,10 +623,7 @@ fn tone_str(tone: Tone) -> &'static str {
 
 fn usb_hint_locked(g: &HostInner, snap: &SessionStatus) -> (String, Tone) {
     if snap.phase == "错误" && !snap.detail.is_empty() {
-        return (
-            ui_text::human_last_error(&snap.detail),
-            Tone::Bad,
-        );
+        return (ui_text::human_last_error(&snap.detail), Tone::Bad);
     }
     if snap.running || g.running {
         if !snap.detail.is_empty() {

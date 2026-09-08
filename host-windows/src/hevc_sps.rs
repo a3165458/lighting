@@ -112,11 +112,8 @@ impl<'a> Bits<'a> {
 
     fn ue(&mut self) -> Option<u32> {
         let mut leading = 0u32;
-        loop {
-            match self.u(1)? {
-                0 => leading += 1,
-                _ => break,
-            }
+        while self.u(1)? == 0 {
+            leading += 1;
             if leading > 31 {
                 return None;
             }
@@ -302,7 +299,6 @@ fn copy_rest_without_trailing(src: &mut Bits<'_>, dst: &mut Writer) -> Option<()
     Some(())
 }
 
-
 fn copy_st_ref_pic_set(src: &mut Bits<'_>, dst: &mut Writer, idx: u32) -> Option<()> {
     if idx != 0 {
         let inter = src.u(1)?;
@@ -327,11 +323,7 @@ fn copy_st_ref_pic_set(src: &mut Bits<'_>, dst: &mut Writer, idx: u32) -> Option
     Some(())
 }
 
-fn skip_hevc_sub_layer_hrd(
-    src: &mut Bits<'_>,
-    cpb_cnt_minus1: u32,
-    sub_pic: u32,
-) -> Option<()> {
+fn skip_hevc_sub_layer_hrd(src: &mut Bits<'_>, cpb_cnt_minus1: u32, sub_pic: u32) -> Option<()> {
     if cpb_cnt_minus1 > 31 {
         return None;
     }
@@ -397,11 +389,7 @@ fn skip_hevc_hrd(src: &mut Bits<'_>, common: bool, max_sub_layers: u32) -> Optio
     Some(())
 }
 
-fn copy_vui_drop_timing(
-    src: &mut Bits<'_>,
-    dst: &mut Writer,
-    max_sub_layers: u32,
-) -> Option<()> {
+fn copy_vui_drop_timing(src: &mut Bits<'_>, dst: &mut Writer, max_sub_layers: u32) -> Option<()> {
     let ar = src.u(1)?;
     dst.u(1, ar);
     if ar == 1 {
@@ -849,7 +837,10 @@ mod tests {
         let out = rewrite_low_latency(src);
         assert_eq!(sps_general_level(&out), Some(156));
         assert_eq!(parse_dpb(&out), Some((1, 0, 0)));
-        assert_eq!(sps_general_level(&rewrite_low_latency(out.clone())), Some(156));
+        assert_eq!(
+            sps_general_level(&rewrite_low_latency(out.clone())),
+            Some(156)
+        );
     }
 
     #[test]

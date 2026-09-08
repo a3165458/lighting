@@ -127,7 +127,7 @@ Audio PCM：默认 48000 Hz、立体声、16-bit little-endian 交错。
 
 ## 会话顺序
 
-1. 电脑监听 `0.0.0.0:17400`，USB 时再执行 `adb reverse`
+1. 电脑默认监听 `127.0.0.1:17400` 并执行 `adb reverse`；用户明确启用局域网模式时才监听 `0.0.0.0:17400`
 2. 设备连接并发送 Hello
 3. 电脑发送 Config，启动抓屏/编码
 4. 先下发 `FLAG_CODEC_CONFIG` 的 Video，再下发帧（含 `FLAG_KEYFRAME` 的 IDR）

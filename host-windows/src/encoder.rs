@@ -14,19 +14,19 @@ use crate::displays::DisplayInfo;
 use lighting_host::annexb;
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use windows::Win32::Foundation::{
-    CloseHandle, FALSE, HANDLE, HANDLE_FLAGS, HANDLE_FLAG_INHERIT, SetHandleInformation,
+    CloseHandle, SetHandleInformation, FALSE, HANDLE, HANDLE_FLAGS, HANDLE_FLAG_INHERIT,
 };
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
-use windows::Win32::System::Pipes::{CreatePipe, PeekNamedPipe};
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
 };
+use windows::Win32::System::Pipes::{CreatePipe, PeekNamedPipe};
 use windows::Win32::System::Threading::{
-    GetCurrentThread, OpenThread, SetPriorityClass, SetProcessInformation, SetThreadPriority,
-    HIGH_PRIORITY_CLASS, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+    GetCurrentThread, OpenThread, ProcessPowerThrottling, SetPriorityClass, SetProcessInformation,
+    SetThreadPriority, HIGH_PRIORITY_CLASS, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
     PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
-    PROCESS_POWER_THROTTLING_STATE, ProcessPowerThrottling, THREAD_PRIORITY_HIGHEST,
-    THREAD_QUERY_INFORMATION, THREAD_SET_INFORMATION,
+    PROCESS_POWER_THROTTLING_STATE, THREAD_PRIORITY_HIGHEST, THREAD_QUERY_INFORMATION,
+    THREAD_SET_INFORMATION,
 };
 
 pub use lighting_host::annexb::EncodedPacket;
@@ -39,8 +39,7 @@ pub struct EncodeSettings {
     pub height: u32,
     pub fps: u32,
     pub bitrate_kbps: u32,
-    pub codec: String, // "avc" | "hevc"
-    pub encoder: String,
+    pub codec: String,   // "avc" | "hevc"
     pub profile: String, // "main" | "baseline"
     /// False when the tablet paints a local OS pointer overlay.
     pub draw_mouse: bool,
@@ -68,21 +67,6 @@ impl EncoderSession {
             let _ = child.wait();
         }
     }
-
-    /// Kill ffmpeg without blocking the accept loop on `wait()`.
-    pub fn stop_in_background(mut self) {
-        if let Some(flag) = self.boost_stop.take() {
-            flag.store(true, Ordering::Relaxed);
-        }
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = std::thread::Builder::new()
-                .name("lighting-ffmpeg-wait".into())
-                .spawn(move || {
-                    let _ = child.wait();
-                });
-        }
-    }
 }
 
 impl Drop for EncoderSession {
@@ -94,7 +78,12 @@ impl Drop for EncoderSession {
 pub fn find_ffmpeg() -> Result<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(runtime) = std::env::var("LIGHTING_RUNTIME_DIR") {
-        candidates.push(PathBuf::from(&runtime).join("ffmpeg").join("bin").join("ffmpeg.exe"));
+        candidates.push(
+            PathBuf::from(&runtime)
+                .join("ffmpeg")
+                .join("bin")
+                .join("ffmpeg.exe"),
+        );
         candidates.push(PathBuf::from(&runtime).join("ffmpeg.exe"));
     }
     if let Ok(exe) = std::env::current_exe() {
@@ -108,19 +97,6 @@ pub fn find_ffmpeg() -> Result<PathBuf> {
     }
     which::which("ffmpeg")
         .context("找不到 ffmpeg。便携版首次启动会自动下载；也可手动安装并加入 PATH")
-}
-
-pub fn pick_encoder(codec: &str) -> &'static str {
-    // FFmpeg on this machine ships nvenc/qsv/amf; runtime probe happens at spawn.
-    if codec == "hevc" {
-        "hevc_nvenc"
-    } else {
-        "h264_nvenc"
-    }
-}
-
-pub fn encoder_fallback_chain(codec: &str) -> Vec<&'static str> {
-    encoder_fallback_chain_for(codec, 0)
 }
 
 pub fn encoder_fallback_chain_for(codec: &str, vendor_id: u32) -> Vec<&'static str> {
@@ -185,7 +161,9 @@ fn spawn_annexb_pump(
     let (tx, rx) = mpsc::sync_channel(cap);
     thread::spawn(move || {
         raise_thread_priority();
-        if let Err(err) = annexb::pump_annexb_with_available(stdout, tx, hevc, |s| pipe_bytes_available(s)) {
+        if let Err(err) =
+            annexb::pump_annexb_with_available(stdout, tx, hevc, |s| pipe_bytes_available(s))
+        {
             tracing::warn!("encoder pump ended: {err:#}");
         }
     });
@@ -198,7 +176,7 @@ fn spawn_annexb_pump(
 fn ffmpeg_stdout_pipe() -> Result<(std::fs::File, std::fs::File)> {
     let mut read = HANDLE::default();
     let mut write = HANDLE::default();
-    let mut sa = SECURITY_ATTRIBUTES {
+    let sa = SECURITY_ATTRIBUTES {
         nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: std::ptr::null_mut(),
         bInheritHandle: true.into(),

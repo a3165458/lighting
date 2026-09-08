@@ -185,17 +185,11 @@ pub fn simulated_tablet_only_timeline() -> Vec<(&'static str, &'static str)> {
     vec![
         ("等待设备", "正在打开 USB 通道…"),
         ("准备虚拟屏", "正在检查是否已有扩展屏…"),
-        (
-            "准备虚拟屏",
-            "正在启用虚拟显示驱动（可能弹出管理员确认）…",
-        ),
+        ("准备虚拟屏", "正在启用虚拟显示驱动（可能弹出管理员确认）…"),
         ("准备虚拟屏", "正在等待虚拟屏出现…"),
         ("等待设备", "虚拟屏已就绪，正在恢复 USB 通道"),
         ("等待设备", "USB 已就绪，正在打开平板投屏"),
-        (
-            "独立第二屏",
-            "正在把虚拟屏设为平板分辨率 1920×1200",
-        ),
+        ("独立第二屏", "正在把虚拟屏设为平板分辨率 1920×1200"),
         ("仅平板", "正在关闭电脑屏（Win+P 仅第二屏幕）…"),
         ("编码", "正在推流"),
     ]
@@ -207,31 +201,31 @@ mod tests {
 
     #[test]
     fn tablet_only_never_falls_back_to_mirror() {
-        let out = decide_after_virtual_prepare(
-            ShareMode::External,
-            false,
-            "UAC_CANCELLED",
-            false,
-            false,
-        );
+        let out =
+            decide_after_virtual_prepare(ShareMode::External, false, "UAC_CANCELLED", false, false);
         assert!(
             matches!(out, VirtualPrepareOutcome::Abort { .. }),
             "{out:?}"
         );
-        let out = decide_after_virtual_prepare(
-            ShareMode::External,
-            true,
-            "",
-            false,
-            false,
-        );
+        let out = decide_after_virtual_prepare(ShareMode::External, true, "", false, false);
         assert!(matches!(out, VirtualPrepareOutcome::Abort { .. }));
     }
 
     #[test]
     fn extend_failure_preserves_driver_error_without_mirroring() {
-        let out = decide_after_virtual_prepare(ShareMode::Extend, false, "DEVICE_STILL_MISSING", false, false);
-        assert_eq!(out, VirtualPrepareOutcome::Abort { reason: "DEVICE_STILL_MISSING".into() });
+        let out = decide_after_virtual_prepare(
+            ShareMode::Extend,
+            false,
+            "DEVICE_STILL_MISSING",
+            false,
+            false,
+        );
+        assert_eq!(
+            out,
+            VirtualPrepareOutcome::Abort {
+                reason: "DEVICE_STILL_MISSING".into()
+            }
+        );
         assert!(matches!(
             decide_after_virtual_prepare(ShareMode::Extend, true, "", false, true),
             VirtualPrepareOutcome::Abort { .. }
@@ -259,7 +253,6 @@ mod tests {
         assert!(virtual_driver_install_copy(false).contains("用户账户控制"));
     }
 
-
     #[test]
     fn simulated_timeline_never_decides_mirror_for_tablet_only() {
         for (phase, _) in simulated_tablet_only_timeline() {
@@ -269,10 +262,7 @@ mod tests {
                 steps.iter().any(|s| s.id == "blank"),
                 "missing blank step at {phase}"
             );
-            assert!(
-                !steps.iter().any(|s| s.label.contains("镜像")),
-                "{phase}"
-            );
+            assert!(!steps.iter().any(|s| s.label.contains("镜像")), "{phase}");
         }
     }
 
@@ -295,11 +285,17 @@ mod tests {
         assert_eq!(after_enum[1].state, "current");
 
         let blank = activity_steps(ShareMode::External, "仅平板", true);
-        assert_eq!(blank.iter().find(|s| s.id == "blank").unwrap().state, "current");
+        assert_eq!(
+            blank.iter().find(|s| s.id == "blank").unwrap().state,
+            "current"
+        );
 
         let stream = activity_steps(ShareMode::External, "编码", true);
         assert_eq!(stream.last().unwrap().state, "current");
-        assert!(stream.iter().take(stream.len() - 1).all(|s| s.state == "done"));
+        assert!(stream
+            .iter()
+            .take(stream.len() - 1)
+            .all(|s| s.state == "done"));
     }
 
     #[test]

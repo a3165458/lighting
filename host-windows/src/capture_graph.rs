@@ -92,6 +92,7 @@ pub fn dda_source_filter(output_idx: u32, fps: u32, draw_mouse: bool) -> String 
     format!("ddagrab=output_idx={output_idx}:framerate={fps}:draw_mouse={mouse}:dup_frames={dup}")
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn dda_capture_graphs_for(
     dxgi: Option<DxgiCapture>,
     fps: u32,
@@ -113,7 +114,13 @@ pub fn dda_capture_graphs_for(
     dda_encoder_graphs(&dda, scale, dst_w, dst_h, encoder)
 }
 
-fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &str) -> Vec<String> {
+fn dda_encoder_graphs(
+    dda: &str,
+    scale: bool,
+    dst_w: u32,
+    dst_h: u32,
+    encoder: &str,
+) -> Vec<String> {
     let mut graphs = Vec::new();
     if encoder.contains("nvenc") {
         // ffmpeg vf_scale_d3d11.c hardcodes initial_pool_size = 10 and
@@ -229,9 +236,7 @@ fn dda_encoder_graphs(dda: &str, scale: bool, dst_w: u32, dst_h: u32, encoder: &
             "{dda},hwmap=derive_device=amf:extra_hw_frames=0,{vpp}:extra_hw_frames=0"
         ));
         if !scale {
-            graphs.push(format!(
-                "{dda},hwmap=derive_device=d3d11:extra_hw_frames=0"
-            ));
+            graphs.push(format!("{dda},hwmap=derive_device=d3d11:extra_hw_frames=0"));
             graphs.push(format!("{dda},format=d3d11"));
         }
     }
@@ -287,7 +292,19 @@ mod tests {
 
     #[test]
     fn identity_skips_cpu_scale() {
-        let graphs = dda_capture_graphs(Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0 }), 60, 1920, 1080, 1920, 1080, "libx264");
+        let graphs = dda_capture_graphs(
+            Some(DxgiCapture {
+                adapter_index: 0,
+                output_index: 0,
+                vendor_id: 0,
+            }),
+            60,
+            1920,
+            1080,
+            1920,
+            1080,
+            "libx264",
+        );
         assert_eq!(graphs.len(), 1);
         assert!(!graphs[0].contains("scale="));
         assert!(graphs[0].contains("yuv420p"));
@@ -295,7 +312,19 @@ mod tests {
 
     #[test]
     fn cpu_scale_uses_bilinear_not_fast() {
-        let graphs = dda_capture_graphs(Some(DxgiCapture { adapter_index: 0, output_index: 1, vendor_id: 0 }), 60, 2560, 1440, 1920, 1080, "libx264");
+        let graphs = dda_capture_graphs(
+            Some(DxgiCapture {
+                adapter_index: 0,
+                output_index: 1,
+                vendor_id: 0,
+            }),
+            60,
+            2560,
+            1440,
+            1920,
+            1080,
+            "libx264",
+        );
         let cpu = graphs.last().unwrap();
         assert!(cpu.contains("flags=bilinear"));
         assert!(!cpu.contains("fast_bilinear"));
@@ -303,7 +332,11 @@ mod tests {
 
     #[test]
     fn nvenc_prefers_cuda_before_d3d11_pool() {
-        let capture = DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x10DE };
+        let capture = DxgiCapture {
+            adapter_index: 0,
+            output_index: 0,
+            vendor_id: 0x10DE,
+        };
         let graphs = dda_capture_graphs(Some(capture), 60, 2560, 1440, 1920, 1080, "h264_nvenc");
         assert!(graphs.len() >= 3);
         // Resize: scale_d3d11 always succeeds with a 10-frame GPU pool, so
@@ -312,20 +345,37 @@ mod tests {
         assert!(graphs[0].contains("hwmap=derive_device=cuda:reverse=1:extra_hw_frames=0"));
         assert!(!graphs[0].contains("mode=direct"));
         assert!(graphs[0].contains("scale_cuda=1920:1080:format=nv12"));
-        let extra1 = graphs.iter().position(|g| g.contains("hwmap=derive_device=cuda:reverse=1:extra_hw_frames=1")).expect("cuda extra=1 reverse");
-        let direct = graphs.iter().position(|g| g.contains("hwmap=derive_device=cuda:mode=direct")).expect("cuda mode=direct");
-        assert!(extra1 < direct, "mode=direct 8-pool must not precede extra=1 reverse");
+        let extra1 = graphs
+            .iter()
+            .position(|g| g.contains("hwmap=derive_device=cuda:reverse=1:extra_hw_frames=1"))
+            .expect("cuda extra=1 reverse");
+        let direct = graphs
+            .iter()
+            .position(|g| g.contains("hwmap=derive_device=cuda:mode=direct"))
+            .expect("cuda mode=direct");
+        assert!(
+            extra1 < direct,
+            "mode=direct 8-pool must not precede extra=1 reverse"
+        );
         assert!(!graphs[0].contains("scale_d3d11"));
         assert!(!graphs.iter().any(|g| g.contains("hwupload_cuda")));
         assert!(!graphs.iter().any(|g| g.contains("scale_d3d11")));
-        let cuda_at = graphs.iter().position(|g| g.contains("scale_cuda")).unwrap();
-        let cpu_at = graphs.iter().position(|g| g.contains("hwdownload")).unwrap();
+        let cuda_at = graphs
+            .iter()
+            .position(|g| g.contains("scale_cuda"))
+            .unwrap();
+        let cpu_at = graphs
+            .iter()
+            .position(|g| g.contains("hwdownload"))
+            .unwrap();
         assert!(cuda_at < cpu_at);
         assert!(graphs.iter().any(|g| {
             g.contains("hwmap=derive_device=cuda:extra_hw_frames=0") && !g.contains("mode=direct")
         }));
         // Unkeyed CUDA hwmap is the 16-frame default pool — never emit it.
-        assert!(!graphs.iter().any(|g| g.contains("derive_device=cuda") && !g.contains("extra_hw_frames")));
+        assert!(!graphs
+            .iter()
+            .any(|g| g.contains("derive_device=cuda") && !g.contains("extra_hw_frames")));
         assert_eq!(
             extra_hw_device_args(capture, &graphs[0]),
             ["-init_hw_device", "cuda=cuda@capture"]
@@ -341,26 +391,54 @@ mod tests {
     #[test]
     fn qsv_prefers_hwmap_before_upload() {
         let graphs = dda_capture_graphs(
-            Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x8086 }),
-            60, 1920, 1080, 1920, 1080, "h264_qsv",
+            Some(DxgiCapture {
+                adapter_index: 0,
+                output_index: 0,
+                vendor_id: 0x8086,
+            }),
+            60,
+            1920,
+            1080,
+            1920,
+            1080,
+            "h264_qsv",
         );
         // reverse=1 extra=0 is the 2-surface QSV pool. mode=direct derived
         // inherits ddagrab's 8-pool and must not win first.
         assert!(graphs[0].contains("hwmap=derive_device=qsv:reverse=1:extra_hw_frames=0"));
         assert!(!graphs[0].contains("mode=direct"));
         assert!(graphs[0].contains("scale_qsv=format=nv12:extra_hw_frames=0"));
-        let extra1 = graphs.iter().position(|g| g.contains("hwmap=derive_device=qsv:reverse=1:extra_hw_frames=1")).expect("qsv extra=1 reverse");
-        let direct = graphs.iter().position(|g| g.contains("hwmap=derive_device=qsv:mode=direct")).expect("qsv mode=direct");
-        assert!(extra1 < direct, "mode=direct 8-pool must not precede extra=1 reverse");
+        let extra1 = graphs
+            .iter()
+            .position(|g| g.contains("hwmap=derive_device=qsv:reverse=1:extra_hw_frames=1"))
+            .expect("qsv extra=1 reverse");
+        let direct = graphs
+            .iter()
+            .position(|g| g.contains("hwmap=derive_device=qsv:mode=direct"))
+            .expect("qsv mode=direct");
+        assert!(
+            extra1 < direct,
+            "mode=direct 8-pool must not precede extra=1 reverse"
+        );
         assert!(!graphs[0].contains("w=1920"));
         assert!(!graphs[0].contains("h=1080"));
         assert!(!graphs.iter().any(|g| g.contains("hwupload")));
-        assert!(!graphs.iter().any(|g| g.contains("derive_device=qsv") && !g.contains("extra_hw_frames")));
-        assert!(graphs.iter().any(|g| g.contains("hwmap=derive_device=qsv:mode=direct:extra_hw_frames=0")));
+        assert!(!graphs
+            .iter()
+            .any(|g| g.contains("derive_device=qsv") && !g.contains("extra_hw_frames")));
+        assert!(graphs
+            .iter()
+            .any(|g| g.contains("hwmap=derive_device=qsv:mode=direct:extra_hw_frames=0")));
         assert!(graphs.iter().any(|g| {
-            g.contains("hwmap=derive_device=qsv:extra_hw_frames=0") && !g.contains("mode=direct") && !g.contains("reverse=1")
+            g.contains("hwmap=derive_device=qsv:extra_hw_frames=0")
+                && !g.contains("mode=direct")
+                && !g.contains("reverse=1")
         }));
-        let cap = DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x8086 };
+        let cap = DxgiCapture {
+            adapter_index: 0,
+            output_index: 0,
+            vendor_id: 0x8086,
+        };
         assert_eq!(
             extra_hw_device_args(cap, &graphs[0]),
             ["-init_hw_device", "qsv=qsv@capture"]
@@ -371,8 +449,17 @@ mod tests {
     #[test]
     fn identity_nvenc_skips_d3d11_resize() {
         let same = dda_capture_graphs(
-            Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x10DE }),
-            60, 1920, 1080, 1920, 1080, "h264_nvenc",
+            Some(DxgiCapture {
+                adapter_index: 0,
+                output_index: 0,
+                vendor_id: 0x10DE,
+            }),
+            60,
+            1920,
+            1080,
+            1920,
+            1080,
+            "h264_nvenc",
         );
         // Identity: reverse hwmap is the only path that applies
         // extra_hw_frames (pool = 2 + extra). mode=direct derived does not.
@@ -381,23 +468,56 @@ mod tests {
         assert!(!same[0].contains("scale_d3d11"));
         assert!(!same[0].contains("scale_cuda"));
         assert!(!same[0].contains("derive_device"));
-        let extra1 = same.iter().position(|g| g.contains("hwmap=reverse=1:extra_hw_frames=1")).expect("extra=1 reverse");
-        let extra2 = same.iter().position(|g| g.contains("hwmap=reverse=1:extra_hw_frames=2")).expect("extra=2 reverse");
-        let raw = same.iter().position(|g| g.starts_with("ddagrab=") && !g.contains("hwmap")).expect("raw dda");
-        assert!(extra1 < raw && extra2 < raw, "raw 8-pool must not precede extra=1/2 reverse");
+        let extra1 = same
+            .iter()
+            .position(|g| g.contains("hwmap=reverse=1:extra_hw_frames=1"))
+            .expect("extra=1 reverse");
+        let extra2 = same
+            .iter()
+            .position(|g| g.contains("hwmap=reverse=1:extra_hw_frames=2"))
+            .expect("extra=2 reverse");
+        let raw = same
+            .iter()
+            .position(|g| g.starts_with("ddagrab=") && !g.contains("hwmap"))
+            .expect("raw dda");
+        assert!(
+            extra1 < raw && extra2 < raw,
+            "raw 8-pool must not precede extra=1/2 reverse"
+        );
         assert!(extra_hw_device_args(
-            DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x10DE },
+            DxgiCapture {
+                adapter_index: 0,
+                output_index: 0,
+                vendor_id: 0x10DE
+            },
             &same[0],
-        ).is_empty());
+        )
+        .is_empty());
         let cuda_at = same.iter().position(|g| g.contains("scale_cuda")).unwrap();
         let cpu_at = same.iter().position(|g| g.contains("hwdownload")).unwrap();
-        assert!(cuda_at < cpu_at, "BGRA reject must try CUDA before CPU download");
+        assert!(
+            cuda_at < cpu_at,
+            "BGRA reject must try CUDA before CPU download"
+        );
         assert!(!same.iter().any(|g| g.contains("scale_d3d11")));
-        assert!(same.iter().any(|g| g.contains("scale_cuda=format=nv12") && !g.contains("1920:1080")));
-        assert!(!same.iter().any(|g| g.contains("derive_device=cuda") && !g.contains("extra_hw_frames")));
+        assert!(same
+            .iter()
+            .any(|g| g.contains("scale_cuda=format=nv12") && !g.contains("1920:1080")));
+        assert!(!same
+            .iter()
+            .any(|g| g.contains("derive_device=cuda") && !g.contains("extra_hw_frames")));
         let scaled = dda_capture_graphs(
-            Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x10DE }),
-            60, 2560, 1440, 1920, 1080, "h264_nvenc",
+            Some(DxgiCapture {
+                adapter_index: 0,
+                output_index: 0,
+                vendor_id: 0x10DE,
+            }),
+            60,
+            2560,
+            1440,
+            1920,
+            1080,
+            "h264_nvenc",
         );
         assert!(scaled[0].contains("hwmap=derive_device=cuda:reverse=1:extra_hw_frames=0"));
         assert!(!scaled[0].contains("mode=direct"));
@@ -408,8 +528,17 @@ mod tests {
     #[test]
     fn identity_qsv_skips_vpp_resize() {
         let scaled = dda_capture_graphs(
-            Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x8086 }),
-            60, 2560, 1440, 1920, 1080, "h264_qsv",
+            Some(DxgiCapture {
+                adapter_index: 0,
+                output_index: 0,
+                vendor_id: 0x8086,
+            }),
+            60,
+            2560,
+            1440,
+            1920,
+            1080,
+            "h264_qsv",
         );
         assert!(scaled[0].contains("hwmap=derive_device=qsv:reverse=1:extra_hw_frames=0"));
         assert!(scaled[0].contains("scale_qsv=w=1920:h=1080:format=nv12:extra_hw_frames=0"));
@@ -418,8 +547,17 @@ mod tests {
     #[test]
     fn amf_identity_stays_on_d3d11() {
         let graphs = dda_capture_graphs(
-            Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x1002 }),
-            60, 1920, 1080, 1920, 1080, "h264_amf",
+            Some(DxgiCapture {
+                adapter_index: 0,
+                output_index: 0,
+                vendor_id: 0x1002,
+            }),
+            60,
+            1920,
+            1080,
+            1920,
+            1080,
+            "h264_amf",
         );
         // Identity: reverse hwmap is the only path that applies
         // extra_hw_frames (pool = 2 + extra). mode=direct derived does not.
@@ -428,26 +566,48 @@ mod tests {
         assert!(!graphs[0].contains("derive_device"));
         assert!(!graphs[0].contains("hwupload"));
         assert!(!graphs[0].contains("hwdownload"));
-        let extra1 = graphs.iter().position(|g| g.contains("hwmap=reverse=1:extra_hw_frames=1")).expect("extra=1 reverse");
-        let raw = graphs.iter().position(|g| g.starts_with("ddagrab=") && !g.contains("hwmap")).expect("raw dda");
+        let extra1 = graphs
+            .iter()
+            .position(|g| g.contains("hwmap=reverse=1:extra_hw_frames=1"))
+            .expect("extra=1 reverse");
+        let raw = graphs
+            .iter()
+            .position(|g| g.starts_with("ddagrab=") && !g.contains("hwmap"))
+            .expect("raw dda");
         assert!(extra1 < raw, "raw 8-pool must not precede extra=1 reverse");
-        assert!(graphs.iter().any(|g| g.contains("hwmap=derive_device=d3d11:extra_hw_frames=0")));
-        assert!(!graphs.iter().any(|g| g.contains("hwmap=derive_device=d3d11") && !g.contains("extra_hw_frames")));
+        assert!(graphs
+            .iter()
+            .any(|g| g.contains("hwmap=derive_device=d3d11:extra_hw_frames=0")));
+        assert!(!graphs
+            .iter()
+            .any(|g| g.contains("hwmap=derive_device=d3d11") && !g.contains("extra_hw_frames")));
         assert!(graphs.iter().any(|g| g.contains("format=d3d11")));
         assert!(!graphs.iter().any(|g| g.contains("hwupload")));
         // BGRA reject must try GPU NV12 before CPU download (NVENC CUDA analog).
         assert!(graphs.iter().any(|g| {
             g.contains("vpp_amf=format=nv12") && !g.contains("w=") && !g.contains("h=")
         }));
-        assert!(graphs.iter().any(|g| {
-            g.contains("hwmap=derive_device=amf:mode=direct:extra_hw_frames=0")
-        }));
+        assert!(graphs
+            .iter()
+            .any(|g| { g.contains("hwmap=derive_device=amf:mode=direct:extra_hw_frames=0") }));
         let amf_vpp = graphs.iter().position(|g| g.contains("vpp_amf")).unwrap();
-        let cpu_at = graphs.iter().position(|g| g.contains("hwdownload")).unwrap();
+        let cpu_at = graphs
+            .iter()
+            .position(|g| g.contains("hwdownload"))
+            .unwrap();
         assert!(amf_vpp < cpu_at);
         let scaled = dda_capture_graphs(
-            Some(DxgiCapture { adapter_index: 0, output_index: 0, vendor_id: 0x1002 }),
-            60, 2560, 1440, 1920, 1080, "h264_amf",
+            Some(DxgiCapture {
+                adapter_index: 0,
+                output_index: 0,
+                vendor_id: 0x1002,
+            }),
+            60,
+            2560,
+            1440,
+            1920,
+            1080,
+            "h264_amf",
         );
         assert!(scaled[0].contains("hwmap=derive_device=amf:reverse=1:extra_hw_frames=0"));
         assert!(!scaled[0].contains("mode=direct"));
@@ -456,7 +616,11 @@ mod tests {
             g.contains("hwmap=derive_device=amf:extra_hw_frames=0") && !g.contains("mode=direct")
         }));
         assert!(!scaled.iter().any(|g| g.contains("scale_d3d11")));
-        let cap = DxgiCapture { adapter_index: 1, output_index: 0, vendor_id: 0x1002 };
+        let cap = DxgiCapture {
+            adapter_index: 1,
+            output_index: 0,
+            vendor_id: 0x1002,
+        };
         assert_eq!(
             extra_hw_device_args(cap, &scaled[0]),
             ["-init_hw_device", "amf=amf@capture"]
@@ -484,10 +648,17 @@ mod tests {
         };
         assert_eq!(
             capture.device_args(),
-            ["-init_hw_device", "d3d11va=capture:1", "-filter_hw_device", "capture"]
+            [
+                "-init_hw_device",
+                "d3d11va=capture:1",
+                "-filter_hw_device",
+                "capture"
+            ]
         );
         let graphs = dda_capture_graphs(Some(capture), 60, 1920, 1080, 1920, 1080, "libx264");
-        assert!(graphs.iter().all(|g| g.starts_with("ddagrab=output_idx=3:")));
+        assert!(graphs
+            .iter()
+            .all(|g| g.starts_with("ddagrab=output_idx=3:")));
     }
 
     #[test]
@@ -499,8 +670,18 @@ mod tests {
         assert!(dda_source_filter(1, 60, false).contains("draw_mouse=0"));
         assert!(!filter.contains("allow_tearing"));
         let graphs = dda_capture_graphs_for(
-            Some(DxgiCapture { adapter_index: 0, output_index: 1, vendor_id: 0 }),
-            60, 1920, 1080, 1920, 1080, "h264_nvenc", true,
+            Some(DxgiCapture {
+                adapter_index: 0,
+                output_index: 1,
+                vendor_id: 0,
+            }),
+            60,
+            1920,
+            1080,
+            1920,
+            1080,
+            "h264_nvenc",
+            true,
         );
         assert!(graphs.iter().all(|g| !g.contains("allow_tearing")));
         assert!(graphs.iter().all(|g| g.contains("output_idx=1")));
@@ -514,9 +695,20 @@ mod tests {
         assert_eq!(
             gdigrab_input_args(-1280, -720, 1280, 720, 60, true),
             [
-                "-f", "gdigrab", "-framerate", "60", "-offset_x", "-1280",
-                "-offset_y", "-720", "-video_size", "1280x720", "-draw_mouse",
-                "1", "-i", "desktop",
+                "-f",
+                "gdigrab",
+                "-framerate",
+                "60",
+                "-offset_x",
+                "-1280",
+                "-offset_y",
+                "-720",
+                "-video_size",
+                "1280x720",
+                "-draw_mouse",
+                "1",
+                "-i",
+                "desktop",
             ]
         );
     }

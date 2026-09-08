@@ -97,11 +97,26 @@ pub fn install(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
     style.visuals = visuals;
     style.text_styles = [
-        (egui::TextStyle::Heading, FontId::new(20.0, FontFamily::Proportional)),
-        (egui::TextStyle::Body, FontId::new(13.0, FontFamily::Proportional)),
-        (egui::TextStyle::Button, FontId::new(13.0, FontFamily::Proportional)),
-        (egui::TextStyle::Small, FontId::new(11.0, FontFamily::Proportional)),
-        (egui::TextStyle::Monospace, FontId::new(11.5, FontFamily::Monospace)),
+        (
+            egui::TextStyle::Heading,
+            FontId::new(20.0, FontFamily::Proportional),
+        ),
+        (
+            egui::TextStyle::Body,
+            FontId::new(13.0, FontFamily::Proportional),
+        ),
+        (
+            egui::TextStyle::Button,
+            FontId::new(13.0, FontFamily::Proportional),
+        ),
+        (
+            egui::TextStyle::Small,
+            FontId::new(11.0, FontFamily::Proportional),
+        ),
+        (
+            egui::TextStyle::Monospace,
+            FontId::new(11.5, FontFamily::Monospace),
+        ),
     ]
     .into();
     style.spacing.item_spacing = Vec2::new(8.0, 8.0);
@@ -237,13 +252,23 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, enabled: bool) -> egui::Response
         Color32::from_rgb(0xF6, 0xF5, 0xFA)
     };
     // Soft knob shadow for depth matching the mockup.
-    painter.circle_filled(Pos2::new(cx, rect.center().y + 0.6), 10.2, Color32::from_black_alpha(18));
+    painter.circle_filled(
+        Pos2::new(cx, rect.center().y + 0.6),
+        10.2,
+        Color32::from_black_alpha(18),
+    );
     painter.circle_filled(Pos2::new(cx, rect.center().y), 10.0, knob);
     response
 }
 
 /// Horizontal purple gradient used by the primary share button.
-pub fn paint_h_gradient(painter: &egui::Painter, rect: Rect, left: Color32, right: Color32, radius: u8) {
+pub fn paint_h_gradient(
+    painter: &egui::Painter,
+    rect: Rect,
+    left: Color32,
+    right: Color32,
+    radius: u8,
+) {
     const STEPS: i32 = 28;
     let w = rect.width();
     for i in 0..STEPS {
@@ -326,7 +351,8 @@ pub fn paint_glyph(painter: &egui::Painter, rect: Rect, g: Glyph, color: Color32
     let w = r.width();
     match g {
         Glyph::Monitor => {
-            let screen = Rect::from_min_max(r.left_top(), Pos2::new(r.right(), r.bottom() - w * 0.2));
+            let screen =
+                Rect::from_min_max(r.left_top(), Pos2::new(r.right(), r.bottom() - w * 0.2));
             painter.rect_stroke(screen, CornerRadius::same(2), s, StrokeKind::Inside);
             painter.line_segment(
                 [
@@ -335,12 +361,19 @@ pub fn paint_glyph(painter: &egui::Painter, rect: Rect, g: Glyph, color: Color32
                 ],
                 s,
             );
-            painter.line_segment([Pos2::new(c.x, screen.bottom()), Pos2::new(c.x, r.bottom())], s);
+            painter.line_segment(
+                [Pos2::new(c.x, screen.bottom()), Pos2::new(c.x, r.bottom())],
+                s,
+            );
         }
         Glyph::Gauge => {
             // Landscape image / 画质.
             painter.rect_stroke(r, CornerRadius::same(2), s, StrokeKind::Inside);
-            painter.circle_filled(Pos2::new(r.left() + w * 0.30, r.top() + w * 0.32), w * 0.08, color);
+            painter.circle_filled(
+                Pos2::new(r.left() + w * 0.30, r.top() + w * 0.32),
+                w * 0.08,
+                color,
+            );
             painter.add(PathShape::convex_polygon(
                 vec![
                     Pos2::new(r.left() + w * 0.12, r.bottom() - w * 0.18),
@@ -386,8 +419,16 @@ pub fn paint_glyph(painter: &egui::Painter, rect: Rect, g: Glyph, color: Color32
             painter.add(PathShape::line(points, s));
         }
         Glyph::Route => {
-            painter.circle_stroke(Pos2::new(r.left() + w * 0.18, r.bottom() - w * 0.18), w * 0.16, s);
-            painter.circle_stroke(Pos2::new(r.right() - w * 0.18, r.top() + w * 0.18), w * 0.16, s);
+            painter.circle_stroke(
+                Pos2::new(r.left() + w * 0.18, r.bottom() - w * 0.18),
+                w * 0.16,
+                s,
+            );
+            painter.circle_stroke(
+                Pos2::new(r.right() - w * 0.18, r.top() + w * 0.18),
+                w * 0.16,
+                s,
+            );
             painter.line_segment(
                 [
                     Pos2::new(r.left() + w * 0.18, r.bottom() - w * 0.4),
@@ -404,12 +445,20 @@ pub fn paint_glyph(painter: &egui::Painter, rect: Rect, g: Glyph, color: Color32
             );
         }
         Glyph::Chip => {
-            painter.rect_stroke(r.shrink(w * 0.16), CornerRadius::same(2), s, StrokeKind::Inside);
+            painter.rect_stroke(
+                r.shrink(w * 0.16),
+                CornerRadius::same(2),
+                s,
+                StrokeKind::Inside,
+            );
             for i in 0..2 {
                 let x = r.left() + w * (0.36 + 0.28 * i as f32);
                 painter.line_segment([Pos2::new(x, r.top()), Pos2::new(x, r.top() + w * 0.16)], s);
                 painter.line_segment(
-                    [Pos2::new(x, r.bottom() - w * 0.16), Pos2::new(x, r.bottom())],
+                    [
+                        Pos2::new(x, r.bottom() - w * 0.16),
+                        Pos2::new(x, r.bottom()),
+                    ],
                     s,
                 );
             }
@@ -496,8 +545,22 @@ pub fn paint_glyph(painter: &egui::Painter, rect: Rect, g: Glyph, color: Color32
                 Pos2::new(r.left() + w * 0.1, c.y + w * 0.14),
             ];
             painter.add(PathShape::convex_polygon(points, color, Stroke::NONE));
-            arc(painter, Pos2::new(r.left() + w * 0.52, c.y), w * 0.24, -1.0, 1.0, s);
-            arc(painter, Pos2::new(r.left() + w * 0.52, c.y), w * 0.42, -1.0, 1.0, s);
+            arc(
+                painter,
+                Pos2::new(r.left() + w * 0.52, c.y),
+                w * 0.24,
+                -1.0,
+                1.0,
+                s,
+            );
+            arc(
+                painter,
+                Pos2::new(r.left() + w * 0.52, c.y),
+                w * 0.42,
+                -1.0,
+                1.0,
+                s,
+            );
         }
         Glyph::Gear => {
             painter.circle_stroke(c, w * 0.24, s);
@@ -548,7 +611,10 @@ pub fn paint_glyph(painter: &egui::Painter, rect: Rect, g: Glyph, color: Color32
             arc(painter, base, w * 0.68, -2.36, -0.78, s);
         }
         Glyph::Plug => {
-            painter.line_segment([Pos2::new(c.x, r.bottom()), Pos2::new(c.x, c.y + w * 0.08)], s);
+            painter.line_segment(
+                [Pos2::new(c.x, r.bottom()), Pos2::new(c.x, c.y + w * 0.08)],
+                s,
+            );
             painter.rect_stroke(
                 Rect::from_min_max(
                     Pos2::new(c.x - w * 0.24, c.y - w * 0.16),
@@ -665,7 +731,11 @@ fn paint_hero_devices(painter: &egui::Painter, rect: Rect) {
         CornerRadius::same(11),
         Color32::from_rgba_unmultiplied(0x73, 0x57, 0xFA, 28),
     );
-    painter.rect_filled(laptop, CornerRadius::same(10), Color32::from_rgb(0xC5, 0xC7, 0xD8));
+    painter.rect_filled(
+        laptop,
+        CornerRadius::same(10),
+        Color32::from_rgb(0xC5, 0xC7, 0xD8),
+    );
     painter.rect_stroke(
         laptop,
         CornerRadius::same(10),
@@ -684,7 +754,11 @@ fn paint_hero_devices(painter: &egui::Painter, rect: Rect) {
         Pos2::new(laptop.left(), laptop.bottom() + 2.0),
         Vec2::new(laptop.width() + 8.0, h * 0.05),
     );
-    painter.rect_filled(base, CornerRadius::same(3), Color32::from_rgb(0xB0, 0xB2, 0xC4));
+    painter.rect_filled(
+        base,
+        CornerRadius::same(3),
+        Color32::from_rgb(0xB0, 0xB2, 0xC4),
+    );
     painter.rect_filled(
         Rect::from_center_size(
             Pos2::new(laptop.center().x, base.center().y),

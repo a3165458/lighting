@@ -79,7 +79,6 @@ impl ShareMode {
     pub fn blanks_pc_monitor(self) -> bool {
         matches!(self, ShareMode::External)
     }
-
 }
 
 /// Pick an active monitor for `mode`; extension must not select the physical primary.
@@ -164,15 +163,24 @@ mod share_mode_tests {
             None
         );
         let only_pc = [(true, false)];
-        assert_eq!(pick_share_target_index(&only_pc, ShareMode::Mirror), Some(0));
+        assert_eq!(
+            pick_share_target_index(&only_pc, ShareMode::Mirror),
+            Some(0)
+        );
         assert_eq!(pick_share_target_index(&only_pc, ShareMode::Extend), None);
         assert_eq!(pick_share_target_index(&only_pc, ShareMode::External), None);
     }
 
     #[test]
     fn virtual_display_heuristics() {
-        assert!(looks_virtual_display(r"\\.\DISPLAY2", "Virtual Display Driver"));
-        assert!(!looks_virtual_display(r"\\.\DISPLAY1", "Generic PnP Monitor"));
+        assert!(looks_virtual_display(
+            r"\\.\DISPLAY2",
+            "Virtual Display Driver"
+        ));
+        assert!(!looks_virtual_display(
+            r"\\.\DISPLAY1",
+            "Generic PnP Monitor"
+        ));
     }
 }
 
@@ -294,11 +302,22 @@ impl Default for Settings {
             touch_relay: true,
             keyboard_relay: true,
             clipboard_share: false,
-            bind_host: "0.0.0.0".into(),
+            // USB uses adb reverse into loopback. Keep desktop frames off the
+            // LAN unless the user explicitly enables LAN mode in Advanced.
+            bind_host: "127.0.0.1".into(),
             bind_port: 17400,
             show_advanced: false,
             show_about: false,
         }
+    }
+}
+
+pub fn effective_bind_host(configured: &str) -> &str {
+    let configured = configured.trim();
+    if configured.is_empty() {
+        "127.0.0.1"
+    } else {
+        configured
     }
 }
 
@@ -332,29 +351,21 @@ pub fn render(ctx: &egui::Context, snap: &Snapshot, settings: &mut Settings) -> 
         .show(ctx, |ui| status_strip(ui, snap));
 
     egui::TopBottomPanel::bottom("action_bar")
-        .frame(
-            egui::Frame::new()
-                .fill(theme::BG)
-                .inner_margin(Margin {
-                    left: SIDE,
-                    right: SIDE,
-                    top: 8,
-                    bottom: 8,
-                }),
-        )
+        .frame(egui::Frame::new().fill(theme::BG).inner_margin(Margin {
+            left: SIDE,
+            right: SIDE,
+            top: 8,
+            bottom: 8,
+        }))
         .show(ctx, |ui| action_bar(ui, snap, settings, &mut actions));
 
     egui::CentralPanel::default()
-        .frame(
-            egui::Frame::new()
-                .fill(theme::BG)
-                .inner_margin(Margin {
-                    left: SIDE,
-                    right: SIDE,
-                    top: 8,
-                    bottom: 8,
-                }),
-        )
+        .frame(egui::Frame::new().fill(theme::BG).inner_margin(Margin {
+            left: SIDE,
+            right: SIDE,
+            top: 8,
+            bottom: 8,
+        }))
         .show(ctx, |ui| {
             egui::ScrollArea::vertical()
                 .auto_shrink([false; 2])
@@ -406,7 +417,7 @@ fn title_bar(ctx: &egui::Context) {
             ui.painter().hline(
                 full.x_range(),
                 full.bottom() - 0.5,
-                egui::Stroke::new(1.0, theme::CARD_LINE),
+                egui::Stroke::new(1.0_f32, theme::CARD_LINE),
             );
             let strip_w = BTN_W * 3.0;
             let strip = Rect::from_min_max(
@@ -414,11 +425,13 @@ fn title_bar(ctx: &egui::Context) {
                 full.right_bottom(),
             );
             let drag = Rect::from_min_max(full.left_top(), Pos2::new(strip.left(), full.bottom()));
-            let drag_resp =
-                ui.interact(drag, ui.id().with("title_drag"), egui::Sense::click_and_drag());
+            let drag_resp = ui.interact(
+                drag,
+                ui.id().with("title_drag"),
+                egui::Sense::click_and_drag(),
+            );
             if drag_resp.drag_started() {
-                ui.ctx()
-                    .send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
             }
 
             // Branding on the left — capped so it never runs under the buttons.
@@ -427,12 +440,7 @@ fn title_bar(ctx: &egui::Context) {
                     let (mark, _) = ui.allocate_exact_size(Vec2::splat(20.0), egui::Sense::hover());
                     ui.painter()
                         .rect_filled(mark, egui::CornerRadius::same(6), theme::ACCENT);
-                    theme::paint_glyph(
-                        ui.painter(),
-                        mark.shrink(4.0),
-                        Glyph::Bolt,
-                        Color32::WHITE,
-                    );
+                    theme::paint_glyph(ui.painter(), mark.shrink(4.0), Glyph::Bolt, Color32::WHITE);
                     ui.add_space(6.0);
                     ui.label(
                         egui::RichText::new("Lighting 副屏")
@@ -523,7 +531,7 @@ fn caption_btn(ui: &mut egui::Ui, rect: Rect, icon: CaptionIcon) -> egui::Respon
 
 fn paint_caption_icon(painter: &egui::Painter, rect: Rect, icon: CaptionIcon, color: Color32) {
     let c = rect.center();
-    let stroke = egui::Stroke::new(1.25, color);
+    let stroke = egui::Stroke::new(1.25_f32, color);
     match icon {
         CaptionIcon::Minimize => {
             let half = 5.0;
@@ -534,7 +542,12 @@ fn paint_caption_icon(painter: &egui::Painter, rect: Rect, icon: CaptionIcon, co
         }
         CaptionIcon::Maximize => {
             let r = Rect::from_center_size(c, Vec2::splat(10.0));
-            painter.rect_stroke(r, egui::CornerRadius::ZERO, stroke, egui::StrokeKind::Outside);
+            painter.rect_stroke(
+                r,
+                egui::CornerRadius::ZERO,
+                stroke,
+                egui::StrokeKind::Outside,
+            );
         }
         CaptionIcon::Restore => {
             // Two overlapping squares, matching the Win11 restore glyph.
@@ -546,9 +559,19 @@ fn paint_caption_icon(painter: &egui::Painter, rect: Rect, icon: CaptionIcon, co
                 Pos2::new(c.x - 5.5, c.y - 2.0),
                 Pos2::new(c.x + 2.0, c.y + 5.5),
             );
-            painter.rect_stroke(back, egui::CornerRadius::ZERO, stroke, egui::StrokeKind::Outside);
+            painter.rect_stroke(
+                back,
+                egui::CornerRadius::ZERO,
+                stroke,
+                egui::StrokeKind::Outside,
+            );
             painter.rect_filled(front, egui::CornerRadius::ZERO, Color32::WHITE);
-            painter.rect_stroke(front, egui::CornerRadius::ZERO, stroke, egui::StrokeKind::Outside);
+            painter.rect_stroke(
+                front,
+                egui::CornerRadius::ZERO,
+                stroke,
+                egui::StrokeKind::Outside,
+            );
         }
         CaptionIcon::Close => {
             let half = 4.5;
@@ -611,9 +634,17 @@ fn hero(ui: &mut egui::Ui) {
             Vec2::splat(26.0),
         );
         let p = ui.painter().with_clip_rect(rect);
-        p.circle_filled(wifi.center() + Vec2::new(0.0, 1.0), 12.5, Color32::from_black_alpha(18));
+        p.circle_filled(
+            wifi.center() + Vec2::new(0.0, 1.0),
+            12.5,
+            Color32::from_black_alpha(18),
+        );
         p.circle_filled(wifi.center(), 12.0, Color32::WHITE);
-        p.circle_stroke(wifi.center(), 12.0, egui::Stroke::new(1.0, theme::CARD_LINE));
+        p.circle_stroke(
+            wifi.center(),
+            12.0,
+            egui::Stroke::new(1.0_f32, theme::CARD_LINE),
+        );
         theme::paint_glyph(&p, wifi.shrink(5.5), Glyph::Wifi, theme::ACCENT);
         p.circle_filled(
             Pos2::new(wifi.right() - 3.0, wifi.top() + 5.0),
@@ -697,11 +728,7 @@ fn connection_card(
             ui.horizontal(|ui| {
                 theme::glyph(ui, Glyph::Plug, color, 14.0);
                 ui.add_space(1.0);
-                ui.label(
-                    egui::RichText::new(&snap.usb_hint)
-                        .size(11.5)
-                        .color(color),
-                );
+                ui.label(egui::RichText::new(&snap.usb_hint).size(11.5).color(color));
             });
             if snap.client_app_missing && snap.can_install_apk {
                 ui.add_space(8.0);
@@ -783,7 +810,10 @@ fn display_card(ui: &mut egui::Ui, snap: &Snapshot, settings: &mut Settings) {
                 .color(theme::MUTED),
         );
         if settings.share_mode.uses_virtual_display()
-            && !snap.displays.iter().any(|d| d.contains("虚拟") || d.contains("副屏"))
+            && !snap
+                .displays
+                .iter()
+                .any(|d| d.contains("虚拟") || d.contains("副屏"))
         {
             ui.add_space(4.0);
             ui.label(
@@ -826,15 +856,45 @@ fn display_card(ui: &mut egui::Ui, snap: &Snapshot, settings: &mut Settings) {
             },
             |_| {},
         );
-        slider_row(ui, Glyph::Gauge, "画质", format!("{}%", settings.quality_pct), settings.quality_pct as f32, 40.0, 100.0, 1.0, |v| {
-            settings.quality_pct = v.round() as u32;
-        });
-        slider_row(ui, Glyph::Film, "帧率", format!("{} fps", settings.fps), settings.fps as f32, 30.0, 120.0, 1.0, |v| {
-            settings.fps = v.round() as u32;
-        });
-        slider_row(ui, Glyph::Meter, "码率", format!("{} kbps", settings.bitrate_kbps), settings.bitrate_kbps as f32, 5_000.0, 40_000.0, 1_000.0, |v| {
-            settings.bitrate_kbps = v.round() as u32;
-        });
+        slider_row(
+            ui,
+            Glyph::Gauge,
+            "画质",
+            format!("{}%", settings.quality_pct),
+            settings.quality_pct as f32,
+            40.0,
+            100.0,
+            1.0,
+            |v| {
+                settings.quality_pct = v.round() as u32;
+            },
+        );
+        slider_row(
+            ui,
+            Glyph::Film,
+            "帧率",
+            format!("{} fps", settings.fps),
+            settings.fps as f32,
+            30.0,
+            120.0,
+            1.0,
+            |v| {
+                settings.fps = v.round() as u32;
+            },
+        );
+        slider_row(
+            ui,
+            Glyph::Meter,
+            "码率",
+            format!("{} kbps", settings.bitrate_kbps),
+            settings.bitrate_kbps as f32,
+            5_000.0,
+            40_000.0,
+            1_000.0,
+            |v| {
+                settings.bitrate_kbps = v.round() as u32;
+            },
+        );
         toggle_row(
             ui,
             Glyph::Speaker,
@@ -1088,7 +1148,7 @@ fn about_modal(ctx: &egui::Context, settings: &mut Settings) {
 fn modal_frame() -> egui::Frame {
     egui::Frame::new()
         .fill(Color32::WHITE)
-        .stroke(egui::Stroke::new(1.0, theme::CARD_LINE))
+        .stroke(egui::Stroke::new(1.0_f32, theme::CARD_LINE))
         .corner_radius(egui::CornerRadius::same(18))
         .inner_margin(Margin::symmetric(20, 18))
         .shadow(egui::epaint::Shadow {
@@ -1107,8 +1167,7 @@ fn modal_header(ui: &mut egui::Ui, title: &str, open: &mut bool) {
                 .color(theme::TEXT),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let (rect, response) =
-                ui.allocate_exact_size(Vec2::splat(28.0), egui::Sense::click());
+            let (rect, response) = ui.allocate_exact_size(Vec2::splat(28.0), egui::Sense::click());
             if response.hovered() {
                 ui.painter().rect_filled(
                     rect,
@@ -1117,7 +1176,7 @@ fn modal_header(ui: &mut egui::Ui, title: &str, open: &mut bool) {
                 );
             }
             let c = rect.center();
-            let s = egui::Stroke::new(1.3, theme::MUTED);
+            let s = egui::Stroke::new(1.3_f32, theme::MUTED);
             let half = 4.5;
             ui.painter().line_segment(
                 [
@@ -1200,7 +1259,8 @@ fn status_strip(ui: &mut egui::Ui, snap: &Snapshot) {
     let (text, tone) = ui_text::health_text(snap.running, &snap.phase, snap.latency_ms);
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
-        ui.painter().circle_filled(rect.center(), 4.0, tone_color(tone));
+        ui.painter()
+            .circle_filled(rect.center(), 4.0, tone_color(tone));
         ui.label(egui::RichText::new(text).size(11.0).color(theme::MUTED));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
@@ -1293,7 +1353,10 @@ fn form_row(
     };
     let mid_rect = Rect::from_min_max(
         Pos2::new(label_rect.right() + FORM_GAP, row.top()),
-        Pos2::new(mid_right.max(label_rect.right() + FORM_GAP + 40.0), row.bottom()),
+        Pos2::new(
+            mid_right.max(label_rect.right() + FORM_GAP + 40.0),
+            row.bottom(),
+        ),
     );
 
     ui.scope_builder(
@@ -1332,18 +1395,11 @@ fn form_row(
 
 /// Left icon + label, control fills the remaining row (no trailing column).
 fn setting_row(ui: &mut egui::Ui, g: Glyph, label: &str, right: impl FnOnce(&mut egui::Ui)) {
-    form_row(
-        ui,
-        g,
-        label,
-        FORM_ROW_H,
-        0.0,
-        |ui, _w| right(ui),
-        |_| {},
-    );
+    form_row(ui, g, label, FORM_ROW_H, 0.0, |ui, _w| right(ui), |_| {});
 }
 
 /// Icon + label + slider + right-aligned value, all columns shared with other form rows.
+#[allow(clippy::too_many_arguments)]
 fn slider_row(
     ui: &mut egui::Ui,
     g: Glyph,
@@ -1389,7 +1445,7 @@ fn slider_row(
             let knob = Pos2::new(rect.left() + rect.width() * t, rect.center().y);
             painter.circle_filled(knob, 10.0, Color32::from_black_alpha(16));
             painter.circle_filled(knob, 9.0, Color32::WHITE);
-            painter.circle_stroke(knob, 9.0, egui::Stroke::new(1.0, theme::ACCENT_LINE));
+            painter.circle_stroke(knob, 9.0, egui::Stroke::new(1.0_f32, theme::ACCENT_LINE));
         },
         |ui| {
             ui.label(egui::RichText::new(value).size(12.5).color(theme::MUTED));
@@ -1440,11 +1496,11 @@ fn toggle_row(
         |ui| {
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 1.0;
-                ui.label(
-                    egui::RichText::new(label)
-                        .size(12.5)
-                        .color(if enabled { theme::TEXT } else { theme::DIM }),
-                );
+                ui.label(egui::RichText::new(label).size(12.5).color(if enabled {
+                    theme::TEXT
+                } else {
+                    theme::DIM
+                }));
                 if let Some(note) = note {
                     ui.label(egui::RichText::new(note).size(10.5).color(theme::DIM));
                 }
@@ -1475,44 +1531,47 @@ fn metric_tile(
 ) {
     // Paint into a fixed slot; do not report min-size back to the parent or the
     // tile row will stretch the page and collapse the right gutter.
-    ui.scope_builder(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Center)), |ui| {
-        ui.set_max_size(rect.size());
-        let frame = egui::Frame::new()
-            .fill(Color32::WHITE)
-            .stroke(egui::Stroke::new(1.0_f32, theme::CARD_LINE))
-            .corner_radius(egui::CornerRadius::same(14))
-            .inner_margin(Margin::symmetric(8, 10))
-            .shadow(egui::epaint::Shadow {
-                offset: [0, 2],
-                blur: 8,
-                spread: 0,
-                color: Color32::from_black_alpha(10),
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Center)),
+        |ui| {
+            ui.set_max_size(rect.size());
+            let frame = egui::Frame::new()
+                .fill(Color32::WHITE)
+                .stroke(egui::Stroke::new(1.0_f32, theme::CARD_LINE))
+                .corner_radius(egui::CornerRadius::same(14))
+                .inner_margin(Margin::symmetric(8, 10))
+                .shadow(egui::epaint::Shadow {
+                    offset: [0, 2],
+                    blur: 8,
+                    spread: 0,
+                    color: Color32::from_black_alpha(10),
+                });
+            frame.show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.set_max_width(ui.available_width());
+                ui.set_min_height(ui.available_height());
+                ui.with_layout(
+                    egui::Layout::top_down(egui::Align::Center)
+                        .with_main_align(egui::Align::Center),
+                    |ui| {
+                        ui.set_min_height(ui.available_height());
+                        ui.spacing_mut().item_spacing.y = 5.0;
+                        theme::glyph_badge(ui, g, theme::ACCENT, theme::ACCENT_SOFT, 26.0);
+                        ui.label(egui::RichText::new(label).size(10.5).color(theme::DIM));
+                        let shown =
+                            truncate_for_width(ui, &value, ui.available_width() - 4.0, 12.5);
+                        ui.label(
+                            egui::RichText::new(shown)
+                                .font(theme::bold(12.5))
+                                .color(value_color),
+                        );
+                    },
+                );
             });
-        frame.show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.set_max_width(ui.available_width());
-            ui.set_min_height(ui.available_height());
-            ui.with_layout(
-                egui::Layout::top_down(egui::Align::Center).with_main_align(egui::Align::Center),
-                |ui| {
-                    ui.set_min_height(ui.available_height());
-                    ui.spacing_mut().item_spacing.y = 5.0;
-                    theme::glyph_badge(ui, g, theme::ACCENT, theme::ACCENT_SOFT, 26.0);
-                    ui.label(
-                        egui::RichText::new(label)
-                            .size(10.5)
-                            .color(theme::DIM),
-                    );
-                    let shown = truncate_for_width(ui, &value, ui.available_width() - 4.0, 12.5);
-                    ui.label(
-                        egui::RichText::new(shown)
-                            .font(theme::bold(12.5))
-                            .color(value_color),
-                    );
-                },
-            );
-        });
-    });
+        },
+    );
 }
 
 fn outline_button(label: &str) -> egui::Button<'static> {
@@ -1568,14 +1627,12 @@ fn share_button(ui: &mut egui::Ui, width: f32, label: &str, running: bool) -> eg
     ui.painter().rect_stroke(
         rect,
         egui::CornerRadius::same(24),
-        egui::Stroke::new(1.0, Color32::from_white_alpha(28)),
+        egui::Stroke::new(1.0_f32, Color32::from_white_alpha(28)),
         egui::StrokeKind::Inside,
     );
-    let galley = ui.painter().layout_no_wrap(
-        label.to_owned(),
-        theme::bold(15.0),
-        Color32::WHITE,
-    );
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_owned(), theme::bold(15.0), Color32::WHITE);
     let total = 16.0 + 8.0 + galley.size().x;
     let start = rect.center().x - total * 0.5;
     let icon = Rect::from_center_size(Pos2::new(start + 8.0, rect.center().y), Vec2::splat(16.0));
@@ -1588,13 +1645,7 @@ fn share_button(ui: &mut egui::Ui, width: f32, label: &str, running: bool) -> eg
     response
 }
 
-fn combo(
-    ui: &mut egui::Ui,
-    id: &'static str,
-    width: f32,
-    items: &[String],
-    selected: &mut usize,
-) {
+fn combo(ui: &mut egui::Ui, id: &'static str, width: f32, items: &[String], selected: &mut usize) {
     let text = items.get(*selected).cloned().unwrap_or_default();
     let desired = Vec2::new(width.max(80.0), 32.0);
     let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click());
