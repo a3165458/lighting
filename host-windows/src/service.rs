@@ -112,7 +112,10 @@ impl HostService {
         let mut g = self.inner.lock().expect("host lock");
         Self::apply_pending_devices_locked(&self.rt, &mut g);
         let status = g.status.lock().ok().map(|s| s.clone()).unwrap_or_default();
-        g.running = status.running;
+        g.running = lighting_host::session_policy::effective_share_running(
+            g.stop.load(Ordering::Relaxed),
+            status.running,
+        );
         if status.phase == "错误" && !status.detail.is_empty() {
             g.last_error = status.detail.clone();
         }
@@ -211,7 +214,7 @@ impl HostService {
             send_audio: g.settings.send_audio,
             share_mode: mode,
         };
-        g.stop.store(false, Ordering::Relaxed);
+        g.stop = Arc::new(AtomicBool::new(false));
         g.controls
             .touch
             .store(g.settings.touch_relay, Ordering::Relaxed);
@@ -246,6 +249,8 @@ impl HostService {
         g.stop.store(true, Ordering::Relaxed);
         g.running = false;
         if let Ok(mut s) = g.status.lock() {
+            s.running = false;
+            s.phase = "已停止".into();
             s.transport.clear();
             s.bitrate_kbps = 0;
             s.frames = 0;
@@ -409,7 +414,10 @@ impl HostService {
 
         HostStateDto {
             connected: true,
-            sharing: status.running || g.running,
+            sharing: lighting_host::session_policy::effective_share_running(
+                g.stop.load(Ordering::Relaxed),
+                status.running || g.running,
+            ),
             phase: status.phase.clone(),
             detail: status.detail.clone(),
             transport: status.transport.clone(),

@@ -768,6 +768,12 @@ async fn run_session_inner(
             }
             Err(err) => {
                 tracing::warn!("client session ended: {err:#}");
+                let msg = format!("{err:#}");
+                if !session_policy::continue_accept_after_handle_client_err(&msg) {
+                    cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref(), listen_port)
+                        .await;
+                    anyhow::bail!("{msg}");
+                }
             }
         }
 
@@ -1074,10 +1080,19 @@ async fn handle_client(
     if req.share_mode.uses_virtual_display() && hello.screen_width > 0 && hello.screen_height > 0 {
         // Independent second screen: virtual monitor = encode size so
         // capture is 1:1 (no scaling anywhere) and the PC monitor is untouched.
-        // Honor IddCx re-enumerates USB on ChangeDisplaySettingsEx — do this
-        // once per share, then wait for a new Hello instead of CONFIG on a
-        // dead socket (the 设置平板分辨率 / 重连中 loop).
-        if *virtual_mode_applied {
+        // Changing IddCx after Hello resets DDA: encoder retries forever,
+        // CONFIG never ships, Stop is ignored. Encode the panel already up.
+        if !session_policy::resize_virtual_display_after_hello() {
+            *virtual_mode_applied = true;
+            set_status(
+                &status,
+                "独立第二屏",
+                format!(
+                    "按当前虚拟屏 {}×{} 推流",
+                    display.width, display.height
+                ),
+            );
+        } else if *virtual_mode_applied {
             set_status(
                 &status,
                 "独立第二屏",
@@ -1353,15 +1368,23 @@ async fn handle_client(
     // then reconnect if the pipe died before IDR.
     let hevc = codec.eq_ignore_ascii_case("hevc") || codec.eq_ignore_ascii_case("h265");
     set_status(&status, "编码", "正在启动抓屏…");
-    let (session, bootstrap, capture_kind) = start_live_encoder_resilient(
+    let (session, bootstrap, capture_kind) = match start_live_encoder_resilient(
         &ffmpeg,
         display,
         &settings,
         hevc,
-        *virtual_mode_applied,
+        false,
         &status,
+        &stop,
     )
-    .await?;
+    .await
+    {
+        Ok(v) => v,
+        Err(_) if stop.load(Ordering::Relaxed) => {
+            return Ok(ClientOutcome::Finished);
+        }
+        Err(err) => return Err(err),
+    };
     let dda_retries = 0u8;
 
     let payload = serde_json::to_vec(&cfg)?;
@@ -1742,11 +1765,13 @@ fn video_write_loop(
                     set_status(&status, "回退", "改用 gdigrab 抓屏");
                 }
                 let restarted = if retry_dda {
-                    handle.block_on(start_live_encoder(&ffmpeg, &display, &settings, hevc))
+                    handle.block_on(start_live_encoder(
+                        &ffmpeg, &display, &settings, hevc, &stop,
+                    ))
                 } else {
                     handle
                         .block_on(restart_encoder_with_bootstrap(
-                            &ffmpeg, &display, &settings, hevc,
+                            &ffmpeg, &display, &settings, hevc, &stop,
                         ))
                         .map(|(s, b)| (s, b, CaptureKind::Gdi))
                 };
@@ -1789,9 +1814,13 @@ fn video_write_loop(
 async fn wait_encoder_bootstrap(
     session: encoder::EncoderSession,
     hevc: bool,
+    stop: &Arc<AtomicBool>,
 ) -> Result<(encoder::EncoderSession, Vec<EncodedPacket>)> {
+    let stop = stop.clone();
     tokio::task::spawn_blocking(move || {
-        let pkts = annexb::recv_bootstrap(&session.rx, Duration::from_secs(3), hevc);
+        let pkts = annexb::recv_bootstrap_until(&session.rx, Duration::from_secs(3), hevc, || {
+            stop.load(Ordering::Relaxed)
+        });
         (session, pkts)
     })
     .await
@@ -1824,6 +1853,7 @@ async fn start_live_encoder_resilient(
     hevc: bool,
     after_mode_change: bool,
     status: &Arc<Mutex<SessionStatus>>,
+    stop: &Arc<AtomicBool>,
 ) -> Result<(encoder::EncoderSession, Vec<EncodedPacket>, CaptureKind)> {
     let attempts = lighting_host::session_policy::encoder_start_attempts().max(1);
     let settle = Duration::from_millis(
@@ -1831,6 +1861,9 @@ async fn start_live_encoder_resilient(
     );
     let mut last_err: Option<anyhow::Error> = None;
     for i in 0..attempts {
+        if stop.load(Ordering::Relaxed) {
+            anyhow::bail!("已停止");
+        }
         if after_mode_change || i > 0 {
             tokio::time::sleep(settle).await;
             if let Ok(Ok(list)) = tokio::task::spawn_blocking(displays::list_displays).await {
@@ -1839,13 +1872,16 @@ async fn start_live_encoder_resilient(
                 }
             }
         }
-        match start_live_encoder(ffmpeg, display, settings, hevc).await {
+        match start_live_encoder(ffmpeg, display, settings, hevc, stop).await {
             Ok(v) => return Ok(v),
             Err(err) => {
                 tracing::warn!(
                     "encoder start attempt {}/{attempts} failed: {err:#}",
                     i + 1
                 );
+                if stop.load(Ordering::Relaxed) {
+                    anyhow::bail!("已停止");
+                }
                 set_status(
                     status,
                     "编码",
@@ -1863,12 +1899,16 @@ async fn start_live_encoder(
     display: &DisplayInfo,
     settings: &EncodeSettings,
     hevc: bool,
+    stop: &Arc<AtomicBool>,
 ) -> Result<(encoder::EncoderSession, Vec<EncodedPacket>, CaptureKind)> {
+    if stop.load(Ordering::Relaxed) {
+        anyhow::bail!("已停止");
+    }
     if lighting_host::session_policy::prefer_gdigrab_capture(
         display.is_virtual,
         display.dxgi.is_some(),
     ) {
-        match restart_encoder_with_bootstrap(ffmpeg, display, settings, hevc).await {
+        match restart_encoder_with_bootstrap(ffmpeg, display, settings, hevc, stop).await {
             Ok((session, bootstrap)) => return Ok((session, bootstrap, CaptureKind::Gdi)),
             Err(err) => tracing::warn!("gdigrab-first for GDI-only display failed: {err:#}"),
         }
@@ -1907,6 +1947,9 @@ async fn start_live_encoder(
         for graph in graphs {
             for surfaces in &surface_tries {
                 for rc in &rc_tries {
+                    if stop.load(Ordering::Relaxed) {
+                        anyhow::bail!("已停止");
+                    }
                     let mut attempt = settings.clone();
                     attempt.nvenc_surfaces = *surfaces;
                     attempt.nvenc_rc = rc.clone();
@@ -1922,7 +1965,7 @@ async fn start_live_encoder(
                                 continue;
                             }
                         };
-                    match wait_encoder_bootstrap(session, hevc).await {
+                    match wait_encoder_bootstrap(session, hevc, stop).await {
                         Ok((session, bootstrap)) => {
                             let virtual_output = display.is_virtual;
                             tracing::info!(
@@ -1945,7 +1988,7 @@ async fn start_live_encoder(
         "desktop duplication encoders failed, trying gdigrab: {:?}",
         last_err
     );
-    restart_encoder_with_bootstrap(ffmpeg, display, settings, hevc)
+    restart_encoder_with_bootstrap(ffmpeg, display, settings, hevc, stop)
         .await
         .map(|(session, bootstrap)| (session, bootstrap, CaptureKind::Gdi))
 }
@@ -1955,6 +1998,7 @@ async fn restart_encoder_with_bootstrap(
     display: &DisplayInfo,
     settings: &EncodeSettings,
     hevc: bool,
+    stop: &Arc<AtomicBool>,
 ) -> Result<(encoder::EncoderSession, Vec<EncodedPacket>)> {
     let mut last_err: Option<anyhow::Error> = None;
     let vendor = display.dxgi.map(|d| d.vendor_id).unwrap_or(0);
@@ -1979,6 +2023,9 @@ async fn restart_encoder_with_bootstrap(
         };
         for surfaces in surface_tries {
             for rc in &rc_tries {
+                if stop.load(Ordering::Relaxed) {
+                    anyhow::bail!("已停止");
+                }
                 let mut attempt = settings.clone();
                 attempt.nvenc_surfaces = surfaces;
                 attempt.nvenc_rc = rc.clone();
@@ -1993,7 +2040,7 @@ async fn restart_encoder_with_bootstrap(
                         continue;
                     }
                 };
-                match wait_encoder_bootstrap(session, hevc).await {
+                match wait_encoder_bootstrap(session, hevc, stop).await {
                     Ok((session, bootstrap)) => {
                         tracing::info!(
                             "gdigrab bootstrap ok with {enc} surfaces={surfaces} rc={rc}"
