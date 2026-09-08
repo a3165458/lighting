@@ -167,4 +167,60 @@ mod tests {
         bytes.pop();
         assert!(decode_cursor(&bytes).is_none());
     }
+
+    #[test]
+    fn invalid_shape_is_not_advertised() {
+        let bytes = encode_cursor(&CursorPacket {
+            visible: true,
+            x: 0,
+            y: 0,
+            hotspot_x: 0,
+            hotspot_y: 0,
+            width: 16,
+            height: 16,
+            bgra: Some(vec![0; 8]),
+        });
+
+        assert_eq!(bytes[0] & FLAG_HAS_SHAPE, 0);
+        assert!(decode_cursor(&bytes).is_some());
+    }
+
+    #[test]
+    fn oversized_shape_is_cropped_by_rows() {
+        let width = MAX_CURSOR_EDGE + 1;
+        let height = 2;
+        let mut bgra = vec![0u8; width as usize * height as usize * 4];
+        for y in 0..height as usize {
+            for x in 0..width as usize {
+                bgra[(y * width as usize + x) * 4] = y as u8 + 1;
+            }
+        }
+
+        let bytes = encode_cursor(&CursorPacket {
+            visible: true,
+            x: 0,
+            y: 0,
+            hotspot_x: 0,
+            hotspot_y: 0,
+            width,
+            height,
+            bgra: Some(bgra),
+        });
+        let pkt = decode_cursor(&bytes).expect("cropped packet should remain valid");
+        let shape = pkt.bgra.expect("shape should be present");
+
+        assert_eq!(pkt.width, MAX_CURSOR_EDGE);
+        assert_eq!(shape[0], 1);
+        assert_eq!(shape[MAX_CURSOR_EDGE as usize * 4], 2);
+    }
+
+    #[test]
+    fn oversized_wire_shape_is_rejected() {
+        let mut bytes = vec![0u8; HEADER_LEN + (MAX_CURSOR_EDGE as usize + 1) * 4];
+        bytes[0] = FLAG_VISIBLE | FLAG_HAS_SHAPE;
+        bytes[10..12].copy_from_slice(&((MAX_CURSOR_EDGE + 1) as u16).to_be_bytes());
+        bytes[12..14].copy_from_slice(&1u16.to_be_bytes());
+
+        assert!(decode_cursor(&bytes).is_none());
+    }
 }
