@@ -547,7 +547,18 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         thread(name = "lighting-control-open") {
             openControlPlane(host, port, gen)
         }
-        val cfgMsg = sock.read()
+        // Host may probe the USB reverse with HEARTBEAT before CONFIG.
+        // Treating that as a protocol error sent the pad back to 重连中.
+        var cfgMsg = sock.read()
+        var skip = 0
+        while (cfgMsg.type == LitProtocol.MSG_HEARTBEAT && skip < 8) {
+            try {
+                sock.write(LitProtocol.MSG_HEARTBEAT)
+            } catch (_: Exception) {
+            }
+            cfgMsg = sock.read()
+            skip++
+        }
         if (cfgMsg.type != LitProtocol.MSG_CONFIG) {
             throw IllegalStateException("expected config, got ${cfgMsg.type}")
         }

@@ -160,8 +160,11 @@ pub fn usb_wait_refresh_ms() -> u64 {
 /// 0.1.56 always `--remove` + `am start` on this timer and chopped the
 /// pad's in-flight 127.0.0.1 connect (重连中 loop). Skip when accept
 /// recently proved the tunnel is live.
+/// Must exceed the APK USB connect timeout (4s) plus one backoff: 0.1.57
+/// used 4s, so every hung connect was `--remove`'d at the same instant
+/// it would have timed out.
 pub fn usb_reverse_recreate_after_ms() -> u64 {
-    4_000
+    12_000
 }
 
 /// Honor adbd needs a beat after `reverse --remove` before bind works.
@@ -199,7 +202,31 @@ pub fn usb_reverse_recreate_skips_recent_accept() -> bool {
 }
 
 pub fn usb_reverse_recent_accept_ms() -> u64 {
-    8_000
+    12_000
+}
+
+/// 0.1.57 `tokio::spawn(recreate_reverse_port)` after dropping the Hello
+/// that IddCx just killed. The APK retries at 650ms and lands in
+/// `--remove` — CONFIG never arrives, HUD stays 重连中. Rebuild on the
+/// session task *before* waiting for the next Hello.
+pub fn background_recreate_reverse_after_client() -> bool {
+    false
+}
+
+pub fn sync_recreate_reverse_after_virtual_mode() -> bool {
+    true
+}
+
+/// IddCx USB re-enum after ChangeDisplaySettingsEx. Recreate too early
+/// binds a reverse that dies a second later.
+pub fn virtual_mode_usb_settle_ms() -> u64 {
+    800
+}
+
+/// One `am start` after the *synchronous* post-mode reverse is ready.
+/// The APK skipBackoff-connects into a live tunnel. Not a 4s heartbeat.
+pub fn relaunch_client_after_virtual_mode_reverse() -> bool {
+    true
 }
 
 /// Whether wait-hello should `adb reverse --remove` + re-bind.
@@ -1367,26 +1394,32 @@ mod tests {
         assert!(refresh_usb_while_waiting_for_hello());
         assert!(verify_adb_reverse_list());
         assert!(usb_wait_refresh_ms() >= 1_000 && usb_wait_refresh_ms() <= 5_000);
-        assert!(usb_reverse_recreate_after_ms() >= 3_000);
-        assert!(usb_reverse_recreate_after_ms() <= 8_000);
+        assert!(usb_reverse_recreate_after_ms() >= 8_000);
+        assert!(usb_reverse_recreate_after_ms() <= 20_000);
         assert!(usb_reverse_settle_ms() > 0 && usb_reverse_settle_ms() <= 1_000);
         assert!(force_usb_reverse_after_virtual_prepare());
         assert!(!relaunch_client_while_waiting_for_hello());
         assert!(relaunch_client_when_reverse_restored());
         assert!(!relaunch_client_after_forced_reverse_recreate());
+        assert!(!background_recreate_reverse_after_client());
+        assert!(sync_recreate_reverse_after_virtual_mode());
+        assert!(virtual_mode_usb_settle_ms() >= 400);
+        assert!(relaunch_client_after_virtual_mode_reverse());
         assert!(usb_reverse_recreate_skips_recent_accept());
         assert!(usb_reverse_recent_accept_ms() >= usb_reverse_recreate_after_ms());
         assert!(rerequest_hello_after_virtual_mode_change());
         assert!(abandon_hello_after_virtual_mode(true));
         assert!(!abandon_hello_after_virtual_mode(false));
-        // No Hello yet, tunnel never accepted — rebuild the stale Honor reverse.
-        assert!(should_force_stale_reverse(4_000, None, None));
+        // 4s is the APK connect timeout — must not --remove on that beat.
+        assert!(!should_force_stale_reverse(4_000, None, None));
         assert!(!should_force_stale_reverse(2_000, None, None));
+        // No Hello and no accept past the recreate interval — rebuild.
+        assert!(should_force_stale_reverse(12_000, None, None));
         // Accept in flight (Hello still being classified) — do not --remove.
-        assert!(!should_force_stale_reverse(4_000, None, Some(500)));
-        assert!(should_force_stale_reverse(12_000, Some(8_000), Some(9_000)));
+        assert!(!should_force_stale_reverse(12_000, None, Some(500)));
+        assert!(should_force_stale_reverse(24_000, Some(12_000), Some(13_000)));
         // Last recreate was 2s ago — wait the interval.
-        assert!(!should_force_stale_reverse(6_000, Some(2_000), None));
+        assert!(!should_force_stale_reverse(14_000, Some(2_000), None));
         assert!(should_relaunch_client_after_reverse(true, false));
         assert!(!should_relaunch_client_after_reverse(false, false));
         assert!(!should_relaunch_client_after_reverse(true, true));
