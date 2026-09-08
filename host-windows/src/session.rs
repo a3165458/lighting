@@ -455,6 +455,8 @@ async fn run_session_inner(
         reverse_serial.as_deref(),
         listen_port,
         &status,
+        false,
+        true,
     )
     .await;
     reverse_serial = first_usb.serial;
@@ -519,31 +521,62 @@ async fn run_session_inner(
         tracing::warn!("DisplaySwitch failed ({err:#}); continuing with current layout");
     }
 
-    // IddCx / UAC re-enumerates USB. Reverse from before VDD is then gone
-    // while adb devices still shows the pad — same 「等待 USB」 hang.
+    // Honor IddCx bounces USB (parked Hellos are RST). Lenovo Xiaoxin Pad
+    // 2020 keeps USB — a live Hello must not be dropped then `--remove`'d.
+    let mut pending_hello: Option<ClassifiedStream> = None;
     if session_policy::refresh_usb_after_virtual_prepare() {
-        if session_policy::drop_parked_hellos_after_virtual_prepare() {
+        if session_policy::keep_live_hello_after_virtual_prepare() {
+            pending_hello = take_live_classified(&mut video_rx);
+        } else if session_policy::drop_parked_hellos_after_virtual_prepare() {
             let video_n = drop_parked_classified(&mut video_rx);
             let ctrl_n = drop_parked_classified(&mut ctrl_rx);
             if video_n + ctrl_n > 0 {
                 tracing::info!("dropped {video_n} stale video / {ctrl_n} control hellos after VDD");
             }
         }
-        // Accepts from before IddCx must not suppress reverse --remove:
-        // that TCP is the stale Hello we just dropped.
-        if let Ok(mut slot) = last_accept.lock() {
-            *slot = None;
+        let last_accept_ms = last_accept
+            .lock()
+            .ok()
+            .and_then(|g| *g)
+            .map(|t| t.elapsed().as_millis() as u64);
+        let force = session_policy::should_force_reverse_after_virtual_prepare(
+            pending_hello.is_some(),
+            last_accept_ms,
+        );
+        if force {
+            if let Ok(mut slot) = last_accept.lock() {
+                *slot = None;
+            }
+            let _ = drop_parked_classified(&mut ctrl_rx);
+            let refreshed = open_usb_tunnel(
+                adb_path.as_ref(),
+                reverse_serial.as_deref().or(req.device_serial.as_deref()),
+                listen_port,
+                &status,
+                true,
+                true,
+            )
+            .await;
+            reverse_serial = refreshed.serial;
+            usb_wait_detail = refreshed.wait_detail;
+            set_status(&status, "等待设备", usb_wait_detail.clone());
+        } else if let Some(hello) = pending_hello.as_ref() {
+            tracing::info!("keeping live Hello after VDD from {}", hello.addr);
+            set_status(&status, "等待设备", "平板已连上，正在适配虚拟屏…");
+        } else {
+            let refreshed = open_usb_tunnel(
+                adb_path.as_ref(),
+                reverse_serial.as_deref().or(req.device_serial.as_deref()),
+                listen_port,
+                &status,
+                false,
+                false,
+            )
+            .await;
+            reverse_serial = refreshed.serial;
+            usb_wait_detail = refreshed.wait_detail;
+            set_status(&status, "等待设备", usb_wait_detail.clone());
         }
-        let refreshed = open_usb_tunnel(
-            adb_path.as_ref(),
-            reverse_serial.as_deref().or(req.device_serial.as_deref()),
-            listen_port,
-            &status,
-        )
-        .await;
-        reverse_serial = refreshed.serial;
-        usb_wait_detail = refreshed.wait_detail;
-        set_status(&status, "等待设备", usb_wait_detail.clone());
     }
 
     // Do not sit on phase "启动" / 正在枚举显示器: that pins the UI on
@@ -575,7 +608,15 @@ async fn run_session_inner(
             return Ok(());
         }
 
-        let incoming = tokio::select! {
+        let incoming = if let Some(c) = pending_hello.take() {
+            if let Ok(mut st) = status.lock() {
+                clear_peer_metrics(&mut st);
+                st.client_addr = c.addr.to_string();
+            }
+            set_status(&status, "已连接", format!("{}", c.addr));
+            c
+        } else {
+        tokio::select! {
             _ = stop_rx.changed() => {
                 cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref(), listen_port).await;
                 return Ok(());
@@ -700,6 +741,7 @@ async fn run_session_inner(
                 }
                 continue;
             }
+        }
         };
 
         let outcome = handle_client(
@@ -851,11 +893,37 @@ fn drop_parked_classified(rx: &mut mpsc::Receiver<ClassifiedStream>) -> usize {
 /// Bind is already listening. Reverse 127.0.0.1:port and open the pad app.
 /// Called before VDD (so the 90s USB retry can start) and again after VDD
 /// (USB often re-enumerates during IddCx / UAC).
+fn tcp_half_dead(reader: &tokio::net::tcp::OwnedReadHalf) -> bool {
+    let mut buf = [0u8; 1];
+    match reader.try_read(&mut buf) {
+        Ok(0) => true,
+        Ok(_) => false,
+        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => false,
+        Err(_) => true,
+    }
+}
+
+fn take_live_classified(rx: &mut mpsc::Receiver<ClassifiedStream>) -> Option<ClassifiedStream> {
+    let mut live = None;
+    while let Ok(c) = rx.try_recv() {
+        if tcp_half_dead(&c.reader) {
+            tracing::info!("dropped dead parked hello from {}", c.addr);
+            continue;
+        }
+        if live.is_none() {
+            live = Some(c);
+        }
+    }
+    live
+}
+
 async fn open_usb_tunnel(
     adb_path: Option<&std::path::PathBuf>,
     preferred_serial: Option<&str>,
     listen_port: u16,
     status: &Arc<Mutex<SessionStatus>>,
+    force_recreate: bool,
+    launch: bool,
 ) -> UsbTunnel {
     let Some(adb_bin) = adb_path else {
         let wait_detail = "未找到 adb，平板可填电脑 IP 用 Wi-Fi 测试".to_string();
@@ -892,8 +960,7 @@ async fn open_usb_tunnel(
         "等待设备",
         format!("正在执行 adb reverse（{serial}）"),
     );
-    let reverse_result = if lighting_host::session_policy::force_usb_reverse_after_virtual_prepare()
-    {
+    let reverse_result = if force_recreate {
         adb::recreate_reverse_port(adb_bin, &serial, listen_port).await
     } else {
         adb::reverse_port(adb_bin, &serial, listen_port).await
@@ -911,14 +978,16 @@ async fn open_usb_tunnel(
         };
     }
     set_transport(status, format!("USB · adb reverse 已就绪（{serial}）"));
-    if session_policy::launch_stream_client_does_not_block_listen() {
-        let adb_owned = adb_bin.clone();
-        let serial_owned = serial.clone();
-        tokio::spawn(async move {
-            adb::launch_stream_client(&adb_owned, &serial_owned, listen_port).await;
-        });
-    } else {
-        adb::launch_stream_client(adb_bin, &serial, listen_port).await;
+    if launch {
+        if session_policy::launch_stream_client_does_not_block_listen() {
+            let adb_owned = adb_bin.clone();
+            let serial_owned = serial.clone();
+            tokio::spawn(async move {
+                adb::launch_stream_client(&adb_owned, &serial_owned, listen_port).await;
+            });
+        } else {
+            adb::launch_stream_client(adb_bin, &serial, listen_port).await;
+        }
     }
     let wait_detail = format!("USB 已就绪（{serial}），正在打开平板投屏");
     set_status(status, "等待设备", wait_detail.clone());
@@ -1045,7 +1114,10 @@ async fn handle_client(
                         "独立第二屏",
                         format!("虚拟屏 {}×{} · 1:1 抓取", display.width, display.height),
                     );
-                    if session_policy::abandon_hello_after_virtual_mode(changed) {
+                    if session_policy::should_abandon_hello_after_virtual_mode(
+                        changed,
+                        tcp_half_dead(&reader),
+                    ) {
                         while ctrl_rx.try_recv().is_ok() {}
                         set_status(&status, "等待设备", "虚拟屏已设为平板分辨率，正在恢复 USB…");
                         return Ok(ClientOutcome::NeedHelloAfterVirtualMode);
