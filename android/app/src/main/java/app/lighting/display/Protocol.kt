@@ -102,7 +102,7 @@ object LitProtocol {
         }
         putLimit("avcLimit", caps.avc)
         putLimit("hevcLimit", caps.hevc)
-        obj.put("cursorOverlay", true)
+        obj.put("cursorOverlay", false)
         obj.put("role", "stream")
         return obj.toString().toByteArray(Charsets.UTF_8)
     }
@@ -117,7 +117,7 @@ object LitProtocol {
         obj.put("screenHeight", 0)
         obj.put("maxFps", 0)
         obj.put("codecs", JSONArray())
-        obj.put("cursorOverlay", true)
+        obj.put("cursorOverlay", false)
         return obj.toString().toByteArray(Charsets.UTF_8)
     }
 

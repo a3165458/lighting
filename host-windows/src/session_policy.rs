@@ -842,11 +842,23 @@ pub fn mux_cursor_on_video(cursor_overlay: bool, control_attached: bool) -> bool
     cursor_overlay && !control_attached
 }
 
-/// IddCx software-cursors land in the duplicated bits even with
-/// `draw_mouse=0`. Hide the OS pointer on the captured display so the
-/// tablet overlay is the only one (no 拖影).
+/// Local overlay used to vanish past the surface mapping / on_display
+/// margin. Keep the Windows pointer in the capture instead.
+pub fn paint_cursor_overlay() -> bool {
+    false
+}
+
+pub fn effective_cursor_overlay(hello_asks: bool) -> bool {
+    paint_cursor_overlay() && hello_asks
+}
+
+pub fn draw_mouse_in_video(hello_cursor_overlay: bool) -> bool {
+    !effective_cursor_overlay(hello_cursor_overlay)
+}
+
+/// Only hide the OS pointer when the tablet overlay is the one pointer.
 pub fn hide_os_cursor_on_captured_display() -> bool {
-    true
+    paint_cursor_overlay()
 }
 
 /// Windows pointer trails paint extra copies into the framebuffer.
@@ -1784,7 +1796,11 @@ mod tests {
         assert!(mux_cursor_on_video(true, false));
         assert!(!mux_cursor_on_video(true, true));
         assert!(!mux_cursor_on_video(false, false));
-        assert!(hide_os_cursor_on_captured_display());
+        assert!(!paint_cursor_overlay());
+        assert!(!effective_cursor_overlay(true));
+        assert!(draw_mouse_in_video(true));
+        assert!(draw_mouse_in_video(false));
+        assert!(!hide_os_cursor_on_captured_display());
         assert!(suppress_mouse_trails_while_sharing());
     }
 
@@ -2082,7 +2098,9 @@ mod tests {
 
     #[test]
     fn extend_one_pointer_stable_audio_and_fill_tablet() {
-        assert!(hide_os_cursor_on_captured_display());
+        assert!(!paint_cursor_overlay());
+        assert!(draw_mouse_in_video(true));
+        assert!(!hide_os_cursor_on_captured_display());
         assert!(suppress_mouse_trails_while_sharing());
         assert!(!mux_cursor_on_video(true, true));
         assert!(audio_packets_per_video_frame() >= 2);

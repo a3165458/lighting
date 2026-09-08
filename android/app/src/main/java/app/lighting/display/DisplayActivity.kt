@@ -5,7 +5,6 @@ import android.app.GameManager
 import android.app.GameState
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -24,7 +23,6 @@ import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
-import java.nio.ByteBuffer
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import java.util.concurrent.ArrayBlockingQueue
@@ -48,9 +46,6 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private lateinit var statusBar: PassThroughBar
     private lateinit var reconnectLayer: View
     private lateinit var cursorOverlay: CursorOverlayView
-    private var cursorBitmap: Bitmap? = null
-    private var cursorHotX = 0
-    private var cursorHotY = 0
     @Volatile private var controlLit: LitSocket? = null
     private var controlReader: Thread? = null
     private var worker: Thread? = null
@@ -643,11 +638,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                         audio?.offer(pcm, pts)
                     }
                     LitProtocol.MSG_CURSOR -> {
-                        // Control plane already paints the overlay. The same
-                        // pose on the video socket is a second pointer (拖影).
-                        if (controlLit == null) {
-                            applyCursor(parseCursor(msg.payload))
-                        }
+                        // Captured OS pointer is in the video. Ignore overlay poses.
                     }
                     LitProtocol.MSG_HEARTBEAT -> sock.write(LitProtocol.MSG_HEARTBEAT)
                     LitProtocol.MSG_ERROR -> {
@@ -753,26 +744,6 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         }
     }
 
-    private fun defaultCursorBitmap(): Bitmap {
-        val w = 24
-        val h = 24
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val px = IntArray(w * h)
-        for (y in 0 until h) {
-            for (x in 0 until w) {
-                val on = x <= y && x + y <= 22 && x < 10
-                val edge = on && (x == 0 || x == y || x + y == 22 || x == 9)
-                px[y * w + x] = when {
-                    edge -> 0xFF111111.toInt()
-                    on -> 0xFFFFFFFF.toInt()
-                    else -> 0
-                }
-            }
-        }
-        bmp.setPixels(px, 0, w, 0, 0, w, h)
-        return bmp
-    }
-
     private fun openControlPlane(host: String, port: Int, gen: Int) {
         try {
             val sock = LitSocket(host, port, 800, recvBytes = 16 * 1024, sendBytes = 16 * 1024)
@@ -784,7 +755,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     while (running && sessionGen == gen) {
                         val msg = sock.read()
                         if (msg.type == LitProtocol.MSG_CURSOR) {
-                            applyCursor(parseCursor(msg.payload))
+                            // Captured OS pointer is in the video.
                         }
                     }
                 } catch (t: Throwable) {
@@ -794,51 +765,9 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                 }
             }
         } catch (t: Throwable) {
-            Log.w("Lighting", "control plane unavailable; cursor stays on video socket", t)
+            Log.w("Lighting", "control plane unavailable; touch stays on video socket", t)
             controlLit = null
         }
-    }
-
-    private fun applyCursor(update: CursorUpdate?) {
-        if (update == null) return
-        if (!update.visible) {
-            cursorOverlay.hidePointer()
-            return
-        }
-        var incoming: Bitmap? = null
-        var hotX = cursorHotX
-        var hotY = cursorHotY
-        val shape = update.bgra
-        if (shape != null && update.width > 0 && update.height > 0) {
-            incoming = Bitmap.createBitmap(update.width, update.height, Bitmap.Config.ARGB_8888)
-            incoming.copyPixelsFromBuffer(ByteBuffer.wrap(shape))
-            hotX = update.hotspotX
-            hotY = update.hotspotY
-            cursorBitmap = incoming
-            cursorHotX = hotX
-            cursorHotY = hotY
-        } else if (cursorBitmap == null) {
-            incoming = defaultCursorBitmap()
-            hotX = 1
-            hotY = 1
-            cursorBitmap = incoming
-            cursorHotX = hotX
-            cursorHotY = hotY
-        }
-        cursorOverlay.update(
-            visible = true,
-            x = update.x,
-            y = update.y,
-            srcW = streamW.coerceAtLeast(1),
-            srcH = streamH.coerceAtLeast(1),
-            surfaceLeft = surface.left,
-            surfaceTop = surface.top,
-            surfaceW = surface.width.coerceAtLeast(1),
-            surfaceH = surface.height.coerceAtLeast(1),
-            bitmap = incoming,
-            hotspotX = hotX,
-            hotspotY = hotY,
-        )
     }
 
     /**
