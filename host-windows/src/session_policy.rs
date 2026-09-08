@@ -116,10 +116,38 @@ pub fn refresh_usb_after_virtual_prepare() -> bool {
     true
 }
 
-/// Hellos that arrived while IddCx bounced USB are half-open. Handling them
-/// after VDD writes CONFIG into a dead socket and parks the only video
-/// channel slot — host keeps HA18C874 on screen, share never starts.
+/// Hellos that arrived while IddCx bounced USB are half-open on Honor.
+/// Lenovo Xiaoxin Pad 2020 (and most AOSP pads) keep USB up — dropping a
+/// live Hello then `adb reverse --remove` is the 重连中 loop.
+/// Keep a Hello whose TCP still reads; only drop EOF/RST sockets.
 pub fn drop_parked_hellos_after_virtual_prepare() -> bool {
+    true
+}
+
+/// If a Hello survived VDD, do not `--remove` reverse or `am start`.
+pub fn keep_live_hello_after_virtual_prepare() -> bool {
+    true
+}
+
+/// Hello classify is 3s. An accept during VDD may still be reading Hello;
+/// `--remove` then kills the in-flight connect on Lenovo.
+pub fn skip_force_reverse_if_accept_newer_than_ms() -> u64 {
+    3_000
+}
+
+pub fn should_force_reverse_after_virtual_prepare(
+    has_live_hello: bool,
+    last_accept_ms: Option<u64>,
+) -> bool {
+    if !force_usb_reverse_after_virtual_prepare() {
+        return false;
+    }
+    if has_live_hello {
+        return false;
+    }
+    if last_accept_ms.is_some_and(|ms| ms < skip_force_reverse_if_accept_newer_than_ms()) {
+        return false;
+    }
     true
 }
 
@@ -262,15 +290,15 @@ pub fn should_relaunch_client_after_reverse(restored_missing: bool, forced_recre
 }
 
 /// ChangeDisplaySettingsEx on the IddCx panel re-enumerates USB on
-/// Honor. The Hello TCP is then dead; CONFIG/ffmpeg on that socket is
-/// the 「设置平板分辨率 → 上一台已断开 → 重连中」 loop. Wait for the
-/// next Hello and do not change mode again this share.
+/// Honor. Lenovo Xiaoxin Pad 2020 does not: the Hello TCP stays up.
+/// Only abandon when the socket actually died (EOF/RST). Always dropping
+/// a live Hello then `--remove` is the 重连中 loop on non-Honor pads.
 pub fn rerequest_hello_after_virtual_mode_change() -> bool {
     true
 }
 
-pub fn abandon_hello_after_virtual_mode(did_change_mode: bool) -> bool {
-    did_change_mode && rerequest_hello_after_virtual_mode_change()
+pub fn should_abandon_hello_after_virtual_mode(did_change_mode: bool, socket_dead: bool) -> bool {
+    did_change_mode && socket_dead && rerequest_hello_after_virtual_mode_change()
 }
 
 pub fn listen_port_from_bind(bind: &str) -> u16 {
@@ -1389,6 +1417,12 @@ mod tests {
         assert!(listen_before_virtual_prepare());
         assert!(refresh_usb_after_virtual_prepare());
         assert!(drop_parked_hellos_after_virtual_prepare());
+        assert!(keep_live_hello_after_virtual_prepare());
+        assert_eq!(skip_force_reverse_if_accept_newer_than_ms(), 3_000);
+        assert!(!should_force_reverse_after_virtual_prepare(true, None));
+        assert!(!should_force_reverse_after_virtual_prepare(false, Some(500)));
+        assert!(should_force_reverse_after_virtual_prepare(false, None));
+        assert!(should_force_reverse_after_virtual_prepare(false, Some(8_000)));
         assert!(usb_reverse_skips_package_probe());
         assert!(launch_stream_client_does_not_block_listen());
         assert!(refresh_usb_while_waiting_for_hello());
@@ -1408,8 +1442,11 @@ mod tests {
         assert!(usb_reverse_recreate_skips_recent_accept());
         assert!(usb_reverse_recent_accept_ms() >= usb_reverse_recreate_after_ms());
         assert!(rerequest_hello_after_virtual_mode_change());
-        assert!(abandon_hello_after_virtual_mode(true));
-        assert!(!abandon_hello_after_virtual_mode(false));
+        // Lenovo Xiaoxin Pad: USB stays up — keep this Hello.
+        assert!(!should_abandon_hello_after_virtual_mode(true, false));
+        // Honor-style RST after IddCx — wait for a new Hello.
+        assert!(should_abandon_hello_after_virtual_mode(true, true));
+        assert!(!should_abandon_hello_after_virtual_mode(false, true));
         // 4s is the APK connect timeout — must not --remove on that beat.
         assert!(!should_force_stale_reverse(4_000, None, None));
         assert!(!should_force_stale_reverse(2_000, None, None));
