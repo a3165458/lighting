@@ -72,7 +72,7 @@ object LitProtocol {
     fun helloJson(caps: DeviceCaps, w: Int, h: Int, maxFps: Int): ByteArray {
         val obj = JSONObject()
         obj.put("protocol", 1)
-        obj.put("device", "${caps.manufacturer} ${caps.model}".trim())
+        obj.put("device", caps.helloDeviceName())
         obj.put("screenWidth", w)
         obj.put("screenHeight", h)
         // Panel peak Hz, not decoderMaxFps. Clamping to a 60 fps codec cap

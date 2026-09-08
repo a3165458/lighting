@@ -409,15 +409,60 @@ pub fn ffmpeg_auto_conversion_filters() -> bool {
     false
 }
 
-pub fn ffmpeg_auto_conversion_filter_args() -> [&'static str; 2] {
-    [
-        "-auto_conversion_filters",
-        if ffmpeg_auto_conversion_filters() {
-            "1"
-        } else {
-            "0"
-        },
-    ]
+/// ffmpeg `OPT_BOOL`. `-auto_conversion_filters 0` does **not** turn it
+/// off: the `0` is parsed as the output URL (`Unable to find a suitable
+/// output format for '0'`), every encoder graph dies before IDR, and the
+/// pad stays on 重连中. Disable with `-noauto_conversion_filters`.
+pub fn ffmpeg_auto_conversion_cli_arg() -> &'static str {
+    if ffmpeg_auto_conversion_filters() {
+        "-auto_conversion_filters"
+    } else {
+        "-noauto_conversion_filters"
+    }
+}
+
+pub fn ffmpeg_auto_conversion_filter_args() -> [&'static str; 1] {
+    [ffmpeg_auto_conversion_cli_arg()]
+}
+
+/// Global ffmpeg boolean flags do not consume a following 0/1.
+fn ffmpeg_opt_bool(flag: &str) -> bool {
+    matches!(
+        flag,
+        "-auto_conversion_filters"
+            | "-noauto_conversion_filters"
+            | "-hide_banner"
+            | "-an"
+            | "-sn"
+            | "-dn"
+            | "-y"
+            | "-n"
+            | "-stdin"
+            | "-nostdin"
+    )
+}
+
+/// True when a stray numeric token would become ffmpeg's output URL.
+/// `-analyzeduration 0` is a value (safe). `-auto_conversion_filters 0`
+/// is a boolean plus a file named `0` (fatal).
+pub fn ffmpeg_args_have_bare_numeric_output(args: &[String]) -> bool {
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a.starts_with('-') && a != "-" {
+            if ffmpeg_opt_bool(a) {
+                i += 1;
+                continue;
+            }
+            i += 2;
+            continue;
+        }
+        if a.parse::<i32>().is_ok() {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
 /// GlideX / SuperDisplay / Moonlight: pointer and HID never share the video
@@ -1564,8 +1609,25 @@ mod tests {
         assert!(!ffmpeg_auto_conversion_filters());
         assert_eq!(
             ffmpeg_auto_conversion_filter_args(),
-            ["-auto_conversion_filters", "0"]
+            ["-noauto_conversion_filters"]
         );
+        assert_eq!(
+            ffmpeg_auto_conversion_cli_arg(),
+            "-noauto_conversion_filters"
+        );
+        assert!(ffmpeg_args_have_bare_numeric_output(&[
+            "-auto_conversion_filters".into(),
+            "0".into(),
+            "pipe:1".into(),
+        ]));
+        assert!(!ffmpeg_args_have_bare_numeric_output(&[
+            "-noauto_conversion_filters".into(),
+            "-analyzeduration".into(),
+            "0".into(),
+            "-f".into(),
+            "h264".into(),
+            "pipe:1".into(),
+        ]));
         assert_eq!(cursor_sample_interval_ms(), 1);
         assert!(gpu_scheduling_priority_high());
         assert!(mmcss_capture_threads());

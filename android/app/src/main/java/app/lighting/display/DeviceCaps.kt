@@ -27,8 +27,28 @@ data class DeviceCaps(
     val avc: CodecLimit?,
     val hevc: CodecLimit?,
 ) {
+    /** Hello.device: GSI builds report TrebleDroid, which hid 联想小新 Pad. */
+    fun helloDeviceName(): String {
+        val brand = listOf(manufacturer, model).filter { it.isNotBlank() }.joinToString(" ")
+        if (!gsi) return brand.ifBlank { "平板" }
+        val extra = listOf(Build.DEVICE, Build.PRODUCT, Build.BOARD, hardware)
+            .map { it.trim() }
+            .firstOrNull { s ->
+                s.isNotBlank() &&
+                    !s.contains("gsi", true) &&
+                    !s.contains("treble", true) &&
+                    !s.contains("lineage", true) &&
+                    !s.equals(model, ignoreCase = true)
+            }
+        return if (!extra.isNullOrBlank() && brand.isNotBlank()) {
+            "$extra · $brand"
+        } else {
+            brand.ifBlank { "平板" }
+        }
+    }
+
     fun summary(): String {
-        val title = listOf(manufacturer, model).filter { it.isNotBlank() }.joinToString(" ").ifBlank { "本机" }
+        val title = helloDeviceName().ifBlank { "本机" }
         val chip = socDisplayName() + if (gsi) " · GSI" else ""
         val avcLine = avc?.let { "AVC    ${it.width}×${it.height}@${it.fps} 硬解" }
             ?: "AVC    软解 ${decoderMaxWidth}×${decoderMaxHeight}@${decoderMaxFps}"
