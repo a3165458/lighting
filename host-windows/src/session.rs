@@ -1093,7 +1093,7 @@ async fn handle_client(
                 format!("正在把虚拟屏设为编码分辨率 {panel_w}×{panel_h}"),
             );
             let (tw, th) = (panel_w, panel_h);
-            let want_fps = hello.max_fps.max(req.fps).min(120);
+            let want_fps = hello.max_fps.max(24).min(120);
             let preserve_for_mode = preserve.clone();
             match tokio::task::spawn_blocking(move || {
                 displays::configure_virtual_for_tablet(tw, th, want_fps, preserve_for_mode.as_ref())
@@ -1137,16 +1137,22 @@ async fn handle_client(
             }
         }
     } else if req.match_device && hello.screen_width > 0 && hello.screen_height > 0 {
-        // Mirror + 跟随平板: temporarily switch the captured PC monitor toward the
-        // tablet panel so Windows「显示设置」matches. Refresh rate is protected —
-        // dropping a high-Hz panel to 60 Hz reads as stutter.
+        // Mirror + 跟随平板. Do this once per share: switching the PC
+        // panel on every Hello resets DXGI and loops 适配分辨率 / 已断开.
+        if *virtual_mode_applied {
+            set_status(
+                &status,
+                "适配平板",
+                format!("按平板分辨率编码 {}×{}", hello.screen_width, hello.screen_height),
+            );
+        } else {
         let (tw, th) = lighting_host::session_policy::orient_box(
             display.width,
             display.height,
             hello.screen_width,
             hello.screen_height,
         );
-        let prefer_fps = req.fps.max(30).min(hello.max_fps.max(60)).min(120);
+        let prefer_fps = hello.max_fps.max(30).min(60);
         let device = display.name.clone();
         let current = displays::DisplayMode {
             width: display.width,
@@ -1204,6 +1210,8 @@ async fn handle_client(
                 tracing::warn!("follow-tablet mode switch join failed: {err:#}");
             }
         }
+        *virtual_mode_applied = true;
+        }
     } else if hello.screen_width > 0 && hello.screen_height > 0 {
         set_status(
             &status,
@@ -1223,7 +1231,7 @@ async fn handle_client(
                 // Win+P /external can reset the virtual mode to 30 Hz. Put 60+
                 // back and refresh DXGI *after* the topology change.
                 let (tw, th) = (panel_w, panel_h);
-                let want_fps = hello.max_fps.max(req.fps).min(120);
+                let want_fps = hello.max_fps.max(24).min(120);
                 let preserve_for_hz = preserve.clone();
                 if tw > 0 && th > 0 {
                     match tokio::task::spawn_blocking(move || {
@@ -1344,8 +1352,16 @@ async fn handle_client(
     // parked the tablet on "avc … 等待关键帧" for the whole graph bootstrap,
     // then reconnect if the pipe died before IDR.
     let hevc = codec.eq_ignore_ascii_case("hevc") || codec.eq_ignore_ascii_case("h265");
-    let (session, bootstrap, capture_kind) =
-        start_live_encoder(&ffmpeg, display, &settings, hevc).await?;
+    set_status(&status, "编码", "正在启动抓屏…");
+    let (session, bootstrap, capture_kind) = start_live_encoder_resilient(
+        &ffmpeg,
+        display,
+        &settings,
+        hevc,
+        *virtual_mode_applied,
+        &status,
+    )
+    .await?;
     let dda_retries = 0u8;
 
     let payload = serde_json::to_vec(&cfg)?;
@@ -1801,6 +1817,47 @@ enum CaptureKind {
     Gdi,
 }
 
+async fn start_live_encoder_resilient(
+    ffmpeg: &std::path::PathBuf,
+    display: &mut DisplayInfo,
+    settings: &EncodeSettings,
+    hevc: bool,
+    after_mode_change: bool,
+    status: &Arc<Mutex<SessionStatus>>,
+) -> Result<(encoder::EncoderSession, Vec<EncodedPacket>, CaptureKind)> {
+    let attempts = lighting_host::session_policy::encoder_start_attempts().max(1);
+    let settle = Duration::from_millis(
+        lighting_host::session_policy::dda_settle_after_mode_change_ms(),
+    );
+    let mut last_err: Option<anyhow::Error> = None;
+    for i in 0..attempts {
+        if after_mode_change || i > 0 {
+            tokio::time::sleep(settle).await;
+            if let Ok(Ok(list)) = tokio::task::spawn_blocking(displays::list_displays).await {
+                if let Some(updated) = list.into_iter().find(|d| d.name == display.name) {
+                    *display = updated;
+                }
+            }
+        }
+        match start_live_encoder(ffmpeg, display, settings, hevc).await {
+            Ok(v) => return Ok(v),
+            Err(err) => {
+                tracing::warn!(
+                    "encoder start attempt {}/{attempts} failed: {err:#}",
+                    i + 1
+                );
+                set_status(
+                    status,
+                    "编码",
+                    format!("抓屏未就绪，正在重试 ({}/{})", i + 1, attempts),
+                );
+                last_err = Some(err);
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("抓屏启动失败")))
+}
+
 async fn start_live_encoder(
     ffmpeg: &std::path::PathBuf,
     display: &DisplayInfo,
@@ -2203,8 +2260,8 @@ mod tests {
     #[test]
     fn software_decode_caps_fps() {
         assert_eq!(adapted_fps(60, 60, 60, false), 45);
-        assert_eq!(adapted_fps(120, 60, 60, true), 120);
-        assert_eq!(adapted_fps(60, 60, 30, true), 120);
+        assert_eq!(adapted_fps(120, 60, 60, true), 60);
+        assert_eq!(adapted_fps(60, 60, 30, true), 30);
     }
 
     #[test]

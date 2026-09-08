@@ -32,7 +32,14 @@ class VideoDecoder {
         }
     }
 
-    fun configure(codecName: String, width: Int, height: Int, csd: ByteArray?, surface: Surface) {
+    fun configure(
+        codecName: String,
+        width: Int,
+        height: Int,
+        csd: ByteArray?,
+        surface: Surface,
+        streamFps: Int = 60,
+    ) {
         release()
         mime = if (codecName.equals("hevc", true) || codecName.equals("h265", true)) {
             MediaFormat.MIMETYPE_VIDEO_HEVC
@@ -56,7 +63,7 @@ class VideoDecoder {
         val errors = ArrayList<String>()
         for ((w, h) in sizes) {
             for (name in decoderCandidates(mime, w, h, caps)) {
-                for (format in formatVariants(w, h, csd, caps, name)) {
+                for (format in formatVariants(w, h, csd, caps, name, streamFps)) {
                     var decoder: MediaCodec? = null
                     try {
                         decoder = MediaCodec.createByCodecName(name)
@@ -203,6 +210,7 @@ class VideoDecoder {
         csd: ByteArray?,
         @Suppress("UNUSED_PARAMETER") caps: DeviceCaps,
         codecName: String,
+        streamFps: Int,
     ): List<MediaFormat> {
         val out = ArrayList<MediaFormat>()
         val software = DeviceCaps.isSoftwareDecoderName(codecName)
@@ -228,15 +236,15 @@ class VideoDecoder {
                 // FEATURE_LowLatency, so allowVendor=false let try 0
                 // configure() without qti-ext and C2 held a reconstructed
                 // picture like a movie — one refresh vs the laptop.
-                out.add(buildFormat(width, height, csd, codecName, tryNumber, true))
+                out.add(buildFormat(width, height, csd, codecName, tryNumber, true, streamFps))
             }
             // GSI / KEY_LOW_LATENCY reject used to skip to try -1 and
             // keep the default 4-8 output pool — one extra decoded
             // picture vs the laptop. Try 6 is max-output-buffers +
             // PRIORITY only (tryNumber >= 5 skips vendor / FEATURE).
-            out.add(buildFormat(width, height, csd, codecName, 6, false))
+            out.add(buildFormat(width, height, csd, codecName, 6, false, streamFps))
         }
-        out.add(buildFormat(width, height, csd, codecName, -1, false))
+        out.add(buildFormat(width, height, csd, codecName, -1, false, streamFps))
         return out
     }
 
@@ -247,12 +255,14 @@ class VideoDecoder {
         codecName: String,
         tryNumber: Int,
         allowVendor: Boolean,
+        streamFps: Int,
     ): MediaFormat {
         val format = MediaFormat.createVideoFormat(mime, width, height)
         format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 8 * 1024 * 1024)
         try {
             // Unset KEY_FRAME_RATE made some SoCs assume 30 fps and hold frames.
-            format.setInteger(MediaFormat.KEY_FRAME_RATE, 120)
+            // 120 on a 60 Hz Snapdragon 662 pad (联想小新 Pad 2020) fails configure.
+            format.setInteger(MediaFormat.KEY_FRAME_RATE, streamFps.coerceIn(24, 120))
         } catch (_: Throwable) {
         }
         if (Build.VERSION.SDK_INT >= 24) {
