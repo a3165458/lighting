@@ -146,8 +146,7 @@ fn apply_socket_buffers(stream: &TcpStream, send: usize, recv: usize) {
 fn apply_tcp_low_delay(stream: &TcpStream) {
     use std::os::windows::io::AsRawSocket;
     use windows::Win32::Networking::WinSock::{
-        setsockopt, WSAIoctl, IPPROTO_TCP, SIO_TCP_SET_ACK_FREQUENCY, SOCKET,
-        TCP_NODELAY,
+        setsockopt, WSAIoctl, IPPROTO_TCP, SIO_TCP_SET_ACK_FREQUENCY, SOCKET, TCP_NODELAY,
     };
     unsafe {
         let s = SOCKET(stream.as_raw_socket() as usize);
@@ -177,10 +176,11 @@ async fn classify_incoming(
     addr: std::net::SocketAddr,
 ) -> Result<ClassifiedStream> {
     stream.set_nodelay(true)?;
-    let hello_msg = tokio::time::timeout(Duration::from_secs(3), protocol::read_message(&mut stream))
-        .await
-        .context("Hello 超时")?
-        .context("读 Hello")?;
+    let hello_msg =
+        tokio::time::timeout(Duration::from_secs(3), protocol::read_message(&mut stream))
+            .await
+            .context("Hello 超时")?
+            .context("读 Hello")?;
     if hello_msg.ty != protocol::MSG_HELLO {
         anyhow::bail!("首包不是 Hello");
     }
@@ -392,7 +392,6 @@ async fn run_session_inner(
 
     let adb_path = adb::find_adb().ok();
     let mut reverse_serial: Option<String> = req.device_serial.clone();
-    let mut usb_wait_detail = String::new();
 
     let (stop_tx, stop_rx) = watch::channel(false);
     let stop2 = stop.clone();
@@ -459,7 +458,7 @@ async fn run_session_inner(
     )
     .await;
     reverse_serial = first_usb.serial;
-    usb_wait_detail = first_usb.wait_detail;
+    let mut usb_wait_detail = first_usb.wait_detail;
 
     let mut prepared_displays: Option<Vec<displays::DisplayInfo>> = None;
     if req.share_mode.uses_virtual_display() {
@@ -509,9 +508,10 @@ async fn run_session_inner(
                 cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref(), listen_port).await;
                 anyhow::bail!(
                     "{}",
-                    lighting_host::share_flow::virtual_prepare_abort_message(
-                        &format!("{} [{reason}]", lighting_host::ui_text::human_last_error(&reason))
-                    )
+                    lighting_host::share_flow::virtual_prepare_abort_message(&format!(
+                        "{} [{reason}]",
+                        lighting_host::ui_text::human_last_error(&reason)
+                    ))
                 );
             }
         }
@@ -526,9 +526,7 @@ async fn run_session_inner(
             let video_n = drop_parked_classified(&mut video_rx);
             let ctrl_n = drop_parked_classified(&mut ctrl_rx);
             if video_n + ctrl_n > 0 {
-                tracing::info!(
-                    "dropped {video_n} stale video / {ctrl_n} control hellos after VDD"
-                );
+                tracing::info!("dropped {video_n} stale video / {ctrl_n} control hellos after VDD");
             }
         }
         // Accepts from before IddCx must not suppress reverse --remove:
@@ -538,9 +536,7 @@ async fn run_session_inner(
         }
         let refreshed = open_usb_tunnel(
             adb_path.as_ref(),
-            reverse_serial
-                .as_deref()
-                .or(req.device_serial.as_deref()),
+            reverse_serial.as_deref().or(req.device_serial.as_deref()),
             listen_port,
             &status,
         )
@@ -697,15 +693,10 @@ async fn run_session_inner(
             &mut virtual_mode_applied,
         )
         .await;
-        let wait_after_virtual = matches!(
-            &outcome,
-            Ok(ClientOutcome::NeedHelloAfterVirtualMode)
-        );
+        let wait_after_virtual = matches!(&outcome, Ok(ClientOutcome::NeedHelloAfterVirtualMode));
         match &outcome {
             Ok(ClientOutcome::NeedHelloAfterVirtualMode) => {
-                tracing::info!(
-                    "virtual mode applied; waiting for a fresh Hello (USB may re-enum)"
-                );
+                tracing::info!("virtual mode applied; waiting for a fresh Hello (USB may re-enum)");
             }
             Ok(ClientOutcome::Finished) => {
                 tracing::info!("client session ended");
@@ -731,22 +722,20 @@ async fn run_session_inner(
                         lighting_host::session_policy::PrimaryRestoreAction::TimingOnly
                     },
                 );
-                let _ = tokio::task::spawn_blocking(move || {
-                    match action {
-                        lighting_host::session_policy::ClientDropDesktopAction::UndoExternal => {
-                            if let Err(err) = displays::restore_after_tablet_only(&snap) {
-                                tracing::warn!("restore after tablet-only disconnect: {err:#}");
-                            } else {
-                                tracing::info!("restored laptop after tablet sleep/disconnect");
-                            }
+                let _ = tokio::task::spawn_blocking(move || match action {
+                    lighting_host::session_policy::ClientDropDesktopAction::UndoExternal => {
+                        if let Err(err) = displays::restore_after_tablet_only(&snap) {
+                            tracing::warn!("restore after tablet-only disconnect: {err:#}");
+                        } else {
+                            tracing::info!("restored laptop after tablet sleep/disconnect");
                         }
-                        lighting_host::session_policy::ClientDropDesktopAction::ReassertPrimary => {
-                            if let Err(err) = displays::reassert_primary(&snap) {
-                                tracing::warn!("reassert primary after tablet drop: {err:#}");
-                            }
-                        }
-                        lighting_host::session_policy::ClientDropDesktopAction::None => {}
                     }
+                    lighting_host::session_policy::ClientDropDesktopAction::ReassertPrimary => {
+                        if let Err(err) = displays::reassert_primary(&snap) {
+                            tracing::warn!("reassert primary after tablet drop: {err:#}");
+                        }
+                    }
+                    lighting_host::session_policy::ClientDropDesktopAction::None => {}
                 })
                 .await;
             }
@@ -784,11 +773,7 @@ async fn run_session_inner(
         hello_wait = Instant::now();
         last_reverse_recreate = None;
         if wait_after_virtual {
-            set_status(
-                &status,
-                "等待设备",
-                "虚拟屏已设为平板分辨率，等待重新连接",
-            );
+            set_status(&status, "等待设备", "虚拟屏已设为平板分辨率，等待重新连接");
         } else {
             set_status(&status, "等待设备", "上一台已断开，等待重新连接");
         }
@@ -819,10 +804,7 @@ async fn open_usb_tunnel(
 ) -> UsbTunnel {
     let Some(adb_bin) = adb_path else {
         let wait_detail = "未找到 adb，平板可填电脑 IP 用 Wi-Fi 测试".to_string();
-        set_transport(
-            status,
-            "未找到 adb · 仅局域网可用（平板填电脑 IP）",
-        );
+        set_transport(status, "未找到 adb · 仅局域网可用（平板填电脑 IP）");
         set_status(status, "等待设备", wait_detail.clone());
         return UsbTunnel {
             serial: None,
@@ -841,10 +823,7 @@ async fn open_usb_tunnel(
             Some(s) => s,
             None => {
                 let wait_detail = "未检测到已授权设备，平板可填电脑 IP".to_string();
-                set_transport(
-                    status,
-                    "USB · 未检测到已授权设备，可走 Wi-Fi（填电脑 IP）",
-                );
+                set_transport(status, "USB · 未检测到已授权设备，可走 Wi-Fi（填电脑 IP）");
                 set_status(status, "等待设备", wait_detail.clone());
                 return UsbTunnel {
                     serial: None,
@@ -894,11 +873,7 @@ async fn open_usb_tunnel(
     }
 }
 
-async fn cleanup_reverse(
-    adb: Option<&std::path::PathBuf>,
-    serial: Option<&str>,
-    port: u16,
-) {
+async fn cleanup_reverse(adb: Option<&std::path::PathBuf>, serial: Option<&str>, port: u16) {
     if let (Some(adb), Some(serial)) = (adb, serial) {
         let _ = adb::remove_reverse(adb, serial, port).await;
     }
@@ -922,6 +897,7 @@ impl Drop for TabletOnlyRestoreGuard {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_client(
     incoming: ClassifiedStream,
     ctrl_rx: &mut mpsc::Receiver<ClassifiedStream>,
@@ -996,12 +972,7 @@ async fn handle_client(
             let want_fps = hello.max_fps.max(req.fps).min(120);
             let preserve_for_mode = preserve.clone();
             match tokio::task::spawn_blocking(move || {
-                displays::configure_virtual_for_tablet(
-                    tw,
-                    th,
-                    want_fps,
-                    preserve_for_mode.as_ref(),
-                )
+                displays::configure_virtual_for_tablet(tw, th, want_fps, preserve_for_mode.as_ref())
             })
             .await
             {
@@ -1017,18 +988,11 @@ async fn handle_client(
                     set_status(
                         &status,
                         "独立第二屏",
-                        format!(
-                            "虚拟屏 {}×{} · 1:1 抓取",
-                            display.width, display.height
-                        ),
+                        format!("虚拟屏 {}×{} · 1:1 抓取", display.width, display.height),
                     );
                     if session_policy::abandon_hello_after_virtual_mode(changed) {
                         while ctrl_rx.try_recv().is_ok() {}
-                        set_status(
-                            &status,
-                            "等待设备",
-                            "虚拟屏已设为平板分辨率，正在恢复 USB…",
-                        );
+                        set_status(&status, "等待设备", "虚拟屏已设为平板分辨率，正在恢复 USB…");
                         return Ok(ClientOutcome::NeedHelloAfterVirtualMode);
                     }
                 }
@@ -1055,11 +1019,7 @@ async fn handle_client(
             hello.screen_width,
             hello.screen_height,
         );
-        let prefer_fps = req
-            .fps
-            .max(30)
-            .min(hello.max_fps.max(60))
-            .min(120);
+        let prefer_fps = req.fps.max(30).min(hello.max_fps.max(60)).min(120);
         let device = display.name.clone();
         let current = displays::DisplayMode {
             width: display.width,
@@ -1084,11 +1044,7 @@ async fn handle_client(
                 }
                 let device_name = display.name.clone();
                 if let Ok(list) = displays::list_displays() {
-                    if let Some(updated) = list
-                        .iter()
-                        .find(|d| d.name == device_name)
-                        .cloned()
-                    {
+                    if let Some(updated) = list.iter().find(|d| d.name == device_name).cloned() {
                         *display = updated;
                     } else {
                         display.width = applied.width;
@@ -1154,7 +1110,9 @@ async fn handle_client(
                     .await
                     {
                         Ok(Ok((updated, _))) => *display = updated,
-                        Ok(Err(err)) => tracing::warn!("reapply virtual Hz after tablet-only: {err:#}"),
+                        Ok(Err(err)) => {
+                            tracing::warn!("reapply virtual Hz after tablet-only: {err:#}")
+                        }
                         Err(err) => tracing::warn!("reapply virtual Hz join: {err:#}"),
                     }
                 }
@@ -1189,7 +1147,7 @@ async fn handle_client(
     // still fits the decoder. Re-clamping to Hello.alignment (16) used to
     // turn 1920×1080 into 1920×1072 (not in the VDD table) and force
     // ffmpeg scale_d3d11's 10-frame pool. Mirror still clamps to the pad.
-    let (mut width, mut height) = if req.share_mode.uses_virtual_display() {
+    let (width, height) = if req.share_mode.uses_virtual_display() {
         lighting_host::session_policy::encode_keep_dda_identity(
             display.width,
             display.height,
@@ -1221,7 +1179,9 @@ async fn handle_client(
     // Honor the user's bitrate for hardware decode — auto_br used to silently
     // cap 1080p@60 to ~15 Mbps even when the slider said 25 Mbps.
     let bitrate_kbps = if hw {
-        req.bitrate_kbps.clamp(4_000, 80_000).max(auto_br.min(req.bitrate_kbps))
+        req.bitrate_kbps
+            .clamp(4_000, 80_000)
+            .max(auto_br.min(req.bitrate_kbps))
     } else {
         req.bitrate_kbps.min(12_000).clamp(4_000, 12_000)
     };
@@ -1243,10 +1203,7 @@ async fn handle_client(
         fps,
         bitrate_kbps: cfg.bitrate_kbps,
         codec: codec.clone(),
-        encoder: encoder::pick_encoder(&codec).into(),
-        profile: if codec.eq_ignore_ascii_case("hevc") || codec.eq_ignore_ascii_case("h265") {
-            "main".into()
-        } else if hw {
+        profile: if hw || codec.eq_ignore_ascii_case("hevc") || codec.eq_ignore_ascii_case("h265") {
             "main".into()
         } else {
             "baseline".into()
@@ -1261,7 +1218,7 @@ async fn handle_client(
     // then reconnect if the pipe died before IDR.
     let hevc = codec.eq_ignore_ascii_case("hevc") || codec.eq_ignore_ascii_case("h265");
     let (session, bootstrap, capture_kind) =
-        start_live_encoder(&ffmpeg, &display, &settings, hevc).await?;
+        start_live_encoder(&ffmpeg, display, &settings, hevc).await?;
     let dda_retries = 0u8;
 
     let payload = serde_json::to_vec(&cfg)?;
@@ -1379,7 +1336,12 @@ async fn handle_client(
                     }
                     match protocol::TouchEvent::parse(&msg.payload) {
                         Ok(ev) => {
-                            tracing::debug!("host got touch action={} x={} y={}", ev.action, ev.x, ev.y);
+                            tracing::debug!(
+                                "host got touch action={} x={} y={}",
+                                ev.action,
+                                ev.x,
+                                ev.y
+                            );
                             if touch_tx.send(ev).is_err() {
                                 tracing::warn!("touch queue closed");
                             }
@@ -1531,6 +1493,7 @@ async fn write_video_packet<W: tokio::io::AsyncWrite + Unpin>(
 /// leave a ready AU parked until the blocking pool ran — one scheduler
 /// slice vs the laptop, which GlideX does not pay. Writes still hop to the
 /// runtime via `Handle::block_on` so control-plane attach can keep `ctrl_rx`.
+#[allow(clippy::too_many_arguments)]
 fn video_write_loop(
     handle: tokio::runtime::Handle,
     mut writer: tokio::net::tcp::OwnedWriteHalf,
@@ -1640,10 +1603,7 @@ fn video_write_loop(
                 } else {
                     handle
                         .block_on(restart_encoder_with_bootstrap(
-                            &ffmpeg,
-                            &display,
-                            &settings,
-                            hevc,
+                            &ffmpeg, &display, &settings, hevc,
                         ))
                         .map(|(s, b)| (s, b, CaptureKind::Gdi))
                 };
@@ -1763,40 +1723,44 @@ async fn start_live_encoder(
         for graph in graphs {
             for surfaces in &surface_tries {
                 for rc in &rc_tries {
-                let mut attempt = settings.clone();
-                attempt.nvenc_surfaces = *surfaces;
-                attempt.nvenc_rc = rc.clone();
-                if enc.contains("amf") && !rc.is_empty() {
-                    attempt.amf_rc = rc.clone();
-                }
-                let mut session = match encoder::start_encoder(ffmpeg, display, &attempt, enc, &graph) {
-                    Ok(s) => s,
-                    Err(err) => {
-                        tracing::warn!("encoder {enc} spawn failed: {err:#}");
-                        last_err = Some(err);
-                        continue;
+                    let mut attempt = settings.clone();
+                    attempt.nvenc_surfaces = *surfaces;
+                    attempt.nvenc_rc = rc.clone();
+                    if enc.contains("amf") && !rc.is_empty() {
+                        attempt.amf_rc = rc.clone();
                     }
-                };
-                match wait_encoder_bootstrap(session, hevc).await {
-                    Ok((session, bootstrap)) => {
-                        let virtual_output = display.is_virtual;
-                        tracing::info!(
+                    let session =
+                        match encoder::start_encoder(ffmpeg, display, &attempt, enc, &graph) {
+                            Ok(s) => s,
+                            Err(err) => {
+                                tracing::warn!("encoder {enc} spawn failed: {err:#}");
+                                last_err = Some(err);
+                                continue;
+                            }
+                        };
+                    match wait_encoder_bootstrap(session, hevc).await {
+                        Ok((session, bootstrap)) => {
+                            let virtual_output = display.is_virtual;
+                            tracing::info!(
                             "using encoder {enc} graph={graph} surfaces={surfaces} rc={rc} (dda virtual={virtual_output})"
                         );
-                        return Ok((session, bootstrap, CaptureKind::Dda));
-                    }
-                    Err(err) => {
-                        tracing::warn!(
+                            return Ok((session, bootstrap, CaptureKind::Dda));
+                        }
+                        Err(err) => {
+                            tracing::warn!(
                             "{enc} graph died before codec-config + IDR ({graph} surfaces={surfaces} rc={rc}): {err:#}"
                         );
-                        last_err = Some(err);
+                            last_err = Some(err);
+                        }
                     }
-                }
                 }
             }
         }
     }
-    tracing::warn!("desktop duplication encoders failed, trying gdigrab: {:?}", last_err);
+    tracing::warn!(
+        "desktop duplication encoders failed, trying gdigrab: {:?}",
+        last_err
+    );
     restart_encoder_with_bootstrap(ffmpeg, display, settings, hevc)
         .await
         .map(|(session, bootstrap)| (session, bootstrap, CaptureKind::Gdi))
@@ -1831,30 +1795,32 @@ async fn restart_encoder_with_bootstrap(
         };
         for surfaces in surface_tries {
             for rc in &rc_tries {
-            let mut attempt = settings.clone();
-            attempt.nvenc_surfaces = surfaces;
-            attempt.nvenc_rc = rc.clone();
-            if enc.contains("amf") && !rc.is_empty() {
-                attempt.amf_rc = rc.clone();
-            }
-            let mut session = match encoder::start_encoder_gdigrab(ffmpeg, display, &attempt, enc) {
-                Ok(s) => s,
-                Err(err) => {
-                    tracing::warn!("gdigrab encoder {enc} failed: {err:#}");
-                    last_err = Some(err);
-                    continue;
+                let mut attempt = settings.clone();
+                attempt.nvenc_surfaces = surfaces;
+                attempt.nvenc_rc = rc.clone();
+                if enc.contains("amf") && !rc.is_empty() {
+                    attempt.amf_rc = rc.clone();
                 }
-            };
-            match wait_encoder_bootstrap(session, hevc).await {
-                Ok((session, bootstrap)) => {
-                    tracing::info!("gdigrab bootstrap ok with {enc} surfaces={surfaces} rc={rc}");
-                    return Ok((session, bootstrap));
+                let session = match encoder::start_encoder_gdigrab(ffmpeg, display, &attempt, enc) {
+                    Ok(s) => s,
+                    Err(err) => {
+                        tracing::warn!("gdigrab encoder {enc} failed: {err:#}");
+                        last_err = Some(err);
+                        continue;
+                    }
+                };
+                match wait_encoder_bootstrap(session, hevc).await {
+                    Ok((session, bootstrap)) => {
+                        tracing::info!(
+                            "gdigrab bootstrap ok with {enc} surfaces={surfaces} rc={rc}"
+                        );
+                        return Ok((session, bootstrap));
+                    }
+                    Err(err) => {
+                        tracing::warn!("{enc} closed before codec-config + IDR (surfaces={surfaces} rc={rc}): {err:#}");
+                        last_err = Some(err);
+                    }
                 }
-                Err(err) => {
-                    tracing::warn!("{enc} closed before codec-config + IDR (surfaces={surfaces} rc={rc}): {err:#}");
-                    last_err = Some(err);
-                }
-            }
             }
         }
     }
@@ -1907,13 +1873,15 @@ fn pick_codec(hello: &Hello, prefer_hevc: bool) -> String {
     } else {
         0
     };
-    let screen_area = (hello.screen_width.max(1) as u64).saturating_mul(hello.screen_height.max(1) as u64);
+    let screen_area =
+        (hello.screen_width.max(1) as u64).saturating_mul(hello.screen_height.max(1) as u64);
     let avc_area = hello
         .avc_limit
         .as_ref()
         .map(|l| (l.width.max(1) as u64).saturating_mul(l.height.max(1) as u64))
         .unwrap_or_else(|| {
-            (hello.decoder_max_width.max(1) as u64).saturating_mul(hello.decoder_max_height.max(1) as u64)
+            (hello.decoder_max_width.max(1) as u64)
+                .saturating_mul(hello.decoder_max_height.max(1) as u64)
         });
     let hevc_area = hello
         .hevc_limit
@@ -1961,6 +1929,7 @@ fn adapted_fps(req_fps: u32, hello_max: u32, dec_fps: u32, hw: bool) -> u32 {
     session_policy::encode_fps(req_fps, hello_max, dec_fps, hw)
 }
 
+#[cfg(test)]
 fn fit_to_device(
     src_w: u32,
     src_h: u32,
@@ -1987,10 +1956,6 @@ fn auto_bitrate(width: u32, height: u32, fps: u32) -> u32 {
     let mp = (width as f64 * height as f64) / 1_000_000.0;
     let kbps = (mp * fps as f64 * 120.0) as u32;
     kbps.clamp(6_000, 40_000)
-}
-
-fn fit_resolution(src_w: u32, src_h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
-    lighting_host::session_policy::fit_resolution(src_w, src_h, max_w, max_h)
 }
 
 #[cfg(test)]

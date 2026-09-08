@@ -113,11 +113,7 @@ pub fn install_replace_attempts() -> &'static [&'static [&'static str]] {
 }
 
 pub fn install_fresh_attempts() -> &'static [&'static [&'static str]] {
-    &[
-        &["--no-incremental", "-g", "-t"],
-        &["-g", "-t"],
-        &["-g"],
-    ]
+    &[&["--no-incremental", "-g", "-t"], &["-g", "-t"], &["-g"]]
 }
 
 /// Honor `adb install` waits on a USB-install confirm that never appears.
@@ -364,20 +360,19 @@ mod tests {
         assert!(am_start_succeeded(
             "Warning: Activity not started, intent has been delivered to currently running top-most instance."
         ));
-        assert_eq!(
-            am_start_succeeded("Error: Activity class does not exist."),
-            false
-        );
-        assert_eq!(
-            am_start_succeeded("Permission Denial: starting Intent not exported"),
-            false
-        );
+        assert!(!am_start_succeeded("Error: Activity class does not exist."));
+        assert!(!am_start_succeeded(
+            "Permission Denial: starting Intent not exported"
+        ));
     }
 
     #[test]
     fn adb_devices_ready_serials_ignore_offline() {
         let stdout = "List of devices attached\nHA18C874\tdevice\nemulator-5554\toffline\nXYZ\tunauthorized\n";
-        assert_eq!(parse_adb_ready_serials(stdout), vec!["HA18C874".to_string()]);
+        assert_eq!(
+            parse_adb_ready_serials(stdout),
+            vec!["HA18C874".to_string()]
+        );
         assert!(parse_adb_ready_serials("List of devices attached\n").is_empty());
     }
 
@@ -394,7 +389,9 @@ mod tests {
         assert!(needs_uninstall_reinstall(
             "Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Package signatures do not match]"
         ));
-        assert!(needs_uninstall_reinstall("INSTALL_FAILED_VERSION_DOWNGRADE"));
+        assert!(needs_uninstall_reinstall(
+            "INSTALL_FAILED_VERSION_DOWNGRADE"
+        ));
         assert!(!needs_uninstall_reinstall("Success"));
         assert!(user_action_required(
             "Failure [INSTALL_FAILED_USER_RESTRICTED]"
@@ -435,7 +432,9 @@ Packages:
 
     #[test]
     fn staged_tmp_apk_is_not_installed() {
-        assert!(!pm_path_means_installed("package:/data/local/tmp/Lighting.apk\n"));
+        assert!(!pm_path_means_installed(
+            "package:/data/local/tmp/Lighting.apk\n"
+        ));
         assert!(pm_path_means_installed(
             "package:/data/app/~~x==/app.lighting.display-abc==/base.apk\n"
         ));

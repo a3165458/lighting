@@ -5,28 +5,31 @@
 //! monitor makes extension ready. The optional control pipe is not a health gate.
 
 use anyhow::{Context, Result};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use windows::Win32::Foundation::{BOOL, CloseHandle, HANDLE, LPARAM, LUID, RECT, WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows::core::PCWSTR;
 use windows::Win32::Devices::Display::{
-    SetDisplayConfig, SDC_APPLY, SDC_TOPOLOGY_CLONE, SDC_TOPOLOGY_EXTEND,
-    SDC_TOPOLOGY_EXTERNAL, SDC_TOPOLOGY_INTERNAL, SET_DISPLAY_CONFIG_FLAGS,
+    SetDisplayConfig, SDC_APPLY, SDC_TOPOLOGY_CLONE, SDC_TOPOLOGY_EXTEND, SDC_TOPOLOGY_EXTERNAL,
+    SDC_TOPOLOGY_INTERNAL, SET_DISPLAY_CONFIG_FLAGS,
+};
+use windows::Win32::Foundation::{
+    CloseHandle, BOOL, HANDLE, LPARAM, LUID, RECT, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1};
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayDevicesW, EnumDisplayMonitors, EnumDisplaySettingsW, GetMonitorInfoW,
-    DEVMODEW, DISPLAY_DEVICEW, ENUM_CURRENT_SETTINGS, HDC, HMONITOR, MONITORINFOEXW,
-};
-use windows::Win32::Security::{
-    AdjustTokenPrivileges, GetTokenInformation, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES,
-    SE_INC_BASE_PRIORITY_NAME, SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_ELEVATION,
-    TOKEN_PRIVILEGES, TokenElevation, TOKEN_QUERY,
+    EnumDisplayDevicesW, EnumDisplayMonitors, EnumDisplaySettingsW, GetMonitorInfoW, DEVMODEW,
+    DISPLAY_DEVICEW, ENUM_CURRENT_SETTINGS, HDC, HMONITOR, MONITORINFOEXW,
 };
 use windows::Win32::Media::{timeBeginPeriod, timeEndPeriod};
+use windows::Win32::Security::{
+    AdjustTokenPrivileges, GetTokenInformation, LookupPrivilegeValueW, TokenElevation,
+    LUID_AND_ATTRIBUTES, SE_INC_BASE_PRIORITY_NAME, SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES,
+    TOKEN_ELEVATION, TOKEN_PRIVILEGES, TOKEN_QUERY,
+};
 use windows::Win32::System::Power::{
     SetThreadExecutionState, ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED,
 };
@@ -35,7 +38,6 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
 use windows::Win32::UI::WindowsAndMessaging::{MONITORINFOF_PRIMARY, SW_SHOWNORMAL};
-use windows::core::PCWSTR;
 
 use lighting_host::capture_graph::DxgiCapture;
 use lighting_host::view::{looks_virtual_display, ShareMode};
@@ -153,11 +155,7 @@ impl DisplayInfo {
         } else {
             &self.friendly
         };
-        format!(
-            "{kind} {w}×{h} · {title}",
-            w = self.width,
-            h = self.height,
-        )
+        format!("{kind} {w}×{h} · {title}", w = self.width, h = self.height,)
     }
 }
 
@@ -202,7 +200,11 @@ pub fn restore_pc_monitor() -> Result<()> {
         SetDisplayConfig(
             None,
             None,
-            SDC_APPLY | SDC_TOPOLOGY_INTERNAL | SDC_TOPOLOGY_CLONE | SDC_TOPOLOGY_EXTEND | SDC_TOPOLOGY_EXTERNAL,
+            SDC_APPLY
+                | SDC_TOPOLOGY_INTERNAL
+                | SDC_TOPOLOGY_CLONE
+                | SDC_TOPOLOGY_EXTEND
+                | SDC_TOPOLOGY_EXTERNAL,
         )
     };
     if code != 0 {
@@ -222,10 +224,7 @@ fn apply_topology(topology: SET_DISPLAY_CONFIG_FLAGS) -> Result<()> {
 }
 
 pub fn pick_display_index(displays: &[DisplayInfo], mode: ShareMode) -> Option<usize> {
-    let items: Vec<(bool, bool)> = displays
-        .iter()
-        .map(|d| (d.primary, d.is_virtual))
-        .collect();
+    let items: Vec<(bool, bool)> = displays.iter().map(|d| (d.primary, d.is_virtual)).collect();
     lighting_host::view::pick_share_target_index(&items, mode)
 }
 
@@ -235,10 +234,6 @@ pub fn has_secondary(displays: &[DisplayInfo]) -> bool {
 
 pub fn has_virtual_display(displays: &[DisplayInfo]) -> bool {
     displays.iter().any(|d| d.is_virtual)
-}
-
-pub fn pick_virtual(displays: &[DisplayInfo]) -> Option<&DisplayInfo> {
-    pick_virtual_excluding(displays, None)
 }
 
 pub fn pick_virtual_excluding<'a>(
@@ -259,10 +254,6 @@ pub fn pick_virtual_excluding<'a>(
 
 /// Ensure a real secondary desktop exists; never equate driver-store staging or
 /// a control-pipe heartbeat with a working second screen.
-pub fn ensure_secondary_display(mode: ShareMode) -> Result<()> {
-    ensure_secondary_display_with_progress(mode, |_| {}, None)
-}
-
 pub fn ensure_secondary_display_with_progress(
     mode: ShareMode,
     mut progress: impl FnMut(&str),
@@ -457,7 +448,6 @@ fn run_provision_with_uac(
     Ok(())
 }
 
-
 fn poll_share_target(
     attempts: u32,
     progress: &mut impl FnMut(&str),
@@ -509,7 +499,9 @@ fn find_vdd_bundle() -> Option<PathBuf> {
             .join("scripts")
             .join("vdd"),
     );
-    candidates.into_iter().find(|p| p.join("MttVDD.inf").is_file())
+    candidates
+        .into_iter()
+        .find(|p| p.join("MttVDD.inf").is_file())
 }
 
 /// Run bundled provision.ps1 elevated; never surfaces raw PowerShell stderr (GBK garble).
@@ -556,7 +548,9 @@ pub fn configure_virtual_for_tablet(
         target.name
     );
 
-    let current_hz = current_display_mode(&target.name).map(|m| m.fps).unwrap_or(0);
+    let current_hz = current_display_mode(&target.name)
+        .map(|m| m.fps)
+        .unwrap_or(0);
     let mut changed = false;
     if target.width != w || target.height != h || current_hz < hz {
         // Size + refresh on the virtual device only. Immediately reassert the
@@ -606,7 +600,9 @@ pub fn configure_virtual_for_tablet(
 }
 
 fn vdd_pipe_alive() -> bool {
-    vdd_send_command("PING").map(|r| r.to_ascii_uppercase().contains("PONG")).unwrap_or(false)
+    vdd_send_command("PING")
+        .map(|r| r.to_ascii_uppercase().contains("PONG"))
+        .unwrap_or(false)
 }
 
 fn vdd_set_display_count(n: u32) -> Result<()> {
@@ -721,7 +717,13 @@ fn prepare_vdd_settings(width: u32, height: u32, fps: u32) -> Result<()> {
         r#"$ErrorActionPreference='SilentlyContinue'; New-Item -Path '{VDD_REG_KEY}' -Force | Out-Null; Set-ItemProperty -Path '{VDD_REG_KEY}' -Name VDDPATH -Value '{dir_s}' -Type String"#
     );
     let _ = Command::new("powershell.exe")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &reg_ps])
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &reg_ps,
+        ])
         .creation_flags(CREATE_NO_WINDOW)
         .status();
     Ok(())
@@ -1153,7 +1155,8 @@ while ([Disp]::EnumDisplaySettings('{device}', $i, [ref]$dm)) {{
             Some(pair) => pair,
             None => continue,
         };
-        let (Ok(w), Ok(h), Ok(fps)) = (w.parse::<u32>(), h.parse::<u32>(), fps.parse::<u32>()) else {
+        let (Ok(w), Ok(h), Ok(fps)) = (w.parse::<u32>(), h.parse::<u32>(), fps.parse::<u32>())
+        else {
             continue;
         };
         modes.push(DisplayMode {
@@ -1176,17 +1179,9 @@ pub fn pick_closest_mode(
     native_w: u32,
     native_h: u32,
 ) -> Option<DisplayMode> {
-    let tuples: Vec<(u32, u32, u32)> = modes
-        .iter()
-        .map(|m| (m.width, m.height, m.fps))
-        .collect();
+    let tuples: Vec<(u32, u32, u32)> = modes.iter().map(|m| (m.width, m.height, m.fps)).collect();
     lighting_host::session_policy::pick_closest_display_mode(
-        &tuples,
-        target_w,
-        target_h,
-        prefer_fps,
-        native_w,
-        native_h,
+        &tuples, target_w, target_h, prefer_fps, native_w, native_h,
     )
     .map(|(w, h, fps)| DisplayMode {
         width: w,
@@ -1198,15 +1193,20 @@ pub fn pick_closest_mode(
 fn current_display_mode_gdi(device_name: &str) -> Result<DisplayMode> {
     let mut wide: Vec<u16> = device_name.encode_utf16().collect();
     wide.push(0);
-    let mut dm = DEVMODEW::default();
-    dm.dmSize = std::mem::size_of::<DEVMODEW>() as u16;
+    let mut dm = DEVMODEW {
+        dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+        ..Default::default()
+    };
     unsafe {
         anyhow::ensure!(
             EnumDisplaySettingsW(PCWSTR(wide.as_ptr()), ENUM_CURRENT_SETTINGS, &mut dm).as_bool(),
             "EnumDisplaySettingsW failed"
         );
     }
-    anyhow::ensure!(dm.dmPelsWidth > 0 && dm.dmPelsHeight > 0, "empty current mode");
+    anyhow::ensure!(
+        dm.dmPelsWidth > 0 && dm.dmPelsHeight > 0,
+        "empty current mode"
+    );
     Ok(DisplayMode {
         width: dm.dmPelsWidth,
         height: dm.dmPelsHeight,
@@ -1218,7 +1218,9 @@ fn current_display_mode_gdi(device_name: &str) -> Result<DisplayMode> {
 pub fn current_display_mode(device_name: &str) -> Result<DisplayMode> {
     match current_display_mode_gdi(device_name) {
         Ok(mode) => return Ok(mode),
-        Err(err) => tracing::warn!("native EnumDisplaySettings failed ({err:#}); trying PowerShell"),
+        Err(err) => {
+            tracing::warn!("native EnumDisplaySettings failed ({err:#}); trying PowerShell")
+        }
     }
     let device = device_name.replace('\'', "''");
     let ps = format!(
@@ -1288,23 +1290,13 @@ pub fn apply_follow_tablet_mode(
     let current = current_display_mode(device_name).unwrap_or(current_size);
     let min_fps = min_fps.max(30).min(current.fps.max(30));
     let modes = list_display_modes(device_name).unwrap_or_default();
-    let tuples: Vec<(u32, u32, u32)> = modes
-        .iter()
-        .map(|m| (m.width, m.height, m.fps))
-        .collect();
+    let tuples: Vec<(u32, u32, u32)> = modes.iter().map(|m| (m.width, m.height, m.fps)).collect();
     let (native_w, native_h) = lighting_host::session_policy::native_panel_mode(&tuples)
         .map(|(w, h, _)| (w, h))
         .unwrap_or((current.width, current.height));
 
-    let chosen = pick_closest_mode(
-        &modes,
-        target_w,
-        target_h,
-        min_fps,
-        native_w,
-        native_h,
-    )
-    .context("显示器没有可用的分辨率列表")?;
+    let chosen = pick_closest_mode(&modes, target_w, target_h, min_fps, native_w, native_h)
+        .context("显示器没有可用的分辨率列表")?;
 
     if !lighting_host::session_policy::should_switch_desktop_mode(
         (current.width, current.height, current.fps),
@@ -1431,7 +1423,6 @@ if ($r -ne 0) {{ throw "ChangeDisplaySettingsEx failed: $r" }}
     }
     Ok(())
 }
-
 
 pub fn discrete_gpu_friendly_name() -> Option<String> {
     let adapters = list_dxgi_adapters().unwrap_or_default();

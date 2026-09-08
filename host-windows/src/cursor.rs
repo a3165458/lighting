@@ -10,16 +10,15 @@ use std::time::Duration;
 use lighting_host::cursor_wire::{encode_cursor, CursorPacket, MAX_CURSOR_EDGE};
 use windows::Win32::Foundation::{HWND, POINT};
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, GetDIBits,
-    GetObjectW, ReleaseDC, SelectObject, BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-    DIB_RGB_COLORS, HBITMAP, HBRUSH, HDC,
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, GetDIBits, GetObjectW,
+    ReleaseDC, SelectObject, BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP,
+    HBRUSH, HDC,
 };
 use windows::Win32::System::Threading::{
     GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DrawIconEx, GetCursorInfo, GetIconInfo, CURSORINFO, CURSOR_SHOWING, DI_NORMAL,
-    ICONINFO,
+    DrawIconEx, GetCursorInfo, GetIconInfo, CURSORINFO, CURSOR_SHOWING, DI_NORMAL, ICONINFO,
 };
 
 use crate::displays::DisplayInfo;
@@ -129,7 +128,7 @@ fn sample(display: &DisplayInfo, last_handle: &mut isize) -> Option<CursorPacket
             x: rel_x.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
             y: rel_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
             hotspot_x: hot_x,
-            hotspot_y: hotspot_y,
+            hotspot_y,
             width,
             height,
             bgra: pixels,
@@ -190,7 +189,7 @@ unsafe fn grab_shape(hcursor: windows::Win32::UI::WindowsAndMessaging::HCURSOR) 
             biHeight: -(h as i32),
             biPlanes: 1,
             biBitCount: 32,
-            biCompression: BI_RGB.0 as u32,
+            biCompression: BI_RGB.0,
             ..Default::default()
         },
         ..Default::default()
@@ -264,7 +263,7 @@ unsafe fn fill_alpha_from_mask(bgra: &mut [u8], w: u32, h: u32, mask: HBITMAP, h
             biHeight: -(h as i32),
             biPlanes: 1,
             biBitCount: 32,
-            biCompression: BI_RGB.0 as u32,
+            biCompression: BI_RGB.0,
             ..Default::default()
         },
         ..Default::default()

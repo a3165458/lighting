@@ -10,7 +10,6 @@ pub const MSG_CONFIG: u8 = 2;
 pub const MSG_VIDEO: u8 = 3;
 pub const MSG_TOUCH: u8 = 4;
 pub const MSG_HEARTBEAT: u8 = 5;
-pub const MSG_ERROR: u8 = 6;
 pub const MSG_AUDIO: u8 = 7;
 pub const MSG_CURSOR: u8 = lighting_host::cursor_wire::MSG_CURSOR;
 
@@ -20,7 +19,6 @@ pub const FLAG_CODEC_CONFIG: u8 = 1 << 1;
 #[derive(Debug, Clone)]
 pub struct Message {
     pub ty: u8,
-    pub flags: u8,
     pub payload: Vec<u8>,
 }
 
@@ -115,9 +113,11 @@ fn default_audio_channels() -> u32 {
 #[derive(Debug, Clone, Copy)]
 pub struct TouchEvent {
     pub action: u8,
+    #[allow(dead_code)]
     pub pointer_id: u8,
     pub x: u16,
     pub y: u16,
+    #[allow(dead_code)]
     pub pressure: u16,
 }
 
@@ -143,16 +143,18 @@ pub async fn read_message<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Messag
         bail!("bad magic, expected LIT1");
     }
     let ty = hdr[4];
-    let flags = hdr[5];
     let len = u32::from_be_bytes(hdr[8..12].try_into().unwrap()) as usize;
     if len > MAX_PAYLOAD {
         bail!("payload too large: {len}");
     }
     let mut payload = vec![0u8; len];
     if len > 0 {
-        reader.read_exact(&mut payload).await.context("read payload")?;
+        reader
+            .read_exact(&mut payload)
+            .await
+            .context("read payload")?;
     }
-    Ok(Message { ty, flags, payload })
+    Ok(Message { ty, payload })
 }
 
 pub async fn write_message<W: AsyncWrite + Unpin>(

@@ -61,6 +61,7 @@ pub enum PrimaryRestoreAction {
     SetPrimary,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn primary_restore_action(
     current_device: Option<&str>,
     current_is_primary: bool,
@@ -554,8 +555,8 @@ pub fn qsv_scenario() -> &'static str {
 
 /// QSV `-aud`. Default 0. annexb only flushes a VCL AU on Quiet (PeekNamedPipe
 /// + up to 1 ms idle) or the next VCL. An AUD is the AU start; NVENC already
-/// emits one so the assembler cuts without waiting. Valid on h264_qsv and
-/// hevc_qsv.
+///   emits one so the assembler cuts without waiting. Valid on h264_qsv and
+///   hevc_qsv.
 pub fn qsv_aud() -> bool {
     true
 }
@@ -930,11 +931,15 @@ pub fn vdd_resolution_xml(width: u32, height: u32) -> String {
 "
     );
     for hz in vdd_refresh_rates() {
-        block.push_str(&format!("            <refresh_rate>{hz}</refresh_rate>
-"));
+        block.push_str(&format!(
+            "            <refresh_rate>{hz}</refresh_rate>
+"
+        ));
     }
-    block.push_str("        </resolution>
-");
+    block.push_str(
+        "        </resolution>
+",
+    );
     block
 }
 
@@ -1089,7 +1094,9 @@ pub fn pick_closest_display_mode(
     let (nw, nh) = if native_w >= 16 && native_h >= 16 {
         (native_w, native_h)
     } else {
-        native_panel_mode(modes).map(|(w, h, _)| (w, h)).unwrap_or((target_w, target_h))
+        native_panel_mode(modes)
+            .map(|(w, h, _)| (w, h))
+            .unwrap_or((target_w, target_h))
     };
 
     let same_aspect: Vec<(u32, u32, u32)> = modes
@@ -1116,12 +1123,9 @@ pub fn pick_closest_display_mode(
     pick_in_pool(pool, target_w, target_h)
 }
 
-fn pick_in_pool(
-    pool: &[(u32, u32, u32)],
-    target_w: u32,
-    target_h: u32,
-) -> Option<(u32, u32, u32)> {
-    let mut best: Option<((u128, u32), (u32, u32, u32))> = None;
+fn pick_in_pool(pool: &[(u32, u32, u32)], target_w: u32, target_h: u32) -> Option<(u32, u32, u32)> {
+    type ScoredMode = ((u128, u32), (u32, u32, u32));
+    let mut best: Option<ScoredMode> = None;
     for &(w, h, fps) in pool {
         let dw = w.abs_diff(target_w) as u128;
         let dh = h.abs_diff(target_h) as u128;
@@ -1194,6 +1198,7 @@ pub fn fit_resolution(src_w: u32, src_h: u32, max_w: u32, max_h: u32) -> (u32, u
 /// Final encode size: always clamp to the tablet panel when known, then ResCap
 /// ceiling, then decoder limit, then quality scale. Primary can be 2K/4K —
 /// the stream must still fit the tablet.
+#[allow(clippy::too_many_arguments)]
 pub fn compute_encode_size(
     src_w: u32,
     src_h: u32,
@@ -1264,6 +1269,7 @@ pub fn encode_keep_dda_identity(
 /// turns on ffmpeg `scale_d3d11` (hardcoded 10-frame GPU pool — GlideX
 /// native DDA has none). Quality scale < 1 used to keep a 2K desktop and
 /// scale in the filter graph for the same reason.
+#[allow(clippy::too_many_arguments)]
 pub fn virtual_panel_size(
     tablet_w: u32,
     tablet_h: u32,
@@ -1964,9 +1970,8 @@ Current AC Power Setting Index: 0x00000003
             tx.send(2).unwrap();
         });
         std::thread::sleep(std::time::Duration::from_millis(20));
-        assert_eq!(
-            done.is_finished(),
-            false,
+        assert!(
+            !done.is_finished(),
             "rendezvous must block before recv; a cap-1 queue would park 1"
         );
         assert_eq!(rx.recv().unwrap(), 1);

@@ -103,7 +103,6 @@ fn enter_mmcss_windows() {
     }
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedPacket {
     pub data: Vec<u8>,
@@ -293,10 +292,10 @@ pub fn hevc_nal_type(nal: &[u8]) -> u8 {
 pub fn nal_role(nal: &[u8], hevc: bool) -> NalRole {
     if hevc {
         match hevc_nal_type(nal) {
-            32 | 33 | 34 => NalRole::ParameterSet,
+            32..=34 => NalRole::ParameterSet,
             35 => NalRole::Aud,
             39 | 40 => NalRole::Sei,
-            19 | 20 | 21 => NalRole::Idr,
+            19..=21 => NalRole::Idr,
             0..=31 => NalRole::Vcl,
             _ => NalRole::Other,
         }
@@ -357,9 +356,8 @@ where
     // 0 is a rendezvous (std::sync::mpsc). `.max(1)` used to park one
     // 48 KB P-frame in this hop while the assembler blocked on the
     // encoded queue — one extra refresh vs GlideX. Do not clamp.
-    let (raw_tx, raw_rx) = mpsc::sync_channel::<RawMsg>(
-        crate::session_policy::annexb_raw_queue_capacity(),
-    );
+    let (raw_tx, raw_rx) =
+        mpsc::sync_channel::<RawMsg>(crate::session_policy::annexb_raw_queue_capacity());
     let reader = thread::Builder::new()
         .name("lighting-annexb-read".into())
         .spawn(move || {
@@ -468,6 +466,7 @@ where
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finish_flushed_au(
     acc: &mut Vec<u8>,
     hevc: bool,
@@ -497,6 +496,7 @@ fn finish_flushed_au(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn ingest_nal(
     nal: Vec<u8>,
     hevc: bool,
@@ -875,10 +875,7 @@ mod tests {
                     }
                     return Ok(0);
                 }
-                let n = self
-                    .chunk
-                    .min(self.data.len() - self.off)
-                    .min(buf.len());
+                let n = self.chunk.min(self.data.len() - self.off).min(buf.len());
                 buf[..n].copy_from_slice(&self.data[self.off..self.off + n]);
                 self.off += n;
                 Ok(n)
@@ -955,7 +952,13 @@ mod tests {
         };
         // Idle is 400 ms — Quiet must emit well before that.
         let pump = thread::spawn(move || {
-            pump_annexb_with_available_idle(reader, tx, false, |_| Some(0), Duration::from_millis(400))
+            pump_annexb_with_available_idle(
+                reader,
+                tx,
+                false,
+                |_| Some(0),
+                Duration::from_millis(400),
+            )
         });
         let first = rx
             .recv_timeout(Duration::from_millis(80))

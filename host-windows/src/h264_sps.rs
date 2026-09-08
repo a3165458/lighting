@@ -108,11 +108,8 @@ impl<'a> Bits<'a> {
 
     fn ue(&mut self) -> Option<u32> {
         let mut leading = 0u32;
-        loop {
-            match self.u(1)? {
-                0 => leading += 1,
-                _ => break,
-            }
+        while self.u(1)? == 0 {
+            leading += 1;
             if leading > 31 {
                 return None;
             }
@@ -123,7 +120,7 @@ impl<'a> Bits<'a> {
 
     fn se(&mut self) -> Option<i32> {
         let k = self.ue()?;
-        let n = ((k + 1) / 2) as i32;
+        let n = k.div_ceil(2) as i32;
         if k % 2 == 0 {
             Some(-n)
         } else {
@@ -220,12 +217,11 @@ fn rewrite_sps_rbsp(rbsp: &[u8]) -> Option<Vec<u8>> {
     dst.u(8, level.max(52));
     dst.copy_ue(&mut src)?;
 
-    let mut chroma_format_idc = 1u32;
     if matches!(
         profile,
         100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135
     ) {
-        chroma_format_idc = dst.copy_ue(&mut src)?;
+        let chroma_format_idc = dst.copy_ue(&mut src)?;
         if chroma_format_idc == 3 {
             dst.copy_u(&mut src, 1)?;
         }
@@ -307,7 +303,11 @@ fn copy_scaling_list(src: &mut Bits<'_>, dst: &mut Writer, size: usize) -> Optio
                 break;
             }
         }
-        last_scale = if next_scale == 0 { last_scale } else { next_scale };
+        last_scale = if next_scale == 0 {
+            last_scale
+        } else {
+            next_scale
+        };
     }
     Some(())
 }
@@ -427,12 +427,11 @@ pub fn parse_dpb(nal: &[u8]) -> Option<(u32, Option<(u32, u32)>)> {
     src.u(8)?;
     src.u(8)?;
     src.ue()?;
-    let mut chroma_format_idc = 1u32;
     if matches!(
         profile,
         100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135
     ) {
-        chroma_format_idc = src.ue()?;
+        let chroma_format_idc = src.ue()?;
         if chroma_format_idc == 3 {
             src.u(1)?;
         }
@@ -454,7 +453,11 @@ pub fn parse_dpb(nal: &[u8]) -> Option<(u32, Option<(u32, u32)>)> {
                                 break;
                             }
                         }
-                        last_scale = if next_scale == 0 { last_scale } else { next_scale };
+                        last_scale = if next_scale == 0 {
+                            last_scale
+                        } else {
+                            next_scale
+                        };
                     }
                 }
             }

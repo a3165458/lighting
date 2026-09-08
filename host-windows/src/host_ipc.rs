@@ -177,7 +177,10 @@ pub async fn read_request_line<R: AsyncBufRead + Unpin>(
         let newline = available.iter().position(|byte| *byte == b'\n');
         let take = newline.unwrap_or(available.len());
         if line.len().saturating_add(take) > MAX_REQUEST_LINE_BYTES {
-            return Err(Error::new(ErrorKind::InvalidData, "IPC request line too large"));
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "IPC request line too large",
+            ));
         }
         line.extend_from_slice(&available[..take]);
         reader.consume(take + usize::from(newline.is_some()));

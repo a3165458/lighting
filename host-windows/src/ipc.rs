@@ -18,7 +18,9 @@ pub fn resolve_port() -> u16 {
 }
 
 pub fn resolve_token() -> Option<String> {
-    std::env::var(TOKEN_ENV).ok().filter(|token| token.len() >= 32)
+    std::env::var(TOKEN_ENV)
+        .ok()
+        .filter(|token| token.len() >= 32)
 }
 
 pub async fn serve(service: HostService, port: u16, token: String) -> Result<()> {
@@ -88,15 +90,13 @@ fn dispatch(service: &HostService, req: RpcRequest, token: &str) -> RpcResponse 
             service.stop_share();
             Ok(serde_json::to_value(service.state()).unwrap_or_default())
         }
-        "setSettings" => {
-            match serde_json::from_value::<SettingsPatchDto>(req.params) {
-                Ok(patch) => {
-                    service.patch_settings(patch);
-                    Ok(serde_json::to_value(service.state()).unwrap_or_default())
-                }
-                Err(err) => Err(format!("bad settings patch: {err}")),
+        "setSettings" => match serde_json::from_value::<SettingsPatchDto>(req.params) {
+            Ok(patch) => {
+                service.patch_settings(patch);
+                Ok(serde_json::to_value(service.state()).unwrap_or_default())
             }
-        }
+            Err(err) => Err(format!("bad settings patch: {err}")),
+        },
         "installClient" => match service.install_client() {
             Ok(()) => Ok(serde_json::to_value(service.state()).unwrap_or_default()),
             Err(err) => Err(err),
