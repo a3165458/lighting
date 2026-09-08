@@ -1387,7 +1387,7 @@ async fn handle_client(
         } else {
             "baseline".into()
         },
-        draw_mouse: !hello.cursor_overlay,
+        draw_mouse: session_policy::draw_mouse_in_video(hello.cursor_overlay),
         nvenc_surfaces: lighting_host::session_policy::nvenc_surfaces(),
         nvenc_rc: lighting_host::session_policy::nvenc_rc().into(),
         amf_rc: lighting_host::session_policy::amf_rc().into(),
@@ -1451,7 +1451,8 @@ async fn handle_client(
         std::sync::Arc::new(std::sync::Mutex::new(None));
     let cursor_stop = std::sync::Arc::new(AtomicBool::new(false));
     let cursor_notify = Arc::new(Notify::new());
-    if hello.cursor_overlay {
+    let cursor_overlay = session_policy::effective_cursor_overlay(hello.cursor_overlay);
+    if cursor_overlay {
         crate::cursor::spawn_sampler(
             display.clone(),
             cursor_slot.clone(),
@@ -1459,6 +1460,8 @@ async fn handle_client(
             cursor_notify.clone(),
         );
         tracing::info!("tablet cursor overlay on; video will not bake the OS pointer");
+    } else {
+        tracing::info!("using captured OS pointer; tablet overlay stays hidden");
     }
     let display_for_input = display.clone();
     let (touch_tx, touch_rx) = std::sync::mpsc::channel::<protocol::TouchEvent>();
@@ -1489,7 +1492,7 @@ async fn handle_client(
     )
     .await;
     let mux_cursor_on_video =
-        session_policy::mux_cursor_on_video(hello.cursor_overlay, control_task.is_some());
+        session_policy::mux_cursor_on_video(cursor_overlay, control_task.is_some());
 
     if capture_kind == CaptureKind::Gdi {
         tracing::warn!("using gdigrab; games will look like 10–20 fps");
