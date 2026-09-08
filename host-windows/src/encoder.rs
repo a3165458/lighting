@@ -364,12 +364,7 @@ fn build_args(
         lighting_host::session_policy::ffmpeg_filter_threads().to_string(),
         "-avioflags".into(),
         "direct".into(),
-        "-auto_conversion_filters".into(),
-        if lighting_host::session_policy::ffmpeg_auto_conversion_filters() {
-            "1".into()
-        } else {
-            "0".into()
-        },
+        lighting_host::session_policy::ffmpeg_auto_conversion_cli_arg().into(),
     ];
 
     args.extend(capture.device_args());
@@ -447,12 +442,7 @@ pub fn start_encoder_gdigrab(
         lighting_host::session_policy::ffmpeg_filter_threads().to_string(),
         "-avioflags".into(),
         "direct".into(),
-        "-auto_conversion_filters".into(),
-        if lighting_host::session_policy::ffmpeg_auto_conversion_filters() {
-            "1".into()
-        } else {
-            "0".into()
-        },
+        lighting_host::session_policy::ffmpeg_auto_conversion_cli_arg().into(),
     ];
     args.extend(lighting_host::capture_graph::gdigrab_input_args(
         display.x,
@@ -891,5 +881,50 @@ pub fn avc_level(width: u32, height: u32, fps: u32) -> &'static str {
         "5.0"
     } else {
         "5.1"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lighting_host::capture_graph::DxgiCapture;
+
+    fn settings() -> EncodeSettings {
+        EncodeSettings {
+            width: 1920,
+            height: 1080,
+            fps: 60,
+            bitrate_kbps: 8_000,
+            codec: "avc".into(),
+            profile: "main".into(),
+            draw_mouse: false,
+            nvenc_surfaces: 1,
+            nvenc_rc: "cbr".into(),
+            amf_rc: "cbr".into(),
+        }
+    }
+
+    #[test]
+    fn dda_args_write_pipe_not_a_file_named_zero() {
+        let cap = DxgiCapture {
+            adapter_index: 0,
+            output_index: 0,
+            vendor_id: 0x10DE,
+        };
+        let args = build_args(
+            cap,
+            &settings(),
+            "h264_nvenc",
+            "ddagrab=output_idx=0:framerate=8000:draw_mouse=0:dup_frames=0",
+        );
+        assert_eq!(args.last().map(String::as_str), Some("pipe:1"));
+        assert!(
+            !lighting_host::session_policy::ffmpeg_args_have_bare_numeric_output(&args),
+            "ffmpeg would treat a bare 0 as the output URL: {args:?}"
+        );
+        assert!(args.iter().any(|a| a == "-noauto_conversion_filters"));
+        assert!(!args.windows(2).any(|w| {
+            w[0] == "-auto_conversion_filters" && (w[1] == "0" || w[1] == "1")
+        }));
     }
 }
