@@ -389,14 +389,14 @@ fn spi_set_bool(
 
 fn hide_system_cursor() {
     unsafe {
-        while ShowCursor(false) >= 0 {}
+        while ShowCursor(BOOL(0)) >= 0 {}
         blank_system_cursors();
     }
 }
 
 fn show_system_cursor() {
     unsafe {
-        while ShowCursor(true) < 0 {}
+        while ShowCursor(BOOL(1)) < 0 {}
         let _ = SystemParametersInfoW(
             SPI_SETCURSORS,
             0,
