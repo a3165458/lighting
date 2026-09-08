@@ -40,8 +40,24 @@ pub fn client_drop_desktop_action(
 /// is 60 Hz. A 60 Hz IddCx mode makes DWM/DDA wait a 16 ms vsync; 120 Hz
 /// cuts that wait in half. Never above 120: IddCx mode tables get sparse, and
 /// higher values used to retime the laptop panel.
-pub fn virtual_target_hz(_requested: u32, _tablet_max: u32) -> u32 {
-    120
+/// 120 Hz IddCx is for 90/120 Hz pads (GlideX). A 60 Hz 2020 tablet
+/// (联想小新 Pad 2020) must stay at 60: bumping 60→120 is a mode change
+/// that resets Desktop Duplication, encoder bootstrap fails, CONFIG never
+/// ships, and the UI loops 适配平板分辨率 / 上一台已断开.
+pub fn virtual_target_hz(_requested: u32, tablet_max: u32) -> u32 {
+    if tablet_max >= 90 {
+        120
+    } else {
+        60
+    }
+}
+
+pub fn encoder_start_attempts() -> u32 {
+    3
+}
+
+pub fn dda_settle_after_mode_change_ms() -> u64 {
+    700
 }
 
 /// The PC panel must never be the target of a virtual-display mode change.
@@ -846,11 +862,15 @@ pub fn audio_packets_per_video_frame() -> usize {
 /// GlideX / SuperDisplay encode at the virtual panel (120 Hz), not the
 /// tablet vsync. `min(decoder_max_fps)` used to pin a 60 Hz pad to a 16 ms
 /// encode grid even after IddCx was already presenting every 8 ms.
-pub fn encode_fps(_req_fps: u32, _tablet_max: u32, _dec_fps: u32, hw: bool) -> u32 {
+pub fn encode_fps(_req_fps: u32, tablet_max: u32, dec_fps: u32, hw: bool) -> u32 {
     if !hw {
-        45
-    } else {
+        return 45;
+    }
+    let cap = tablet_max.max(24).min(if dec_fps == 0 { 120 } else { dec_fps }).min(120);
+    if cap >= 90 {
         120
+    } else {
+        60
     }
 }
 
@@ -1618,10 +1638,11 @@ mod tests {
     #[test]
     fn encode_fps_matches_virtual_120_like_glidex() {
         assert_eq!(encode_fps(60, 120, 120, true), 120);
-        assert_eq!(encode_fps(60, 90, 60, true), 120);
+        assert_eq!(encode_fps(60, 90, 60, true), 60);
         assert_eq!(encode_fps(60, 120, 60, false), 45);
-        assert_eq!(encode_fps(30, 60, 60, true), 120);
-        assert_eq!(ffmpeg_output_fps(encode_fps(60, 60, 60, true)), 120);
+        // 联想小新 Pad 2020 is 60 Hz / SD662 — do not encode 120.
+        assert_eq!(encode_fps(30, 60, 60, true), 60);
+        assert_eq!(ffmpeg_output_fps(encode_fps(60, 60, 60, true)), 60);
         assert_ne!(ffmpeg_output_fps(120), dda_poll_hz(120));
         assert_eq!(ffmpeg_output_fps(45), 45);
         assert!(!ffmpeg_muxer_sets_output_fps());
@@ -1911,11 +1932,13 @@ mod tests {
 
     #[test]
     fn virtual_refresh_is_120_like_glidex() {
-        assert_eq!(virtual_target_hz(30, 60), 120);
-        assert_eq!(virtual_target_hz(60, 60), 120);
-        assert_eq!(virtual_target_hz(45, 30), 120);
+        assert_eq!(virtual_target_hz(30, 60), 60);
+        assert_eq!(virtual_target_hz(60, 60), 60);
+        assert_eq!(virtual_target_hz(45, 30), 60);
         assert_eq!(virtual_target_hz(120, 90), 120);
         assert_eq!(virtual_target_hz(240, 144), 120);
+        assert_eq!(encoder_start_attempts(), 3);
+        assert!(dda_settle_after_mode_change_ms() >= 400);
     }
 
     #[test]

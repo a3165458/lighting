@@ -525,7 +525,7 @@ pub fn configure_virtual_for_tablet(
 ) -> Result<(DisplayInfo, bool)> {
     let w = (width.max(16) & !1).max(16);
     let h = (height.max(16) & !1).max(16);
-    let hz = lighting_host::session_policy::virtual_target_hz(fps, 120);
+    let hz = lighting_host::session_policy::virtual_target_hz(fps, fps);
     let primary_name = preserve.map(|p| p.device.as_str());
 
     // Advertise 120 Hz in vdd_settings.xml so ChangeDisplaySettingsEx can

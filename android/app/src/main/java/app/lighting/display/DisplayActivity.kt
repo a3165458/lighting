@@ -616,6 +616,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                                 cfg.height,
                                 nal,
                                 vs,
+                                cfg.fps,
                             )
                             configured = true
                             reachedVideo = true
