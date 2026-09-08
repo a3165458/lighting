@@ -20,20 +20,25 @@ function isElevated() {
 
 const DEFAULT_PORT = 17401
 const PORT_ENV = 'LIGHTING_IPC_PORT'
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
 
 class HostIpcClient {
-  constructor() {
+  constructor(options = {}) {
     /** @type {import('node:net').Socket | null} */
     this.socket = null
     /** @type {import('node:child_process').ChildProcess | null} */
     this.child = null
     this.buffer = ''
     this.nextId = 1
-    /** @type {Map<number, {resolve: Function, reject: Function}>} */
+    /** @type {Map<number, {resolve: Function, reject: Function, timer: NodeJS.Timeout}>} */
     this.pending = new Map()
     this.port = Number(process.env[PORT_ENV] || DEFAULT_PORT)
     this.connected = false
     this._aligningVersion = false
+    this.requestTimeoutMs = Math.max(
+      1,
+      Number(options.requestTimeoutMs || DEFAULT_REQUEST_TIMEOUT_MS),
+    )
   }
 
   async ensureConnected() {
@@ -241,6 +246,7 @@ class HostIpcClient {
         this.connected = false
         this.socket = null
         for (const [, p] of this.pending) {
+          clearTimeout(p.timer)
           p.reject(new Error('与主机断开连接'))
         }
         this.pending.clear()
@@ -269,6 +275,7 @@ class HostIpcClient {
       const pending = this.pending.get(msg.id)
       if (!pending) continue
       this.pending.delete(msg.id)
+      clearTimeout(pending.timer)
       if (msg.ok) pending.resolve(msg.result)
       else pending.reject(new Error(msg.error || '主机返回错误'))
     }
@@ -281,10 +288,16 @@ class HostIpcClient {
         return
       }
       const id = this.nextId++
-      this.pending.set(id, { resolve, reject })
+      const timer = setTimeout(() => {
+        if (!this.pending.delete(id)) return
+        reject(new Error(`主机请求超时：${method}`))
+      }, this.requestTimeoutMs)
+      this.pending.set(id, { resolve, reject, timer })
       const payload = `${JSON.stringify({ id, method, params })}\n`
       this.socket.write(payload, (err) => {
         if (err) {
+          const pending = this.pending.get(id)
+          if (pending) clearTimeout(pending.timer)
           this.pending.delete(id)
           reject(err)
         }

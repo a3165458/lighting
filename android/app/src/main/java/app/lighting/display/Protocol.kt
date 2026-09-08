@@ -335,6 +335,8 @@ data class CursorUpdate(
     val bgra: ByteArray?,
 )
 
+private const val MAX_CURSOR_EDGE = 256
+
 fun parseCursor(payload: ByteArray): CursorUpdate? {
     if (payload.size < 14) return null
     val visible = payload[0].toInt() and 1 != 0
@@ -350,10 +352,11 @@ fun parseCursor(payload: ByteArray): CursorUpdate? {
     val hy = u16(8)
     val w = u16(10)
     val h = u16(12)
+    if (w > MAX_CURSOR_EDGE || h > MAX_CURSOR_EDGE) return null
     val bgra = if (hasShape) {
-        val n = w * h * 4
-        if (n <= 0 || payload.size < 14 + n) return null
-        payload.copyOfRange(14, 14 + n)
+        val n = w.toLong() * h.toLong() * 4L
+        if (n <= 0L || 14L + n > payload.size.toLong()) return null
+        payload.copyOfRange(14, 14 + n.toInt())
     } else {
         null
     }
