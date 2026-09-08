@@ -2,13 +2,13 @@ use anyhow::{Context, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use windows::Win32::Media::Audio::{
-    eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator,
-    AUDCLNT_SHAREMODE_SHARED, WAVEFORMATEX, WAVE_FORMAT_PCM,
+    eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDevice, IMMDeviceEnumerator,
+    MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED, WAVEFORMATEX, WAVE_FORMAT_PCM,
 };
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED,
+    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED,
 };
 
 const LOOPBACK: u32 = 0x0002_0000;
@@ -47,9 +47,34 @@ fn capture_loop(tx: SyncSender<AudioPacket>, stop: Arc<AtomicBool>, t0: Instant)
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
                 .context("MMDeviceEnumerator")?;
+
+        while !stop.load(Ordering::Relaxed) {
+            match capture_from_default(&enumerator, &tx, &stop, t0) {
+                Ok(()) => {}
+                Err(err) => tracing::warn!("audio loopback reopen: {err:#}"),
+            }
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(
+                lighting_host::session_policy::audio_loopback_retry_ms(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn capture_from_default(
+    enumerator: &IMMDeviceEnumerator,
+    tx: &SyncSender<AudioPacket>,
+    stop: &Arc<AtomicBool>,
+    t0: Instant,
+) -> Result<()> {
+    unsafe {
         let device = enumerator
             .GetDefaultAudioEndpoint(eRender, eConsole)
             .context("GetDefaultAudioEndpoint")?;
+        let opened_id = device_id(&device);
         let client: IAudioClient = device
             .Activate(CLSCTX_ALL, None)
             .context("Activate IAudioClient")?;
@@ -77,23 +102,59 @@ fn capture_loop(tx: SyncSender<AudioPacket>, stop: Arc<AtomicBool>, t0: Instant)
 
         let capture: IAudioCaptureClient = client.GetService().context("IAudioCaptureClient")?;
         client.Start().context("IAudioClient.Start")?;
-        tracing::info!("WASAPI loopback 48kHz stereo PCM16, 10ms packets");
+        tracing::info!(
+            "WASAPI loopback 48kHz stereo PCM16, 10ms packets (device {opened_id})"
+        );
 
         let mut acc = Vec::with_capacity(CHUNK_BYTES * 2);
+        let mut last_dev_check = Instant::now();
+        let poll = Duration::from_millis(
+            lighting_host::session_policy::audio_default_device_poll_ms(),
+        );
+        let follow = lighting_host::session_policy::audio_follow_default_render_device();
+
         while !stop.load(Ordering::Relaxed) {
-            let pending = capture.GetNextPacketSize().unwrap_or(0);
-            if pending == 0 {
-                std::thread::sleep(std::time::Duration::from_millis(2));
-                continue;
+            if follow && last_dev_check.elapsed() >= poll {
+                last_dev_check = Instant::now();
+                let now_id = default_render_id(enumerator);
+                if now_id.as_ref() != Some(&opened_id) {
+                    tracing::info!(
+                        "default render device changed ({opened_id} -> {}); reopening loopback",
+                        now_id.as_deref().unwrap_or("none")
+                    );
+                    let _ = client.Stop();
+                    return Ok(());
+                }
             }
+
+            match capture.GetNextPacketSize() {
+                Ok(0) => {
+                    std::thread::sleep(Duration::from_millis(2));
+                    continue;
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    let hr = err.code().0 as u32;
+                    tracing::warn!("WASAPI GetNextPacketSize hr=0x{hr:08x}; reopening loopback");
+                    let _ = client.Stop();
+                    return Ok(());
+                }
+            }
+
             let mut frames = 0u32;
             let mut flags = 0u32;
             let mut data_ptr: *mut u8 = std::ptr::null_mut();
-            if capture
-                .GetBuffer(&mut data_ptr, &mut frames, &mut flags, None, None)
-                .is_err()
-                || frames == 0
+            if let Err(err) = capture.GetBuffer(&mut data_ptr, &mut frames, &mut flags, None, None)
             {
+                let hr = err.code().0 as u32;
+                if lighting_host::session_policy::audio_hresult_is_device_lost(hr) {
+                    tracing::warn!("WASAPI GetBuffer hr=0x{hr:08x}; reopening loopback");
+                    let _ = client.Stop();
+                    return Ok(());
+                }
+                continue;
+            }
+            if frames == 0 {
                 continue;
             }
             let bytes = frames as usize * fmt.nBlockAlign as usize;
@@ -117,4 +178,38 @@ fn capture_loop(tx: SyncSender<AudioPacket>, stop: Arc<AtomicBool>, t0: Instant)
         let _ = client.Stop();
     }
     Ok(())
+}
+
+fn default_render_id(enumerator: &IMMDeviceEnumerator) -> Option<String> {
+    unsafe {
+        let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole).ok()?;
+        Some(device_id(&device))
+    }
+}
+
+fn device_id(device: &IMMDevice) -> String {
+    unsafe {
+        match device.GetId() {
+            Ok(pwstr) => {
+                let s = pwstr_to_string(pwstr);
+                CoTaskMemFree(Some(pwstr.0 as *const core::ffi::c_void));
+                s
+            }
+            Err(_) => String::new(),
+        }
+    }
+}
+
+unsafe fn pwstr_to_string(p: windows::core::PWSTR) -> String {
+    if p.is_null() {
+        return String::new();
+    }
+    let mut len = 0usize;
+    while *p.0.add(len) != 0 {
+        len += 1;
+        if len > 4096 {
+            break;
+        }
+    }
+    String::from_utf16_lossy(std::slice::from_raw_parts(p.0, len))
 }

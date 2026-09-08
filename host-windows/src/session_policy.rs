@@ -829,6 +829,33 @@ pub fn audio_capture_queue() -> usize {
     6
 }
 
+/// Bluetooth / HDMI going away invalidates the WASAPI client. Keep
+/// following the current default render device so the tablet still
+/// gets PCM while any host app is playing.
+pub fn audio_follow_default_render_device() -> bool {
+    true
+}
+
+pub fn audio_loopback_retry_ms() -> u64 {
+    300
+}
+
+pub fn audio_default_device_poll_ms() -> u64 {
+    250
+}
+
+/// AUDCLNT / MMDevice codes that mean "reopen loopback", not "give up".
+pub fn audio_hresult_is_device_lost(hr: u32) -> bool {
+    const AUDCLNT: u32 = 0x8889_0000;
+    const DEVICE_INVALIDATED: u32 = 0x8889_0004;
+    const NOT_FOUND: u32 = 0x8007_0490;
+    const GEN_FAILURE: u32 = 0x8007_001F;
+    hr == DEVICE_INVALIDATED
+        || hr == NOT_FOUND
+        || hr == GEN_FAILURE
+        || (hr & 0xFFFF_0000) == AUDCLNT
+}
+
 /// Wait this long for the tablet's second LIT1 socket before starting ffmpeg.
 /// The Android client opens it right after Hello, so this is usually already
 /// queued. Cursor/HID must not sit behind encoder startup.
@@ -1738,6 +1765,13 @@ mod tests {
         assert_eq!(nvenc_ldkfs(), 1);
         assert_eq!(wasapi_buffer_hns(), 300_000);
         assert_eq!(audio_capture_queue(), 6);
+        assert!(audio_follow_default_render_device());
+        assert!(audio_loopback_retry_ms() >= 100);
+        assert!(audio_default_device_poll_ms() >= 100);
+        assert!(audio_hresult_is_device_lost(0x8889_0004));
+        assert!(audio_hresult_is_device_lost(0x8889_0010));
+        assert!(audio_hresult_is_device_lost(0x8007_0490));
+        assert!(!audio_hresult_is_device_lost(0));
         assert!(!ddagrab_duplicate_frames());
         assert_eq!(dda_poll_hz(60), 8000);
         assert_eq!(dda_poll_hz(120), 8000);
