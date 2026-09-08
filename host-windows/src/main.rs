@@ -14,7 +14,7 @@ mod session;
 use std::time::Duration;
 
 use eframe::egui;
-use lighting_host::host_ipc::{DEFAULT_PORT, PORT_ENV};
+use lighting_host::host_ipc::{DEFAULT_PORT, PORT_ENV, TOKEN_ENV};
 use lighting_host::view::{self, Action};
 use lighting_host::theme;
 use service::HostService;
@@ -133,14 +133,17 @@ fn main() -> eframe::Result<()> {
     displays::raise_gpu_scheduling(unsafe { windows::Win32::System::Threading::GetCurrentProcess() });
 
     let service = HostService::new();
-    let port = ipc::resolve_port();
-    ipc::write_port_file(port);
-    ipc::spawn_background(service.clone_handle(), port);
-    tracing::info!(
-        "Lighting host IPC on 127.0.0.1:{port} (override with {PORT_ENV})"
-    );
-
     if wants_ipc_only() {
+        let port = ipc::resolve_port();
+        let Some(token) = ipc::resolve_token() else {
+            tracing::error!("--ipc-only requires a 32+ character {TOKEN_ENV}");
+            return Ok(());
+        };
+        ipc::write_port_file(port);
+        ipc::spawn_background(service.clone_handle(), port, token);
+        tracing::info!(
+            "Lighting host IPC on 127.0.0.1:{port} (override with {PORT_ENV})"
+        );
         tracing::info!("running in --ipc-only mode (no egui window)");
         loop {
             service.tick();

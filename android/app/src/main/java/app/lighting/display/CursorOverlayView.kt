@@ -285,7 +285,7 @@ class CursorOverlayView @JvmOverloads constructor(
      * / resize / first frame).
      */
     private fun applySurfacePosition(pose: Pose): Boolean {
-        if (Build.VERSION.SDK_INT < 29) return false
+        if (Build.VERSION.SDK_INT < 33) return false
         if (!pose.visible || !showing || !surfaceReady) return false
         if (visibility != VISIBLE) return false
         val b = bmp ?: return false

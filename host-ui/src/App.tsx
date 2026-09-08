@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { AppShell } from '@/components/layout/AppShell'
 import { Hero } from '@/components/sections/Hero'
 import { BootstrapBanner } from '@/components/sections/BootstrapBanner'
@@ -14,6 +14,7 @@ import {
   type HostSettingsPatch,
   type HostState,
 } from '@/lib/host'
+import { RequestGate } from '@/lib/requestGate'
 
 function Placeholder({ title, body }: { title: string; body: string }) {
   return (
@@ -28,44 +29,46 @@ export default function App() {
   const [nav, setNav] = useState<NavId>('home')
   const [host, setHost] = useState<HostState>(DISCONNECTED_STATE)
   const [busy, setBusy] = useState(false)
-
-  const applyState = useCallback((state: HostState) => {
-    setHost(state)
-  }, [])
+  const requestGate = useRef(new RequestGate())
 
   const refresh = useCallback(async () => {
-    if (!hasHostBridge() || !window.lightingHost) {
-      setHost(DISCONNECTED_STATE)
-      return
-    }
+    if (!hasHostBridge() || !window.lightingHost) return
+    const revision = requestGate.current.beginRefresh()
+    if (revision === null) return
     try {
       const state = await window.lightingHost.getState()
-      applyState(state)
+      if (requestGate.current.isCurrent(revision)) setHost(state)
     } catch (err) {
+      if (!requestGate.current.isCurrent(revision)) return
       setHost({
         ...DISCONNECTED_STATE,
         usbHint: String((err as Error).message || err),
       })
     }
-  }, [applyState])
+  }, [])
 
   useEffect(() => {
-    void refresh()
-    const id = window.setInterval(() => {
+    const initial = window.setTimeout(() => {
       void refresh()
-    }, 500)
-    return () => window.clearInterval(id)
+    }, 0)
+    const id = window.setInterval(() => void refresh(), 500)
+    return () => {
+      window.clearTimeout(initial)
+      window.clearInterval(id)
+    }
   }, [refresh])
 
   const toggleShare = useCallback(async () => {
     if (!window.lightingHost || busy) return
+    const revision = requestGate.current.beginMutation()
     setBusy(true)
     try {
       const state = host.sharing
         ? await window.lightingHost.stopShare()
         : await window.lightingHost.startShare()
-      applyState(state)
+      if (requestGate.current.isCurrent(revision)) setHost(state)
     } catch (err) {
+      if (!requestGate.current.isCurrent(revision)) return
       setHost((prev) => ({
         ...prev,
         lastError: String((err as Error).message || err),
@@ -73,13 +76,15 @@ export default function App() {
         usbTone: 'bad',
       }))
     } finally {
+      requestGate.current.finishMutation()
       setBusy(false)
     }
-  }, [applyState, busy, host.sharing])
+  }, [busy, host.sharing])
 
   const patchSettings = useCallback(
     async (patch: HostSettingsPatch) => {
       if (!window.lightingHost) return
+      const revision = requestGate.current.beginMutation()
       setHost((prev) => ({
         ...prev,
         settings: prev.settings
@@ -104,24 +109,29 @@ export default function App() {
       }))
       try {
         const state = await window.lightingHost.setSettings(patch)
-        applyState(state)
+        if (requestGate.current.isCurrent(revision)) setHost(state)
       } catch (err) {
+        if (!requestGate.current.isCurrent(revision)) return
         setHost((prev) => ({
           ...prev,
           lastError: String((err as Error).message || err),
         }))
+      } finally {
+        requestGate.current.finishMutation()
       }
     },
-    [applyState],
+    [],
   )
 
   const installClient = useCallback(async () => {
     if (!window.lightingHost || busy) return
+    const revision = requestGate.current.beginMutation()
     setBusy(true)
     try {
       const state = await window.lightingHost.installClient()
-      applyState(state)
+      if (requestGate.current.isCurrent(revision)) setHost(state)
     } catch (err) {
+      if (!requestGate.current.isCurrent(revision)) return
       setHost((prev) => ({
         ...prev,
         lastError: String((err as Error).message || err),
@@ -129,20 +139,33 @@ export default function App() {
         usbTone: 'bad',
       }))
     } finally {
+      requestGate.current.finishMutation()
       setBusy(false)
     }
-  }, [applyState, busy])
+  }, [busy])
 
   const retryBootstrap = useCallback(async () => {
     if (!window.lightingHost?.retryBootstrap) return
+    const revision = requestGate.current.beginMutation()
     setBusy(true)
     try {
       await window.lightingHost.retryBootstrap()
-      await refresh()
+      const state = await window.lightingHost.getState()
+      if (requestGate.current.isCurrent(revision)) setHost(state)
+    } catch (err) {
+      if (requestGate.current.isCurrent(revision)) {
+        setHost((prev) => ({
+          ...prev,
+          lastError: String((err as Error).message || err),
+          usbHint: String((err as Error).message || err),
+          usbTone: 'bad',
+        }))
+      }
     } finally {
+      requestGate.current.finishMutation()
       setBusy(false)
     }
-  }, [refresh])
+  }, [])
 
   const sessionForShell = {
     sharing: host.sharing,

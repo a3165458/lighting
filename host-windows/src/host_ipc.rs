@@ -2,9 +2,13 @@
 //! Wire format: newline-delimited JSON over TCP `127.0.0.1:17401`.
 
 use serde::{Deserialize, Serialize};
+use std::io::{Error, ErrorKind};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 
 pub const DEFAULT_PORT: u16 = 17401;
 pub const PORT_ENV: &str = "LIGHTING_IPC_PORT";
+pub const TOKEN_ENV: &str = "LIGHTING_IPC_TOKEN";
+pub const MAX_REQUEST_LINE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcRequest {
@@ -12,6 +16,8 @@ pub struct RpcRequest {
     pub method: String,
     #[serde(default)]
     pub params: serde_json::Value,
+    #[serde(default)]
+    pub token: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,6 +145,52 @@ pub fn encode_line(value: &impl Serialize) -> Result<String, serde_json::Error> 
 
 pub fn parse_request_line(line: &str) -> Result<RpcRequest, serde_json::Error> {
     serde_json::from_str(line.trim())
+}
+
+pub fn request_is_authorized(request: &RpcRequest, expected_token: &str) -> bool {
+    if expected_token.is_empty() || request.token.len() != expected_token.len() {
+        return false;
+    }
+    request
+        .token
+        .as_bytes()
+        .iter()
+        .zip(expected_token.as_bytes())
+        .fold(0u8, |diff, (left, right)| diff | (left ^ right))
+        == 0
+}
+
+/// Read one NDJSON request without allowing an unauthenticated local client
+/// to grow the process buffer without bound.
+pub async fn read_request_line<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+) -> std::io::Result<Option<String>> {
+    let mut line = Vec::with_capacity(1024);
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            if line.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let take = newline.unwrap_or(available.len());
+        if line.len().saturating_add(take) > MAX_REQUEST_LINE_BYTES {
+            return Err(Error::new(ErrorKind::InvalidData, "IPC request line too large"));
+        }
+        line.extend_from_slice(&available[..take]);
+        reader.consume(take + usize::from(newline.is_some()));
+        if newline.is_some() {
+            break;
+        }
+    }
+    if line.last() == Some(&b'\r') {
+        line.pop();
+    }
+    String::from_utf8(line)
+        .map(Some)
+        .map_err(|_| Error::new(ErrorKind::InvalidData, "IPC request is not UTF-8"))
 }
 
 #[cfg(test)]

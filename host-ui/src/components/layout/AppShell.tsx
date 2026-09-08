@@ -1,5 +1,4 @@
 import type { ReactNode } from 'react'
-import { useEffect, useState } from 'react'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { BottomActionBar } from '@/components/layout/BottomActionBar'
 import { StatusBar } from '@/components/layout/StatusBar'
@@ -28,11 +27,7 @@ export function AppShell({
   onAbout,
   children,
 }: Props) {
-  const [electron, setElectron] = useState(false)
-
-  useEffect(() => {
-    setElectron(isElectronShell())
-  }, [])
+  const electron = isElectronShell()
 
   return (
     <div

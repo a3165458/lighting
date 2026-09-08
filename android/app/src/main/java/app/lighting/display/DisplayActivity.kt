@@ -26,6 +26,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import java.nio.ByteBuffer
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.WindowCompat
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
@@ -96,7 +97,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         // picture — one refresh GlideX / Moonlight do not pay.
         if (Build.VERSION.SDK_INT >= 30) {
             try {
-                window.setDecorFitsSystemWindows(false)
+                WindowCompat.setDecorFitsSystemWindows(window, false)
             } catch (_: Throwable) {
             }
         }

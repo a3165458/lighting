@@ -622,9 +622,7 @@ class VideoDecoder {
             if (idx == MediaCodec.INFO_TRY_AGAIN_LATER) {
                 break
             }
-            if (idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED ||
-                idx == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED
-            ) {
+            if (idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                 continue
             }
             if (idx < 0) break

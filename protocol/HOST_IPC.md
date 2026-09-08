@@ -6,20 +6,24 @@
 
 - TCP `127.0.0.1:17401`
 - 环境变量覆盖：`LIGHTING_IPC_PORT`
+- 每个 Electron 进程生成独立的 `LIGHTING_IPC_TOKEN`（至少 32 字符），请求必须携带同一 token
+- 单条 NDJSON 请求上限 64 KiB
 - 编码：UTF-8，**一行一条 JSON**（NDJSON）
 
 ## 启动
 
 ```text
+$env:LIGHTING_IPC_TOKEN = "至少 32 字符的随机值"
 lighting-host.exe --ipc-only
 ```
 
 Electron 会自动查找并拉起 `lighting-host.exe`（`extraResources` / 同目录 / `LIGHTING_HOST_PATH`）。
+原生 egui 窗口模式不开放控制端口。
 
 ## 请求
 
 ```json
-{"id":1,"method":"getState","params":{}}
+{"id":1,"method":"getState","params":{},"token":"..."}
 ```
 
 方法：

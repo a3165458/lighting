@@ -4,14 +4,13 @@ import { isElectronShell } from '@/lib/desktop'
 import { cn } from '@/lib/cn'
 
 export function TitleBar() {
-  const [visible, setVisible] = useState(false)
   const [maximized, setMaximized] = useState(false)
+  const visible = isElectronShell()
 
   useEffect(() => {
-    if (!isElectronShell()) return
-    setVisible(true)
+    if (!visible) return
     void window.lightingDesktop?.isMaximized().then(setMaximized)
-  }, [])
+  }, [visible])
 
   if (!visible) return null
 
