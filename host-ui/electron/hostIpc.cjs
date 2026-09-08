@@ -1,4 +1,5 @@
 const net = require('node:net')
+const crypto = require('node:crypto')
 const { spawn, execFile, execFileSync } = require('node:child_process')
 const fs = require('node:fs')
 const path = require('node:path')
@@ -20,6 +21,7 @@ function isElevated() {
 
 const DEFAULT_PORT = 17401
 const PORT_ENV = 'LIGHTING_IPC_PORT'
+const TOKEN_ENV = 'LIGHTING_IPC_TOKEN'
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
 
 class HostIpcClient {
@@ -39,6 +41,7 @@ class HostIpcClient {
       1,
       Number(options.requestTimeoutMs || DEFAULT_REQUEST_TIMEOUT_MS),
     )
+    this.token = String(options.token || crypto.randomBytes(32).toString('hex'))
   }
 
   async ensureConnected() {
@@ -171,6 +174,7 @@ class HostIpcClient {
     const env = {
       ...bootstrap.runtimeEnv(),
       [PORT_ENV]: String(this.port),
+      [TOKEN_ENV]: this.token,
       LIGHTING_RESOURCES_DIR: resourcesDir,
     }
 
@@ -293,7 +297,7 @@ class HostIpcClient {
         reject(new Error(`主机请求超时：${method}`))
       }, this.requestTimeoutMs)
       this.pending.set(id, { resolve, reject, timer })
-      const payload = `${JSON.stringify({ id, method, params })}\n`
+      const payload = `${JSON.stringify({ id, method, params, token: this.token })}\n`
       this.socket.write(payload, (err) => {
         if (err) {
           const pending = this.pending.get(id)

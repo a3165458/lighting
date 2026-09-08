@@ -2,10 +2,10 @@
 
 use anyhow::{Context, Result};
 use lighting_host::host_ipc::{
-    self, encode_line, parse_request_line, RpcRequest, RpcResponse, SettingsPatchDto, DEFAULT_PORT,
-    PORT_ENV,
+    self, encode_line, parse_request_line, request_is_authorized, RpcRequest, RpcResponse,
+    SettingsPatchDto, DEFAULT_PORT, PORT_ENV, TOKEN_ENV,
 };
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::service::HostService;
@@ -17,7 +17,11 @@ pub fn resolve_port() -> u16 {
         .unwrap_or(DEFAULT_PORT)
 }
 
-pub async fn serve(service: HostService, port: u16) -> Result<()> {
+pub fn resolve_token() -> Option<String> {
+    std::env::var(TOKEN_ENV).ok().filter(|token| token.len() >= 32)
+}
+
+pub async fn serve(service: HostService, port: u16, token: String) -> Result<()> {
     let addr = format!("127.0.0.1:{port}");
     let listener = TcpListener::bind(&addr)
         .await
@@ -28,23 +32,24 @@ pub async fn serve(service: HostService, port: u16) -> Result<()> {
         let (socket, peer) = listener.accept().await?;
         tracing::info!("IPC client connected from {peer}");
         let svc = service.clone_handle();
+        let token = token.clone();
         tokio::spawn(async move {
-            if let Err(err) = handle_client(socket, svc).await {
+            if let Err(err) = handle_client(socket, svc, &token).await {
                 tracing::warn!("IPC client ended: {err:#}");
             }
         });
     }
 }
 
-async fn handle_client(socket: TcpStream, service: HostService) -> Result<()> {
+async fn handle_client(socket: TcpStream, service: HostService, token: &str) -> Result<()> {
     let (reader, mut writer) = socket.into_split();
-    let mut lines = BufReader::new(reader).lines();
-    while let Some(line) = lines.next_line().await? {
+    let mut reader = BufReader::new(reader);
+    while let Some(line) = host_ipc::read_request_line(&mut reader).await? {
         if line.trim().is_empty() {
             continue;
         }
         let response = match parse_request_line(&line) {
-            Ok(req) => dispatch(&service, req),
+            Ok(req) => dispatch(&service, req, token),
             Err(err) => RpcResponse {
                 id: 0,
                 ok: false,
@@ -58,7 +63,15 @@ async fn handle_client(socket: TcpStream, service: HostService) -> Result<()> {
     Ok(())
 }
 
-fn dispatch(service: &HostService, req: RpcRequest) -> RpcResponse {
+fn dispatch(service: &HostService, req: RpcRequest, token: &str) -> RpcResponse {
+    if !request_is_authorized(&req, token) {
+        return RpcResponse {
+            id: req.id,
+            ok: false,
+            result: None,
+            error: Some("unauthorized".into()),
+        };
+    }
     service.tick();
     let result = match req.method.as_str() {
         "ping" => Ok(serde_json::json!({ "pong": true })),
@@ -107,10 +120,10 @@ fn dispatch(service: &HostService, req: RpcRequest) -> RpcResponse {
     }
 }
 
-pub fn spawn_background(service: HostService, port: u16) {
+pub fn spawn_background(service: HostService, port: u16, token: String) {
     let rt = service.runtime();
     rt.spawn(async move {
-        if let Err(err) = serve(service, port).await {
+        if let Err(err) = serve(service, port, token).await {
             tracing::error!("IPC server failed: {err:#}");
         }
     });

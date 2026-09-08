@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, shell } = require('electron')
 const path = require('node:path')
 const { HostIpcClient } = require('./hostIpc.cjs')
 const bootstrap = require('./bootstrap.cjs')
+const { isSafeExternalUrl } = require('./security.cjs')
 
 const isDev = !app.isPackaged
 const WINDOW_WIDTH = 1440
@@ -29,7 +30,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   })
 
@@ -38,8 +39,12 @@ function createWindow() {
   })
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url)
+    if (isSafeExternalUrl(url)) void shell.openExternal(url)
     return { action: 'deny' }
+  })
+
+  mainWindow.webContents.on('will-navigate', (event) => {
+    event.preventDefault()
   })
 
   if (isDev) {

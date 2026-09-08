@@ -6,6 +6,7 @@ import android.view.SurfaceControl
 import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
+import androidx.annotation.RequiresApi
 
 /**
  * Display-path helpers. Some are @hide (missing from android.jar and
@@ -13,6 +14,10 @@ import android.view.WindowManager
  * public API 35 but every caller needs the same SDK gate + try/catch.
  */
 internal object DisplayApis {
+    fun supportsDirectSurfacePosition(sdkInt: Int): Boolean = sdkInt >= 33
+
+    fun supportsFrameRateChangeStrategy(sdkInt: Int): Boolean = sdkInt >= 31
+
     fun setPreferredRefreshRange(lp: WindowManager.LayoutParams, hz: Float) {
         try {
             val cls = lp.javaClass
@@ -33,10 +38,11 @@ internal object DisplayApis {
         return if (Build.VERSION.SDK_INT >= 31) {
             2 // Surface.FRAME_RATE_COMPATIBILITY_AT_LEAST
         } else {
-            Surface.FRAME_RATE_COMPATIBILITY_DEFAULT
+            0 // Surface.FRAME_RATE_COMPATIBILITY_DEFAULT (inlined API 30 constant)
         }
     }
 
+    @RequiresApi(29)
     fun overrideChildrenFrameRate(tx: SurfaceControl.Transaction, sc: SurfaceControl) {
         try {
             val strategy = SurfaceControl::class.java
@@ -53,6 +59,7 @@ internal object DisplayApis {
         }
     }
 
+    @RequiresApi(29)
     fun setBufferMaxCount(tx: SurfaceControl.Transaction, sc: SurfaceControl, count: Int) {
         try {
             SurfaceControl.Transaction::class.java
