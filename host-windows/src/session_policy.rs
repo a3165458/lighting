@@ -870,7 +870,7 @@ pub fn encode_fps(_req_fps: u32, tablet_max: u32, dec_fps: u32, hw: bool) -> u32
     if cap >= 90 {
         120
     } else {
-        60
+        cap.min(60).max(24)
     }
 }
 
@@ -1642,6 +1642,7 @@ mod tests {
         assert_eq!(encode_fps(60, 120, 60, false), 45);
         // 联想小新 Pad 2020 is 60 Hz / SD662 — do not encode 120.
         assert_eq!(encode_fps(30, 60, 60, true), 60);
+        assert_eq!(encode_fps(60, 60, 30, true), 30);
         assert_eq!(ffmpeg_output_fps(encode_fps(60, 60, 60, true)), 60);
         assert_ne!(ffmpeg_output_fps(120), dda_poll_hz(120));
         assert_eq!(ffmpeg_output_fps(45), 45);
