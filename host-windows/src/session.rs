@@ -624,45 +624,30 @@ async fn run_session_inner(
                             );
                             if force_stale {
                                 last_reverse_recreate = Some(Instant::now());
-                            }
-                            tokio::spawn(async move {
-                                let result = if force_stale {
-                                    adb::recreate_reverse_port(
-                                        &adb_bin,
-                                        &serial,
-                                        listen_port,
-                                    )
-                                    .await
-                                    .map(|_| false)
-                                } else {
-                                    adb::ensure_reverse_port(
-                                        &adb_bin,
-                                        &serial,
-                                        listen_port,
-                                    )
-                                    .await
-                                };
-                                match result {
-                                    Ok(restored_missing) => {
-                                        if restored_missing || force_stale {
-                                            set_transport(
-                                                &status_ref,
-                                                format!(
-                                                    "USB · adb reverse 已就绪（{serial}）"
-                                                ),
+                                // Await on this task: a spawned --remove races
+                                // the next Hello and parks the pad on 重连中.
+                                match adb::recreate_reverse_port(
+                                    &adb_bin,
+                                    &serial,
+                                    listen_port,
+                                )
+                                .await
+                                {
+                                    Ok(()) => {
+                                        let n = drop_parked_classified(&mut video_rx)
+                                            + drop_parked_classified(&mut ctrl_rx);
+                                        if n > 0 {
+                                            tracing::info!(
+                                                "dropped {n} hellos from reverse --remove"
                                             );
                                         }
-                                        if session_policy::should_relaunch_client_after_reverse(
-                                            restored_missing,
-                                            force_stale,
-                                        ) {
-                                            adb::launch_stream_client(
-                                                &adb_bin,
-                                                &serial,
-                                                listen_port,
-                                            )
-                                            .await;
+                                        if let Ok(mut slot) = last_accept.lock() {
+                                            *slot = None;
                                         }
+                                        set_transport(
+                                            &status,
+                                            format!("USB · adb reverse 已就绪（{serial}）"),
+                                        );
                                     }
                                     Err(err) => {
                                         tracing::warn!(
@@ -671,7 +656,45 @@ async fn run_session_inner(
                                     }
                                 }
                                 busy.store(false, Ordering::Relaxed);
-                            });
+                            } else {
+                                tokio::spawn(async move {
+                                    match adb::ensure_reverse_port(
+                                        &adb_bin,
+                                        &serial,
+                                        listen_port,
+                                    )
+                                    .await
+                                    {
+                                        Ok(restored_missing) => {
+                                            if restored_missing {
+                                                set_transport(
+                                                    &status_ref,
+                                                    format!(
+                                                        "USB · adb reverse 已就绪（{serial}）"
+                                                    ),
+                                                );
+                                            }
+                                            if session_policy::should_relaunch_client_after_reverse(
+                                                restored_missing,
+                                                false,
+                                            ) {
+                                                adb::launch_stream_client(
+                                                    &adb_bin,
+                                                    &serial,
+                                                    listen_port,
+                                                )
+                                                .await;
+                                            }
+                                        }
+                                        Err(err) => {
+                                            tracing::warn!(
+                                                "wait-hello reverse refresh failed: {err:#}"
+                                            );
+                                        }
+                                    }
+                                    busy.store(false, Ordering::Relaxed);
+                                });
+                            }
                         }
                     }
                 }
@@ -746,18 +769,41 @@ async fn run_session_inner(
             return Ok(());
         }
 
-        // Refresh reverse in the background so USB 127.0.0.1 is restored
-        // without stalling the already-running accept task. Do not trust
-        // a leftover --list entry from the dropped session. If the pad
-        // already parked a new Hello during IddCx, --remove would kill it.
-        let pad_already_reconnected = wait_after_virtual && !video_rx.is_empty();
-        if wait_after_virtual && !pad_already_reconnected {
+        // After IddCx mode change the Hello TCP is dead. Rebuild reverse
+        // here (not in a spawn) so `--remove` cannot overlap the retry.
+        // Parked Hellos from during --remove are half-open — drop them.
+        if wait_after_virtual && session_policy::sync_recreate_reverse_after_virtual_mode() {
             if let Ok(mut slot) = last_accept.lock() {
                 *slot = None;
             }
-        }
-        if let (Some(adb_bin), Some(serial)) = (adb_path.clone(), reverse_serial.clone()) {
-            if !pad_already_reconnected {
+            tokio::time::sleep(Duration::from_millis(
+                session_policy::virtual_mode_usb_settle_ms(),
+            ))
+            .await;
+            if let (Some(adb_bin), Some(serial)) = (adb_path.clone(), reverse_serial.clone()) {
+                set_status(&status, "等待设备", "虚拟屏已设为平板分辨率，正在恢复 USB…");
+                match adb::recreate_reverse_port(&adb_bin, &serial, listen_port).await {
+                    Ok(()) => {
+                        set_transport(
+                            &status,
+                            format!("USB · adb reverse 已就绪（{serial}）"),
+                        );
+                        if session_policy::relaunch_client_after_virtual_mode_reverse() {
+                            adb::launch_stream_client(&adb_bin, &serial, listen_port).await;
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!("re-apply adb reverse after virtual mode: {err:#}");
+                    }
+                }
+            }
+            let n = drop_parked_classified(&mut video_rx) + drop_parked_classified(&mut ctrl_rx);
+            if n > 0 {
+                tracing::info!("dropped {n} hellos from virtual-mode reverse rebuild");
+            }
+            last_reverse_recreate = Some(Instant::now());
+        } else if session_policy::background_recreate_reverse_after_client() {
+            if let (Some(adb_bin), Some(serial)) = (adb_path.clone(), reverse_serial.clone()) {
                 tokio::spawn(async move {
                     if let Err(err) =
                         adb::recreate_reverse_port(&adb_bin, &serial, listen_port).await
@@ -766,12 +812,21 @@ async fn run_session_inner(
                     }
                 });
             }
+        } else if let (Some(adb_bin), Some(serial)) = (adb_path.clone(), reverse_serial.clone()) {
+            tokio::spawn(async move {
+                if let Err(err) = adb::ensure_reverse_port(&adb_bin, &serial, listen_port).await
+                {
+                    tracing::warn!("ensure adb reverse after drop failed: {err:#}");
+                }
+            });
         }
         if let Ok(mut st) = status.lock() {
             clear_peer_metrics(&mut st);
         }
         hello_wait = Instant::now();
-        last_reverse_recreate = None;
+        if !wait_after_virtual {
+            last_reverse_recreate = None;
+        }
         if wait_after_virtual {
             set_status(&status, "等待设备", "虚拟屏已设为平板分辨率，等待重新连接");
         } else {
