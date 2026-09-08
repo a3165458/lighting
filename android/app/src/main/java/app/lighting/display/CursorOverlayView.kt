@@ -171,7 +171,9 @@ class CursorOverlayView @JvmOverloads constructor(
             // holds a decoded picture until the next vsync — one
             // refresh vs the laptop. 2 is ping-pong; 1 tears.
             // Public on API 34; reflection no-ops on older builds.
-            DisplayApis.setBufferMaxCount(tx, sc, 2)
+            // 1: a 2-slot overlay queue kept the previous pose on screen
+            // as a ghost next to the live pointer.
+            DisplayApis.setBufferMaxCount(tx, sc, 1)
 
             tx.apply()
         } catch (_: Throwable) {

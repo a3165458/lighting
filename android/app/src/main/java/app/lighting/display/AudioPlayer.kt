@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 class AudioPlayer(sampleRate: Int, channels: Int) {
     private val track: AudioTrack
-    private val queue = ArrayBlockingQueue<ByteArray>(2)
+    private val queue = ArrayBlockingQueue<ByteArray>(8)
     private val running = AtomicBoolean(true)
     val lastPtsUs = AtomicLong(0)
     private val worker: Thread
@@ -31,7 +31,7 @@ class AudioPlayer(sampleRate: Int, channels: Int) {
         val builder = AudioTrack.Builder()
             .setAudioAttributes(attrs)
             .setAudioFormat(format)
-            .setBufferSizeInBytes(min.coerceAtLeast(1))
+            .setBufferSizeInBytes((min * 3).coerceAtLeast(1))
             .setTransferMode(AudioTrack.MODE_STREAM)
         if (Build.VERSION.SDK_INT >= 26) {
             builder.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)

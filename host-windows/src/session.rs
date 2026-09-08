@@ -264,14 +264,37 @@ fn spawn_cursor_control(
     })
 }
 
-fn take_latest_audio(
+fn take_audio_packets(
     rx: &std::sync::mpsc::Receiver<crate::audio::AudioPacket>,
-) -> Option<crate::audio::AudioPacket> {
-    let mut last = None;
-    while let Ok(pkt) = rx.try_recv() {
-        last = Some(pkt);
+    max: usize,
+) -> Vec<crate::audio::AudioPacket> {
+    let mut out = Vec::new();
+    let keep = lighting_host::session_policy::audio_packets_to_send(usize::MAX, max);
+    while out.len() < keep {
+        match rx.try_recv() {
+            Ok(pkt) => out.push(pkt),
+            Err(_) => break,
+        }
     }
-    last
+    out
+}
+
+fn encode_audio_packet(ap: &crate::audio::AudioPacket) -> Vec<u8> {
+    let audio_payload = protocol::with_pts(ap.pts_us, &ap.pcm);
+    session_policy::lit1_encode(protocol::MSG_AUDIO, 0, &audio_payload)
+}
+
+fn append_pending_audio(
+    out: &mut Vec<u8>,
+    rx: &std::sync::mpsc::Receiver<crate::audio::AudioPacket>,
+) {
+    let max = session_policy::audio_packets_per_video_frame();
+    if max == 0 {
+        return;
+    }
+    for ap in take_audio_packets(rx, max) {
+        out.extend_from_slice(&encode_audio_packet(&ap));
+    }
 }
 
 fn bind_control(
@@ -1077,11 +1100,12 @@ async fn handle_client(
         dec_h,
         align,
     );
+    let mut after_virtual_mode_change = false;
     if req.share_mode.uses_virtual_display() && hello.screen_width > 0 && hello.screen_height > 0 {
         // Independent second screen: virtual monitor = encode size so
         // capture is 1:1 (no scaling anywhere) and the PC monitor is untouched.
-        // Changing IddCx after Hello resets DDA: encoder retries forever,
-        // CONFIG never ships, Stop is ignored. Encode the panel already up.
+        // Mode change still resets DDA; encoder start waits dda_settle and
+        // Stop is polled. Skipping this left 16:9 VDD letterboxed on 16:10.
         if !session_policy::resize_virtual_display_after_hello() {
             *virtual_mode_applied = true;
             set_status(
@@ -1124,6 +1148,7 @@ async fn handle_client(
                     );
                     *display = updated;
                     *virtual_mode_applied = true;
+                    after_virtual_mode_change = changed;
                     set_status(
                         &status,
                         "独立第二屏",
@@ -1189,6 +1214,7 @@ async fn handle_client(
                     restore.mode.width != applied.width || restore.mode.height != applied.height;
                 if changed {
                     mode_guard.0 = Some(restore);
+                    after_virtual_mode_change = true;
                 }
                 let device_name = display.name.clone();
                 if let Ok(list) = displays::list_displays() {
@@ -1259,7 +1285,10 @@ async fn handle_client(
                     })
                     .await
                     {
-                        Ok(Ok((updated, _))) => *display = updated,
+                        Ok(Ok((updated, changed))) => {
+                            *display = updated;
+                            after_virtual_mode_change = after_virtual_mode_change || changed;
+                        }
                         Ok(Err(err)) => {
                             tracing::warn!("reapply virtual Hz after tablet-only: {err:#}")
                         }
@@ -1373,7 +1402,7 @@ async fn handle_client(
         display,
         &settings,
         hevc,
-        false,
+        after_virtual_mode_change,
         &status,
         &stop,
     )
@@ -1718,6 +1747,8 @@ fn video_write_loop(
         }
         let tick = if mux {
             Duration::from_millis(1)
+        } else if session_policy::audio_flush_on_video_timeout() {
+            Duration::from_millis(10)
         } else {
             Duration::from_millis(1_000)
         };
@@ -1729,16 +1760,7 @@ fn video_write_loop(
                         out.extend_from_slice(&encode_video_packet(t0, &more));
                     }
                 }
-                if session_policy::audio_packets_per_video_frame() > 0 {
-                    if let Some(ap) = take_latest_audio(&audio_rx) {
-                        let audio_payload = protocol::with_pts(ap.pts_us, &ap.pcm);
-                        out.extend_from_slice(&session_policy::lit1_encode(
-                            protocol::MSG_AUDIO,
-                            0,
-                            &audio_payload,
-                        ));
-                    }
-                }
+                append_pending_audio(&mut out, &audio_rx);
                 let sent = out.len();
                 if handle.block_on(writer.write_all(&out)).is_err() {
                     break;
@@ -1752,7 +1774,21 @@ fn video_write_loop(
                     s.connected_secs = t0.elapsed().as_secs();
                 }
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if session_policy::audio_flush_on_video_timeout() {
+                    let mut out = Vec::new();
+                    append_pending_audio(&mut out, &audio_rx);
+                    if !out.is_empty() {
+                        if handle.block_on(writer.write_all(&out)).is_err() {
+                            break;
+                        }
+                        if handle.block_on(writer.flush()).is_err() {
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 session.stop();
                 let retry_dda = capture_kind == CaptureKind::Dda && dda_retries < 1;
@@ -1855,7 +1891,12 @@ async fn start_live_encoder_resilient(
     status: &Arc<Mutex<SessionStatus>>,
     stop: &Arc<AtomicBool>,
 ) -> Result<(encoder::EncoderSession, Vec<EncodedPacket>, CaptureKind)> {
-    let attempts = lighting_host::session_policy::encoder_start_attempts().max(1);
+    let attempts = if after_mode_change {
+        lighting_host::session_policy::encoder_start_attempts_after_mode_change()
+    } else {
+        lighting_host::session_policy::encoder_start_attempts()
+    }
+    .max(1);
     let settle = Duration::from_millis(
         lighting_host::session_policy::dda_settle_after_mode_change_ms(),
     );
