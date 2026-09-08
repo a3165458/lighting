@@ -23,6 +23,7 @@ const DEFAULT_PORT = 17401
 const PORT_ENV = 'LIGHTING_IPC_PORT'
 const TOKEN_ENV = 'LIGHTING_IPC_TOKEN'
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000
+const MAX_RESPONSE_LINE_BYTES = 1024 * 1024
 
 class HostIpcClient {
   constructor(options = {}) {
@@ -37,6 +38,7 @@ class HostIpcClient {
     this.port = Number(process.env[PORT_ENV] || DEFAULT_PORT)
     this.connected = false
     this._aligningVersion = false
+    this._connectPromise = null
     this.requestTimeoutMs = Math.max(
       1,
       Number(options.requestTimeoutMs || DEFAULT_REQUEST_TIMEOUT_MS),
@@ -44,14 +46,21 @@ class HostIpcClient {
     this.token = String(options.token || crypto.randomBytes(32).toString('hex'))
   }
 
-  async ensureConnected() {
+  ensureConnected() {
+    if (!this._connectPromise) {
+      this._connectPromise = this.connectAndAlign().finally(() => {
+        this._connectPromise = null
+      })
+    }
+    return this._connectPromise
+  }
+
+  async connectAndAlign() {
     if (!(this.socket && this.connected)) {
       await this.startHostIfNeeded()
       await this.connectWithRetry(30, 300)
     }
-    if (!this._aligningVersion) {
-      await this.alignHostVersion()
-    }
+    if (!this._aligningVersion) await this.alignHostVersion()
   }
 
   /**
@@ -233,6 +242,14 @@ class HostIpcClient {
     this.connected = false
   }
 
+  rejectPending(error) {
+    for (const [, pending] of this.pending) {
+      clearTimeout(pending.timer)
+      pending.reject(error)
+    }
+    this.pending.clear()
+  }
+
   connect() {
     return new Promise((resolve, reject) => {
       if (this.socket) {
@@ -249,11 +266,7 @@ class HostIpcClient {
       socket.on('close', () => {
         this.connected = false
         this.socket = null
-        for (const [, p] of this.pending) {
-          clearTimeout(p.timer)
-          p.reject(new Error('与主机断开连接'))
-        }
-        this.pending.clear()
+        this.rejectPending(new Error('与主机断开连接'))
       })
       socket.on('connect', () => {
         this.socket = socket
@@ -267,6 +280,10 @@ class HostIpcClient {
     this.buffer += chunk
     let idx
     while ((idx = this.buffer.indexOf('\n')) >= 0) {
+      if (Buffer.byteLength(this.buffer.slice(0, idx), 'utf8') > MAX_RESPONSE_LINE_BYTES) {
+        this.rejectOversizedResponse()
+        return
+      }
       const line = this.buffer.slice(0, idx).trim()
       this.buffer = this.buffer.slice(idx + 1)
       if (!line) continue
@@ -283,6 +300,15 @@ class HostIpcClient {
       if (msg.ok) pending.resolve(msg.result)
       else pending.reject(new Error(msg.error || '主机返回错误'))
     }
+    if (Buffer.byteLength(this.buffer, 'utf8') > MAX_RESPONSE_LINE_BYTES) {
+      this.rejectOversizedResponse()
+    }
+  }
+
+  rejectOversizedResponse() {
+    this.buffer = ''
+    this.rejectPending(new Error('主机响应过大'))
+    this.disconnectSocket()
   }
 
   rawInvoke(method, params = {}) {
