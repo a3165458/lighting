@@ -56,16 +56,23 @@ pub fn encoder_start_attempts() -> u32 {
     1
 }
 
+/// Mode change invalidates DXGI. One extra graph after settle, not the
+/// old unbounded "抓屏未就绪，正在重试" loop.
+pub fn encoder_start_attempts_after_mode_change() -> u32 {
+    2
+}
+
 pub fn dda_settle_after_mode_change_ms() -> u64 {
     400
 }
 
-/// Changing IddCx size/Hz after Hello resets Desktop Duplication. The
-/// encoder then sits on "抓屏未就绪，正在重试", CONFIG never ships, the
-/// pad stays 重连中, and Stop is ignored until every ffmpeg graph times
-/// out. Encode the panel that is already up; 1:1 can wait.
+/// Size IddCx to the tablet panel after Hello so capture is 1:1 and the
+/// pad SCALE_TO_FITs without letterbox. v0.1.62 skipped this because a
+/// mode change plus ffmpeg writing a file named `0` meant CONFIG never
+/// arrived. The encoder now settles DDA, Stop is polled, and ffmpeg
+/// ends at `pipe:1`.
 pub fn resize_virtual_display_after_hello() -> bool {
-    false
+    true
 }
 
 /// The PC panel must never be the target of a virtual-display mode change.
@@ -810,14 +817,16 @@ pub fn x264_params(gop: u32, level: &str) -> String {
     )
 }
 
-/// WASAPI shared-mode loopback buffer, 100-ns units. 50 ms was audible lag.
+/// WASAPI shared-mode loopback buffer, 100-ns units. 20 ms underran the
+/// 10 ms packets (沙哑); 50 ms was audible lag. 30 ms is the middle.
 pub fn wasapi_buffer_hns() -> i64 {
-    200_000
+    300_000
 }
 
-/// Host audio packets waiting for the next video AU. take_latest keeps one.
+/// Host audio packets waiting for the next video AU. 2 + take-latest
+/// dropped 40% of PCM at 60 Hz (10 ms kept per 16 ms picture).
 pub fn audio_capture_queue() -> usize {
-    2
+    6
 }
 
 /// Wait this long for the tablet's second LIT1 socket before starting ffmpeg.
@@ -831,6 +840,18 @@ pub fn control_attach_wait_ms() -> u64 {
 /// for an overlay but the control socket never showed up (old APK).
 pub fn mux_cursor_on_video(cursor_overlay: bool, control_attached: bool) -> bool {
     cursor_overlay && !control_attached
+}
+
+/// IddCx software-cursors land in the duplicated bits even with
+/// `draw_mouse=0`. Hide the OS pointer on the captured display so the
+/// tablet overlay is the only one (no 拖影).
+pub fn hide_os_cursor_on_captured_display() -> bool {
+    true
+}
+
+/// Windows pointer trails paint extra copies into the framebuffer.
+pub fn suppress_mouse_trails_while_sharing() -> bool {
+    true
 }
 
 /// TCP send buffer. Video+PCM now go in one write (~30 KB P at 25 Mbps/120 Hz,
@@ -907,9 +928,24 @@ pub fn dda_poll_hz(_encode_fps: u32) -> u32 {
 }
 
 /// Audio must never drain ahead of a video AU on the same TCP writer.
-/// Keep the latest packet only so loopback cannot HOL-block the desktop.
+/// Keep chronological PCM, newest last. take-latest (1) left 10 ms of
+/// audio per 16 ms picture at 60 Hz — underrun / 沙哑.
 pub fn audio_packets_per_video_frame() -> usize {
-    1
+    3
+}
+
+/// How many waiting 10 ms PCM packets may ride with one video AU.
+pub fn audio_packets_to_send(pending: usize, max: usize) -> usize {
+    if max == 0 {
+        0
+    } else {
+        pending.min(max)
+    }
+}
+
+/// Video recv_timeout used to skip PCM when the next AU was late.
+pub fn audio_flush_on_video_timeout() -> bool {
+    true
 }
 
 /// GlideX / SuperDisplay encode at the virtual panel (120 Hz), not the
@@ -1688,8 +1724,8 @@ mod tests {
         assert_eq!(nvenc_surface_attempts(), vec![1, 2]);
         assert!(!nvenc_spatial_aq());
         assert_eq!(nvenc_ldkfs(), 1);
-        assert_eq!(wasapi_buffer_hns(), 200_000);
-        assert_eq!(audio_capture_queue(), 2);
+        assert_eq!(wasapi_buffer_hns(), 300_000);
+        assert_eq!(audio_capture_queue(), 6);
         assert!(!ddagrab_duplicate_frames());
         assert_eq!(dda_poll_hz(60), 8000);
         assert_eq!(dda_poll_hz(120), 8000);
@@ -1739,11 +1775,17 @@ mod tests {
         assert!(ffmpeg_pipe_buffer_bytes() > 16 * 1024);
         // annexb read vec must be this size: larger and n==buf.len() never
         // fires, so a full-pipe IDR Quiet-flushes a truncated slice.
-        assert_eq!(audio_packets_per_video_frame(), 1);
+        assert_eq!(audio_packets_per_video_frame(), 3);
+        assert_eq!(audio_packets_to_send(5, 3), 3);
+        assert_eq!(audio_packets_to_send(1, 3), 1);
+        assert_eq!(audio_packets_to_send(5, 0), 0);
+        assert!(audio_flush_on_video_timeout());
         assert_eq!(control_attach_wait_ms(), 0);
         assert!(mux_cursor_on_video(true, false));
         assert!(!mux_cursor_on_video(true, true));
         assert!(!mux_cursor_on_video(false, false));
+        assert!(hide_os_cursor_on_captured_display());
+        assert!(suppress_mouse_trails_while_sharing());
     }
 
     #[test]
@@ -2033,8 +2075,21 @@ mod tests {
         assert_eq!(virtual_target_hz(120, 90), 120);
         assert_eq!(virtual_target_hz(240, 144), 120);
         assert_eq!(encoder_start_attempts(), 1);
+        assert_eq!(encoder_start_attempts_after_mode_change(), 2);
         assert!(dda_settle_after_mode_change_ms() >= 200);
-        assert!(!resize_virtual_display_after_hello());
+        assert!(resize_virtual_display_after_hello());
+    }
+
+    #[test]
+    fn extend_one_pointer_stable_audio_and_fill_tablet() {
+        assert!(hide_os_cursor_on_captured_display());
+        assert!(suppress_mouse_trails_while_sharing());
+        assert!(!mux_cursor_on_video(true, true));
+        assert!(audio_packets_per_video_frame() >= 2);
+        assert!(audio_flush_on_video_timeout());
+        assert!(resize_virtual_display_after_hello());
+        let (w, h) = virtual_panel_size(2000, 1200, 3840, 2160, 1.0, 3840, 2160, 16);
+        assert_eq!((w, h), (2000, 1200));
     }
 
     #[test]

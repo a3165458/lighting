@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lighting_host::cursor_wire::{encode_cursor, CursorPacket, MAX_CURSOR_EDGE};
-use windows::Win32::Foundation::{HWND, POINT};
+use windows::Win32::Foundation::{BOOL, HINSTANCE, HWND, POINT};
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, GetDIBits, GetObjectW,
     ReleaseDC, SelectObject, BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HBITMAP,
@@ -18,7 +18,12 @@ use windows::Win32::System::Threading::{
     GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DrawIconEx, GetCursorInfo, GetIconInfo, CURSORINFO, CURSOR_SHOWING, DI_NORMAL, ICONINFO,
+    CreateCursor, DrawIconEx, GetCursorInfo, GetIconInfo, GetSystemMetrics, SetSystemCursor,
+    ShowCursor, SystemParametersInfoW, CURSORINFO, CURSOR_SHOWING, DI_NORMAL, ICONINFO,
+    OCR_APPSTARTING, OCR_CROSS, OCR_HAND, OCR_IBEAM, OCR_NO, OCR_NORMAL, OCR_SIZEALL,
+    OCR_SIZENESW, OCR_SIZENS, OCR_SIZENWSE, OCR_SIZEWE, OCR_WAIT, SM_CXCURSOR, SM_CYCURSOR,
+    SPIF_SENDCHANGE, SPI_GETCURSORSHADOW, SPI_GETMOUSETRAILS, SPI_SETCURSORS,
+    SPI_SETCURSORSHADOW, SPI_SETMOUSETRAILS, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
 };
 
 use crate::displays::DisplayInfo;
@@ -39,6 +44,7 @@ pub fn spawn_sampler(
                 let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
             }
             lighting_host::annexb::enter_mmcss();
+            let mut suppress = CursorSuppress::enter();
             let mut last_handle = 0isize;
             let mut last_vis = false;
             let mut last_x = i16::MIN;
@@ -50,6 +56,7 @@ pub fn spawn_sampler(
                     ));
                     continue;
                 };
+                suppress.set_on_captured_display(sample.visible);
                 let moved = sample.x != last_x || sample.y != last_y || sample.visible != last_vis;
                 let shaped = sample.bgra.is_some();
                 if moved || shaped {
@@ -291,4 +298,147 @@ unsafe fn fill_alpha_from_mask(bgra: &mut [u8], w: u32, h: u32, mask: HBITMAP, h
         };
     }
     let _ = DeleteDC(hdc);
+}
+
+/// Hide the OS pointer on the captured virtual display and kill mouse
+/// trails so the tablet overlay is the only pointer (no 拖影).
+struct CursorSuppress {
+    trails: u32,
+    shadow: BOOL,
+    hidden: bool,
+}
+
+impl CursorSuppress {
+    fn enter() -> Self {
+        let trails = spi_get_u32(SPI_GETMOUSETRAILS);
+        let shadow = BOOL(spi_get_u32(SPI_GETCURSORSHADOW) as i32);
+        if lighting_host::session_policy::suppress_mouse_trails_while_sharing() {
+            spi_set_uiparam(SPI_SETMOUSETRAILS, 0);
+            spi_set_bool(SPI_SETCURSORSHADOW, BOOL(0));
+        }
+        Self {
+            trails,
+            shadow,
+            hidden: false,
+        }
+    }
+
+    fn set_on_captured_display(&mut self, on: bool) {
+        if !lighting_host::session_policy::hide_os_cursor_on_captured_display() {
+            return;
+        }
+        if on && !self.hidden {
+            hide_system_cursor();
+            self.hidden = true;
+        } else if !on && self.hidden {
+            show_system_cursor();
+            self.hidden = false;
+        }
+    }
+}
+
+impl Drop for CursorSuppress {
+    fn drop(&mut self) {
+        if self.hidden {
+            show_system_cursor();
+            self.hidden = false;
+        }
+        if lighting_host::session_policy::suppress_mouse_trails_while_sharing() {
+            spi_set_uiparam(SPI_SETMOUSETRAILS, self.trails);
+            spi_set_bool(SPI_SETCURSORSHADOW, self.shadow);
+        }
+    }
+}
+
+fn spi_get_u32(action: windows::Win32::UI::WindowsAndMessaging::SYSTEM_PARAMETERS_INFO_ACTION) -> u32 {
+    let mut v: u32 = 0;
+    unsafe {
+        let _ = SystemParametersInfoW(
+            action,
+            0,
+            Some(&mut v as *mut u32 as *mut core::ffi::c_void),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        );
+    }
+    v
+}
+
+fn spi_set_uiparam(
+    action: windows::Win32::UI::WindowsAndMessaging::SYSTEM_PARAMETERS_INFO_ACTION,
+    ui: u32,
+) {
+    unsafe {
+        let _ = SystemParametersInfoW(action, ui, None, SPIF_SENDCHANGE);
+    }
+}
+
+fn spi_set_bool(
+    action: windows::Win32::UI::WindowsAndMessaging::SYSTEM_PARAMETERS_INFO_ACTION,
+    value: BOOL,
+) {
+    let mut v = value;
+    unsafe {
+        let _ = SystemParametersInfoW(
+            action,
+            0,
+            Some(&mut v as *mut BOOL as *mut core::ffi::c_void),
+            SPIF_SENDCHANGE,
+        );
+    }
+}
+
+fn hide_system_cursor() {
+    unsafe {
+        while ShowCursor(false) >= 0 {}
+        blank_system_cursors();
+    }
+}
+
+fn show_system_cursor() {
+    unsafe {
+        while ShowCursor(true) < 0 {}
+        let _ = SystemParametersInfoW(
+            SPI_SETCURSORS,
+            0,
+            None,
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        );
+    }
+}
+
+const BLANK_CURSOR_IDS: [windows::Win32::UI::WindowsAndMessaging::SYSTEM_CURSOR_ID; 12] = [
+    OCR_NORMAL,
+    OCR_IBEAM,
+    OCR_WAIT,
+    OCR_HAND,
+    OCR_SIZEALL,
+    OCR_SIZENS,
+    OCR_SIZEWE,
+    OCR_SIZENWSE,
+    OCR_SIZENESW,
+    OCR_APPSTARTING,
+    OCR_NO,
+    OCR_CROSS,
+];
+
+unsafe fn blank_system_cursors() {
+    let w = GetSystemMetrics(SM_CXCURSOR).max(1);
+    let h = GetSystemMetrics(SM_CYCURSOR).max(1);
+    let stride = ((w as usize + 15) & !15) / 8;
+    let and_plane = vec![0xFFu8; stride.saturating_mul(h as usize).max(4)];
+    let xor_plane = vec![0u8; and_plane.len()];
+    for id in BLANK_CURSOR_IDS {
+        let Ok(cur) = CreateCursor(
+            HINSTANCE::default(),
+            0,
+            0,
+            w,
+            h,
+            and_plane.as_ptr() as *const core::ffi::c_void,
+            xor_plane.as_ptr() as *const core::ffi::c_void,
+        ) else {
+            continue;
+        };
+        let _ = SetSystemCursor(cur, id);
+    }
 }

@@ -108,7 +108,8 @@ fn capture_loop(tx: SyncSender<AudioPacket>, stop: Arc<AtomicBool>, t0: Instant)
                 let pcm: Vec<u8> = acc.drain(..CHUNK_BYTES).collect();
                 let pts_us = t0.elapsed().as_micros() as u64;
                 if tx.try_send(AudioPacket { pts_us, pcm }).is_err() {
-                    // 网络堵住时丢掉最旧的一块，保住实时性
+                    // Queue full: drop this chunk. The writer now drains up
+                    // to audio_packets_per_video_frame so this is rare.
                     continue;
                 }
             }

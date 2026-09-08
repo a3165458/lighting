@@ -642,7 +642,13 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                         val (pts, pcm) = splitPts(msg.payload)
                         audio?.offer(pcm, pts)
                     }
-                    LitProtocol.MSG_CURSOR -> applyCursor(parseCursor(msg.payload))
+                    LitProtocol.MSG_CURSOR -> {
+                        // Control plane already paints the overlay. The same
+                        // pose on the video socket is a second pointer (拖影).
+                        if (controlLit == null) {
+                            applyCursor(parseCursor(msg.payload))
+                        }
+                    }
                     LitProtocol.MSG_HEARTBEAT -> sock.write(LitProtocol.MSG_HEARTBEAT)
                     LitProtocol.MSG_ERROR -> {
                         val remote = String(msg.payload, Charsets.UTF_8)
