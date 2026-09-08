@@ -53,11 +53,19 @@ pub fn virtual_target_hz(_requested: u32, tablet_max: u32) -> u32 {
 }
 
 pub fn encoder_start_attempts() -> u32 {
-    3
+    1
 }
 
 pub fn dda_settle_after_mode_change_ms() -> u64 {
-    700
+    400
+}
+
+/// Changing IddCx size/Hz after Hello resets Desktop Duplication. The
+/// encoder then sits on "抓屏未就绪，正在重试", CONFIG never ships, the
+/// pad stays 重连中, and Stop is ignored until every ffmpeg graph times
+/// out. Encode the panel that is already up; 1:1 can wait.
+pub fn resize_virtual_display_after_hello() -> bool {
+    false
 }
 
 /// The PC panel must never be the target of a virtual-display mode change.
@@ -1111,6 +1119,19 @@ pub fn is_client_disconnect(err: &str) -> bool {
         || e.contains("send audio failed")
 }
 
+/// Encoder/capture failure is not a tablet drop. Re-accepting Hello then
+/// retries capture forever (抓屏未就绪 / 重连中) and Stop cannot interrupt
+/// the ffmpeg graph loop. Only socket death keeps the listen loop.
+pub fn continue_accept_after_handle_client_err(err: &str) -> bool {
+    is_client_disconnect(err)
+}
+
+/// Poll must not resurrect `running` after the user hit Stop. stop_share
+/// used to clear only the flag; the next poll copied session.running back.
+pub fn effective_share_running(user_stopped: bool, session_running: bool) -> bool {
+    session_running && !user_stopped
+}
+
 /// Orient `(dw, dh)` so it matches the landscape/portrait of `(sw, sh)`.
 pub fn orient_box(sw: u32, sh: u32, dw: u32, dh: u32) -> (u32, u32) {
     if sw >= sh {
@@ -1681,6 +1702,17 @@ mod tests {
         assert!(is_client_disconnect("os error 10054"));
         assert!(!is_client_disconnect("所选显示器不存在"));
         assert!(!is_client_disconnect("找不到 ffmpeg"));
+        assert!(continue_accept_after_handle_client_err(
+            "send video failed: broken pipe"
+        ));
+        assert!(!continue_accept_after_handle_client_err(
+            "encoder restart did not emit codec-config + IDR in time"
+        ));
+        assert!(!continue_accept_after_handle_client_err("抓屏启动失败"));
+        assert!(effective_share_running(false, true));
+        assert!(!effective_share_running(true, true));
+        assert!(!effective_share_running(true, false));
+        assert!(!effective_share_running(false, false));
     }
 
     #[test]
@@ -1938,8 +1970,9 @@ mod tests {
         assert_eq!(virtual_target_hz(45, 30), 60);
         assert_eq!(virtual_target_hz(120, 90), 120);
         assert_eq!(virtual_target_hz(240, 144), 120);
-        assert_eq!(encoder_start_attempts(), 3);
-        assert!(dda_settle_after_mode_change_ms() >= 400);
+        assert_eq!(encoder_start_attempts(), 1);
+        assert!(dda_settle_after_mode_change_ms() >= 200);
+        assert!(!resize_virtual_display_after_hello());
     }
 
     #[test]

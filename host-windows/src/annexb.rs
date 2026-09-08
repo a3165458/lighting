@@ -192,18 +192,34 @@ pub fn recv_bootstrap(
     timeout: Duration,
     hevc: bool,
 ) -> Result<Vec<EncodedPacket>> {
+    recv_bootstrap_until(rx, timeout, hevc, || false)
+}
+
+/// Same as [`recv_bootstrap`], but `should_stop` is sampled between 100 ms
+/// recv slices so Stop Share can kill ffmpeg instead of waiting out every
+/// encoder graph.
+pub fn recv_bootstrap_until(
+    rx: &Receiver<EncodedPacket>,
+    timeout: Duration,
+    hevc: bool,
+    should_stop: impl Fn() -> bool,
+) -> Result<Vec<EncodedPacket>> {
     let deadline = Instant::now() + timeout;
     let mut collector = BootstrapCollector::new();
     while !collector.complete() {
+        if should_stop() {
+            bail!("已停止");
+        }
         let now = Instant::now();
         if now >= deadline {
             break;
         }
-        match rx.recv_timeout(deadline.saturating_duration_since(now)) {
+        let slice = Duration::from_millis(100).min(deadline.saturating_duration_since(now));
+        match rx.recv_timeout(slice) {
             Ok(pkt) => {
                 collector.push(pkt, hevc);
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 bail!("encoder pipe closed before codec-config + IDR");
             }
@@ -211,6 +227,8 @@ pub fn recv_bootstrap(
     }
     if collector.complete() {
         Ok(collector.into_packets())
+    } else if should_stop() {
+        bail!("已停止")
     } else {
         bail!("encoder restart did not emit codec-config + IDR in time")
     }
@@ -984,6 +1002,24 @@ mod tests {
         drop(tx);
         let err = recv_bootstrap(&rx, Duration::from_millis(20), false).unwrap_err();
         assert!(format!("{err:#}").contains("codec-config + IDR"));
+    }
+
+    #[test]
+    fn recv_bootstrap_until_stops_without_waiting_out_the_timeout() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (_tx, rx) = mpsc::sync_channel::<EncodedPacket>(1);
+        let stop = AtomicBool::new(true);
+        let t0 = Instant::now();
+        let err = recv_bootstrap_until(&rx, Duration::from_secs(3), false, || {
+            stop.load(Ordering::Relaxed)
+        })
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("已停止"));
+        assert!(
+            t0.elapsed() < Duration::from_millis(500),
+            "Stop must not wait the 3s encoder bootstrap: {:?}",
+            t0.elapsed()
+        );
     }
 
     #[tokio::test]
