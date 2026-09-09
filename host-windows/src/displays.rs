@@ -193,22 +193,25 @@ pub fn apply_tablet_only_output() -> Result<()> {
     apply_topology(SDC_TOPOLOGY_EXTERNAL)
 }
 
-/// Last-resort CCD restore when we do not have a primary snapshot. Prefer
-/// [`restore_desktop`]: SDC_TOPOLOGY_EXTEND replays the polluted extend slot.
+/// Force the laptop panel on (Win+P “仅电脑屏幕”). Do not OR in EXTERNAL:
+/// that combination replays the last “仅第二屏幕” layout and leaves the
+/// panel detached until Win+Ctrl+Shift+B.
 pub fn restore_pc_monitor() -> Result<()> {
-    let code = unsafe {
-        SetDisplayConfig(
-            None,
-            None,
-            SDC_APPLY
-                | SDC_TOPOLOGY_INTERNAL
-                | SDC_TOPOLOGY_CLONE
-                | SDC_TOPOLOGY_EXTEND
-                | SDC_TOPOLOGY_EXTERNAL,
-        )
-    };
-    if code != 0 {
-        anyhow::bail!("DISPLAY_TOPOLOGY_FAILED:{code}");
+    if let Err(err) = apply_topology(SDC_TOPOLOGY_INTERNAL) {
+        tracing::warn!("SetDisplayConfig INTERNAL failed: {err:#}");
+        display_switch("/internal")?;
+    }
+    Ok(())
+}
+
+fn display_switch(arg: &str) -> Result<()> {
+    let status = Command::new("DisplaySwitch.exe")
+        .arg(arg)
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .context("DisplaySwitch")?;
+    if !status.success() {
+        anyhow::bail!("DisplaySwitch {arg} failed: {status}");
     }
     std::thread::sleep(Duration::from_millis(400));
     Ok(())
@@ -865,38 +868,87 @@ pub fn reassert_primary(snap: &PrimarySnapshot) -> Result<()> {
 }
 
 pub fn restore_desktop(snap: &PrimarySnapshot) -> Result<()> {
-    let list = list_displays().unwrap_or_default();
-    let present = list
-        .iter()
-        .any(|d| d.name.eq_ignore_ascii_case(&snap.device));
-    if !present {
+    if !laptop_panel_ok(snap) {
         let _ = restore_pc_monitor();
-        std::thread::sleep(Duration::from_millis(400));
     }
     reassert_primary(snap)?;
-    let list = list_displays().unwrap_or_default();
-    let still_primary = list
-        .iter()
-        .find(|d| d.name.eq_ignore_ascii_case(&snap.device))
-        .map(|d| d.primary)
-        .unwrap_or(false);
-    if !still_primary {
+    if !laptop_panel_ok(snap) {
         restore_primary(snap)?;
     }
     Ok(())
 }
 
-/// Tablet sleep / disconnect while Win+P external is active: put the laptop
-/// back on an extend desktop before any CDS_SET_PRIMARY. Doing SET_PRIMARY
-/// against a detached internal panel (with ffmpeg still holding DDA) is what
-/// hung the GPU and required Win+Ctrl+Shift+B.
+/// Tablet sleep / disconnect while Win+P external is active, or extend
+/// with the laptop already detached (lid-close "second screen only").
+/// Force INTERNAL first. EXTEND / combined topology flags replay the
+/// saved EXTERNAL layout and leave a black panel.
 pub fn restore_after_tablet_only(snap: &PrimarySnapshot) -> Result<()> {
-    if let Err(err) = apply_project_mode(ShareMode::Extend) {
-        tracing::warn!("extend after tablet-only failed: {err:#}");
-        let _ = restore_pc_monitor();
-        std::thread::sleep(Duration::from_millis(400));
+    if let Err(err) = restore_pc_monitor() {
+        tracing::warn!("force INTERNAL after tablet-only: {err:#}");
     }
-    restore_desktop(snap)
+    if let Err(err) = restore_primary(snap) {
+        tracing::warn!("restore snapshot after INTERNAL: {err:#}");
+    }
+    if laptop_panel_ok(snap) {
+        return Ok(());
+    }
+    if let Err(err) = display_switch("/internal") {
+        tracing::warn!("DisplaySwitch /internal: {err:#}");
+    }
+    restore_primary(snap)?;
+    if !laptop_panel_ok(snap) {
+        anyhow::bail!("LAPTOP_PANEL_STILL_OFF:{}", snap.device);
+    }
+    Ok(())
+}
+
+pub fn restore_after_client_drop(tablet_only: bool, snap: &PrimarySnapshot) -> Result<()> {
+    let list = list_displays().unwrap_or_default();
+    let current = list
+        .iter()
+        .find(|d| d.name.eq_ignore_ascii_case(&snap.device));
+    let present = current.is_some();
+    let fps = current
+        .and_then(|d| current_display_mode(&d.name).ok())
+        .map(|m| m.fps)
+        .unwrap_or(0);
+    let restore = lighting_host::session_policy::primary_restore_action(
+        current.map(|d| d.name.as_str()),
+        current.map(|d| d.primary).unwrap_or(false),
+        current.map(|d| d.width).unwrap_or(0),
+        current.map(|d| d.height).unwrap_or(0),
+        fps,
+        &snap.device,
+        snap.mode.width,
+        snap.mode.height,
+        snap.mode.fps,
+    );
+    match lighting_host::session_policy::client_drop_desktop_action_for(
+        tablet_only,
+        present,
+        restore,
+    ) {
+        lighting_host::session_policy::ClientDropDesktopAction::UndoExternal => {
+            restore_after_tablet_only(snap)
+        }
+        lighting_host::session_policy::ClientDropDesktopAction::ReassertPrimary => {
+            reassert_primary(snap)
+        }
+        lighting_host::session_policy::ClientDropDesktopAction::None => Ok(()),
+    }
+}
+
+fn laptop_panel_ok(snap: &PrimarySnapshot) -> bool {
+    let list = list_displays().unwrap_or_default();
+    let d = list
+        .iter()
+        .find(|x| x.name.eq_ignore_ascii_case(&snap.device));
+    lighting_host::session_policy::laptop_panel_looks_attached(
+        d.is_some(),
+        d.map(|x| x.primary).unwrap_or(false),
+        d.map(|x| x.width).unwrap_or(0),
+        d.map(|x| x.height).unwrap_or(0),
+    )
 }
 
 /// RAII: always restore the host panel, including after a mid-share interrupt.

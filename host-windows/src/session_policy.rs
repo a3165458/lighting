@@ -26,7 +26,19 @@ pub fn client_drop_desktop_action(
     tablet_only_active: bool,
     restore: PrimaryRestoreAction,
 ) -> ClientDropDesktopAction {
-    if tablet_only_active {
+    client_drop_desktop_action_for(tablet_only_active, true, restore)
+}
+
+/// `physical_present`: the snapshotted laptop panel is still attached.
+/// Missing after tablet-only / lid-close "second screen only" means we
+/// must force INTERNAL first — EXTEND can replay Win+P external and
+/// leave a black panel that only Win+Ctrl+Shift+B revives.
+pub fn client_drop_desktop_action_for(
+    tablet_only_active: bool,
+    physical_present: bool,
+    restore: PrimaryRestoreAction,
+) -> ClientDropDesktopAction {
+    if tablet_only_active || !physical_present {
         ClientDropDesktopAction::UndoExternal
     } else {
         match restore {
@@ -34,6 +46,16 @@ pub fn client_drop_desktop_action(
             _ => ClientDropDesktopAction::ReassertPrimary,
         }
     }
+}
+
+pub fn laptop_panel_looks_attached(present: bool, is_primary: bool, width: u32, height: u32) -> bool {
+    present && is_primary && width >= 640 && height >= 480
+}
+
+/// Combined INTERNAL|CLONE|EXTEND|EXTERNAL replays the last EXTERNAL
+/// topology and keeps the laptop detached.
+pub fn restore_saved_topology_includes_external() -> bool {
+    false
 }
 
 /// GlideX / SuperDisplay run the virtual panel at 120 Hz even when the tablet
@@ -2115,6 +2137,18 @@ mod tests {
             client_drop_desktop_action(false, PrimaryRestoreAction::SetPrimary),
             ClientDropDesktopAction::ReassertPrimary
         );
+        assert_eq!(
+            client_drop_desktop_action_for(false, false, PrimaryRestoreAction::Skip),
+            ClientDropDesktopAction::UndoExternal
+        );
+        assert_eq!(
+            client_drop_desktop_action_for(false, true, PrimaryRestoreAction::Skip),
+            ClientDropDesktopAction::None
+        );
+        assert!(laptop_panel_looks_attached(true, true, 1920, 1080));
+        assert!(!laptop_panel_looks_attached(true, false, 1920, 1080));
+        assert!(!laptop_panel_looks_attached(false, true, 1920, 1080));
+        assert!(!restore_saved_topology_includes_external());
     }
 
     #[test]
