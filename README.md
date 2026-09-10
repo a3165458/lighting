@@ -1,103 +1,62 @@
-# Lighting
+# Lighting 副屏
 
-把 Android 平板或手机当成 Windows 电脑的扩展屏。走 USB 数据通道，不限 Type-C（USB-A、Micro-USB、转接线均可），目标 **2560×1440@60**。
+把 Android 平板或手机当成 Windows 电脑的第二块屏幕。走 USB 数据线（Type-C、USB-A、Micro-USB、转接线均可），不依赖 Wi‑Fi。
 
-当前仓库包含：
+**当前版本：[v0.1.67](https://github.com/a3165458/lighting/releases/tag/v0.1.67)**
 
-- `host-windows/`：Rust 主机（抓屏、硬编码、ADB reverse、触控注入）
-- `android/`：Kotlin 客户端（MediaCodec 硬解）
-- `protocol/PROTOCOL.md`：LIT1 二进制协议
+## 下载
 
-macOS 主机为下一阶段。
+到 [Releases](https://github.com/a3165458/lighting/releases/latest) 取最新包：
 
-## 电脑端（Windows）
+| 文件 | 说明 |
+|------|------|
+| `Lighting-0.1.67-setup.exe` | 安装包（推荐） |
+| `Lighting-0.1.67-portable.exe` | 便携版，不用安装 |
+| `Lighting.apk` | 平板客户端；也可在电脑里点「重新安装」推送 |
 
-依赖：
+未签名的 Windows 程序可能被 SmartScreen / 360 提示「发布者未知」，不等于有病毒。点「更多信息 → 仍要运行」即可。说明见 [`docs/WINDOWS-SMARTSCREEN.md`](docs/WINDOWS-SMARTSCREEN.md)。
 
-- [Rust](https://rustup.rs/)
-- Visual Studio 2022 **Build Tools**（C++ 工作负载，提供 `link.exe`）
-- [FFmpeg](https://www.gyan.dev/ffmpeg/builds/)（已加入 PATH）
-- [Android Platform-Tools](https://developer.android.com/tools/releases/platform-tools) 中的 `adb`（USB 模式需要）
+## 使用
 
-已编译的 Windows 主机：`host-windows/target/release/lighting-host.exe`。
+1. 托盘里把旧 Lighting 退干净
+2. 安装 `Lighting-0.1.67-setup.exe`，或打开便携包
+3. 平板开启 **开发者选项** 和 **USB 调试**，用数据线连电脑（必须是数据线）
+4. 电脑点 **开始共享**
+5. 设置里点 **重新安装**，覆盖平板上的客户端
+6. 平板打开 Lighting，点 **USB 一键连接**
 
-主机二进制依赖 DXGI / WASAPI / `eframe`，只能在 Windows 上 `cargo run` / `cargo build`。Linux 上可跑不依赖 Win32 的辅助逻辑：
-
-```bash
-cd host-windows
-cargo test --lib
-```
-
-启动主机：
-
-```powershell
-.\scripts\start.ps1
-```
-
-或在已配置 MSVC 的终端里：
-
-```powershell
-cd host-windows
-cargo run --release
-```
-
-扩展屏（推荐）：
-
-```powershell
-winget install --id=VirtualDrivers.Virtual-Display-Driver -e
-```
-
-安装后在 **设置 → 系统 → 显示器** 中设为「扩展这些显示器」，分辨率可设 2560×1440。在 Lighting 里选择这块虚拟屏再点「开始共享」。
-
-没有虚拟屏时也可以先选主屏做镜像，用来验证编码和 USB 通道。
-
-启动主机：
-
-```powershell
-cd host-windows
-cargo run --release
-```
-
-或：
-
-```powershell
-.\scripts\start.ps1
-```
-
-## 平板 / 手机
-
-1. 开启开发者选项和 **USB 调试**
-2. 用数据线连电脑（必须是数据线，不能是仅充电线）
-3. 用 Android Studio 打开 `android/` 并安装到设备，或直接安装已编译的 Debug APK：
-
-```text
-android/app/build/outputs/apk/debug/app-debug.apk
-```
-
-命令行编译 APK（需 JDK 17 + Android SDK）：
-
-```powershell
-$env:JAVA_HOME = "C:\Program Files\Microsoft\jdk-17.0.20.101-hotspot"
-$env:ANDROID_HOME = "D:\Lighting\.runtime\android-sdk"
-D:\Lighting\.runtime\gradle-8.9\bin\gradle.bat -p android assembleDebug
-```
-4. 电脑点「开始共享」（只插一台已授权设备时会自动选中）
-5. 设备上打开 Lighting，点「USB 一键连接」
-
-不需要填写地址或端口。局域网测试时，在电脑端点「高级设置」、在平板右上角点设置图标，填写电脑 IP。
+不需要填写地址或端口。主机默认只监听 USB 回环，不会把桌面流暴露到局域网。
 
 连过一次之后，平板首页的「连接历史」可以一键重连同一台电脑。
 
-只跑客户端的单元测试（不需要设备）：
+## 三种模式
 
-```bash
-gradle -p android testDebugUnitTest
-```
+| 模式 | 作用 |
+|------|------|
+| 镜像主屏 | 与电脑主屏同画面，按平板分辨率编码 |
+| 双屏扩展 | 平板作为独立桌面，电脑屏继续亮 |
+| 仅平板 | 虚拟屏 1:1 铺满平板，并关掉电脑屏。平板休眠或断开后会把电脑屏亮回来 |
 
-## 第一期能力
+**锁屏无法投屏**是 Windows 限制：抓屏抓不到安全桌面。请关掉自动锁屏，投屏时不要按 Win+L。合盖请在电源设置里设为不采取任何操作。
 
-- USB 有线（口型不限）+ 可选局域网 IP
-- 扩展或镜像已有显示器
-- H.264 硬编（NVENC / QSV / AMF / x264 回退），设备支持时可优先 HEVC
+## 当前能力（v0.1.67）
+
+- USB 有线投屏；可选局域网（高级设置里把监听改为 `0.0.0.0`，仅建议在可信网络使用）
+- 镜像 / 扩展 / 仅平板
+- H.264 硬编（NVENC / QSV / AMF，不够则 x264），设备支持时可走 HEVC
+- 画面里走 Windows 系统光标
+- 系统声音环回；默认播放设备切换（例如关掉蓝牙音响）后会跟过去
+- 虚拟屏尽量贴近平板分辨率，能铺满就铺满
+- 仅平板休眠或断开后，强制恢复电脑主屏（不再依赖 Ctrl+Win+Shift+B）
 - 触摸映射为该显示器上的鼠标
-- 2K60 为默认封顶，解码器不够时在主机侧把分辨率压到所选上限以内
+
+## 仓库结构
+
+- `host-windows/`：Windows 主机（抓屏、编码、ADB reverse、触控）
+- `host-ui/`：Windows 一键桌面版（Electron）
+- `android/`：平板客户端
+- `protocol/PROTOCOL.md`：LIT1 协议
+
+macOS 主机尚未提供。
+
+开发者在 Windows 上从源码编译，见 [`host-ui/README.md`](host-ui/README.md)。
