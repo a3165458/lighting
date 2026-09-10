@@ -14,7 +14,7 @@
 | `Lighting-0.1.67-portable.exe` | 便携版，不用安装 |
 | `Lighting.apk` | 平板客户端；也可在电脑里点「重新安装」推送 |
 
-未签名的 Windows 程序可能被 SmartScreen / 360 提示「发布者未知」，不等于有病毒。点「更多信息 → 仍要运行」即可。说明见 [`docs/WINDOWS-SMARTSCREEN.md`](docs/WINDOWS-SMARTSCREEN.md)。
+未签名的 Windows 程序可能被 SmartScreen / **360 报毒**，不等于真有木马。临时：360 选「允许 / 加入信任区」。要彻底去掉误报，需要代码签名证书并送 360 加白，见 [`docs/WINDOWS-SMARTSCREEN.md`](docs/WINDOWS-SMARTSCREEN.md)。
 
 ## 使用
 

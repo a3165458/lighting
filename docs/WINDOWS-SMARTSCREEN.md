@@ -1,99 +1,98 @@
-# Windows SmartScreen / 杀软误报说明
+# Windows SmartScreen / 360 报毒
 
-## 这不是「真有病毒」
+当前 Release **没有 Authenticode 签名**，所以会出现：
 
-`Lighting-*-portable.exe` / 安装包若显示：
+- Windows：「已保护你的电脑 / 发布者未知」
+- 360：「发现病毒 / 木马 / 危险」
 
-- **Windows 已保护你的电脑**（发布者未知）
-- 360 / Defender 提示「危险 / 木马」
-
-在 **未做代码签名（Authenticode）** 时非常常见，尤其是：
-
-- 新发布的小众开源软件（下载量低，无信誉）
-- 会安装/启用 **虚拟显示驱动**（IddCx）的程序（行为像驱动工具，易被启发式拦截）
-
-当前 Release 构建默认 **未签名**（`发布者未知`），所以会出现你看到的 SmartScreen 对话框。
+这是未签名软件 + 会安装虚拟显示驱动时的典型误报，**不是程序里带了木马**。请只从本仓库 [GitHub Releases](https://github.com/a3165458/lighting/releases/latest) 下载。
 
 ---
 
-## 你现在可以怎么用（临时）
-
-### Microsoft Defender SmartScreen
-
-1. 点 **「更多信息」**（有的系统默认只显示「不运行」）
-2. 再点 **「仍要运行」**
-
-截图里若已直接看到「仍要运行」，点它即可。
+## 你现在怎么用（临时）
 
 ### 360 安全卫士
 
-1. 弹窗选 **「允许程序所有操作」** / **「信任」**
-2. 或：360 → 病毒查杀 → 信任区 → 添加 `Lighting-*.exe` 所在目录  
-3. 可选：关闭对该目录的「下载防护 / 云查杀」误报干扰（自行权衡）
+1. 弹窗选 **允许程序所有操作** / **信任**
+2. 360 → **病毒查杀** → **信任区** → 把安装目录加进去  
+   常见路径：`C:\Program Files\Lighting副屏\` 或便携版解压目录
+3. 可选：对该目录关掉「下载防护 / 云查杀」（自行权衡）
 
-请只从本仓库 [GitHub Releases](https://github.com/a3165458/lighting/releases) 下载，不要用来路不明的镜像站。
+### Microsoft Defender SmartScreen
+
+1. 点 **更多信息**
+2. 再点 **仍要运行**
+
+优先用 **安装包**（路径固定，方便加白名单），不要再套壳压缩。
 
 ---
 
-## 真正的解决方案（开发者 / 维护者）
+## 彻底解决（维护者）
 
-### 1. Windows 代码签名证书（推荐）
+360 要同时做两件事：**代码签名** + **送 360 加白**。只改代码、只重新打包，杀软信誉不会变。
 
-购买 **OV 代码签名证书**（DigiCert / Sectigo / SSL.com 等，约每年几百元人民币量级）。  
-自 2024 年起，EV 也不再「一签就立刻免 SmartScreen」，但 **签名后**：
+### 1. 买 Windows 代码签名证书并签每一个 exe
 
-- 会显示真实 **发布者名称**（不再是「未知」）
-- 信誉可随同一证书持续积累，后续版本 SoftScreen 会少很多
-- 360 等杀软误报也会明显下降
+需要 **OV 代码签名证书**（公司主体；个人 IV 证书对 360/SmartScreen 帮助很小）。
 
-把证书配进 GitHub Actions Secrets 后，Release 流水线会自动签名：
+国内常见渠道：沃通、天威诚信、锐成，或 Sectigo / SSL.com / DigiCert 代理。  
+2023 年起新证私钥多半在 UKey / HSM 上，**不能再导出成普通 PFX 塞进 GitHub**。
 
-| Secret | 含义 |
-|--------|------|
-| `WINDOWS_CSC_LINK` | `.pfx` 文件的 **Base64** |
+适合本仓库自动发版的方式：
+
+| 方案 | 说明 |
+|------|------|
+| [Azure Trusted Signing](https://learn.microsoft.com/windows/apps/package-and-deploy/trusted-signing) | 云端签名，GitHub Actions 可直接用，按量计费 |
+| SSL.com eSigner / SignPath | 云端签名，适合没有 USB Key 的 CI |
+| 传统 OV 证书 + USB Key | 只能在插着 Key 的 Windows 上本地签，不适合现在的云打包 |
+
+发版流水线已经预留了 electron-builder 签名环境变量。若你仍持有可导出的 `.pfx`：
+
+| GitHub Secret | 含义 |
+|----------------|------|
+| `WINDOWS_CSC_LINK` | `.pfx` 的 Base64 |
 | `WINDOWS_CSC_KEY_PASSWORD` | PFX 密码 |
 
-生成 Base64（在你保管证书的电脑上）：
+本机生成 Base64：
 
 ```powershell
 [Convert]::ToBase64String([IO.File]::ReadAllBytes(".\lighting-codesign.pfx")) | Set-Clipboard
 ```
 
-推送新 tag 发版后，用资源管理器右键 → 属性 → 数字签名，应能看到发布者。
+签完后应满足：
 
-也可使用 [Azure Trusted Signing](https://learn.microsoft.com/windows/apps/package-and-deploy/code-signing-options)（按量计费、云端签名，适合没有 USB Key 的 CI）。
+- 安装包、便携版、里面的 `lighting-host.exe` **都有数字签名**
+- 资源管理器 → 右键 exe → 属性 → **数字签名** 能看到发布者名称
 
-### 2. 向微软 / 360 提交误报
+配好 Secret 或云签名后重新跑 Release，不要继续发未签名包。
 
-签名之后仍被拦时：
+### 2. 向 360 送检加白（国内必须做）
 
-- Microsoft：https://www.microsoft.com/wdsi/filesubmission  
-- 360：https://open.soft.360.cn/（或杀软内「误报反馈」）
+签名之后 360 仍可能拦几天到几周，需要送检：
 
-附上 GitHub Release 链接与文件 SHA256。
+1. 打开 [360 软件开放平台](https://open.soft.360.cn/) 提交软件认证  
+2. 或在 360 客户端：病毒查杀 → 查看报告 → **误报反馈**
+3. 附上：
+   - https://github.com/a3165458/lighting/releases/latest
+   - 文件 SHA256（Release 里的 `SHA256SUMS.txt`）
+   - 说明：开源投屏工具，会安装微软已签名的虚拟显示驱动（MttVDD）
 
-### 3. 无法立刻买证书时
+微软误报提交：https://www.microsoft.com/wdsi/filesubmission
 
-- 继续用「仍要运行」+ 360 加信任（见上文）
-- 优先用 **安装包** 而非便携版（安装路径固定，便于加白名单）
-- 不要对 exe 再套一层未知壳/压缩加壳（更容易被报毒）
+### 3. 还没买证书时
+
+- 继续用「允许 / 信任区」
+- 不要把 exe 再加壳、不要从网盘镜像下
+- 装好后把安装目录加进 360 信任区，一般只拦第一次
 
 ---
 
-## 与华硕 GlideX 的差别（为何它「开箱即用」）
+## 和华硕 GlideX 的差别
 
 | | 华硕 GlideX | Lighting |
 |--|-------------|----------|
-| 虚拟屏驱动 | **自家签名的 IddCx 驱动**，随安装包安装 | 依赖开源 **MttVDD**（社区驱动） |
-| 取帧方式 | 驱动 SwapChain 直接出帧再编码 | 先造虚拟显示器，再 DXGI 抓屏编码 |
-| 代码签名 | 华硕正版签名，SmartScreen/杀软放行 | 开源未签名 → 易被 360/SmartScreen 拦 |
-| 扩展失败时 | 驱动一体化，极少失败 | 驱动/权限/杀软任一环节失败就会报错 |
+| 程序签名 | 华硕正版签名 | 目前未签名 |
+| 虚拟屏驱动 | 自家签名的 IddCx | 开源 MttVDD（驱动本身已有目录签名） |
+| 360 / SmartScreen | 开箱可用 | 未签名 + 装驱动 → 易被启发式拦截 |
 
-因此：**不是「GlideX 没驱动」**，而是驱动被做成了产品的一部分且有商业签名。  
-Lighting 要达到同级体验，长期需要自研/采购可签名的 IddCx 驱动，并配置 Authenticode 证书——这超出「改几行业务代码」的范围。
-
-**当前策略（v0.1.67）：**
-
-1. 安装包 / 便携版默认仍未做 Authenticode 签名，SmartScreen 可能提示「发布者未知」  
-2. 扩展 / 仅平板会启用虚拟显示器；失败时停在原因说明，**不会偷偷改成镜像**  
-3. 代码签名需维护者自备 OV 证书（见上文 Secrets）  
+360 认的是 **发布者证书信誉**，不是「功能写对了就不报」。GlideX 能开箱即用，是因为华硕签过名并已在杀软库里。
