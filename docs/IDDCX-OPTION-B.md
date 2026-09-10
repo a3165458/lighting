@@ -4,15 +4,15 @@
 
 Own an IddCx virtual display (`Root\LightingIdd`) like ASUS GlideX owns theirs, instead of depending only on community MttVDD.
 
-## Done in repo (v0.1.12 scaffold)
+## Done in repo
 
 | Item | Status |
 |------|--------|
 | Fork Microsoft Indirect Display sample → `driver-idd/` | Done (source) |
 | INF `Root\LightingIdd` | Done |
 | `scripts/idd/provision.ps1` + stage into `host-ui/resources/idd` | Done |
-| Host prefers LightingIdd, falls back to MttVDD | Done |
-| Default share mode = mirror until driver is signed/reliable | Done (0.1.11) |
+| Host prefers LightingIdd, falls back to signed MttVDD | Done |
+| Default share mode is 镜像；扩展 / 仅平板走虚拟屏 | Done |
 
 ## You must do on a Windows + WDK machine
 

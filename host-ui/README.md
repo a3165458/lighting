@@ -1,25 +1,17 @@
-# Lighting 副屏 — 一键桌面版（Electron）
+# Lighting 副屏 — Windows 桌面版
 
-## 给新手：只要一个 exe
+## 给新手
 
-打包后得到：
+到 [Releases](https://github.com/a3165458/lighting/releases/latest) 下载当前版本（v0.1.67）：
 
-- `Lighting副屏-0.1.0-便携版.exe` — **推荐**，双击即用，不用安装
-- `Lighting副屏-0.1.0-安装包.exe` — 一键安装并创建桌面快捷方式
+- `Lighting-0.1.67-setup.exe` — 安装包（推荐）
+- `Lighting-0.1.67-portable.exe` — 便携版，双击即用
 
-首次打开会自动下载：
+首次打开会自动准备 USB 调试工具（adb）和画面编码组件（ffmpeg），保存在 `%APPDATA%\Lighting副屏\runtime\`。
 
-- USB 调试工具（adb）
-- 画面编码组件（ffmpeg）
-
-保存到：`%APPDATA%\Lighting副屏\runtime\`
-
-之后打开即可直接用。
-
-## 开发者：本机打出便携版
+## 开发者：本机打包
 
 ```powershell
-cd D:\Lighting
 git pull
 .\scripts\build-electron-win.ps1
 ```
