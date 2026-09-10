@@ -38,6 +38,8 @@
 国内常见渠道：沃通、天威诚信、锐成，或 Sectigo / SSL.com / DigiCert 代理。  
 2023 年起新证私钥多半在 UKey / HSM 上，**不能再导出成普通 PFX 塞进 GitHub**。
 
+开源项目也可申请 [SignPath Foundation](https://signpath.org/) **免费**代签（证书显示为 SignPath Foundation）。申请条件与本仓库政策见 [`docs/CODE-SIGNING.md`](docs/CODE-SIGNING.md)。
+
 适合本仓库自动发版的方式：
 
 | 方案 | 说明 |
