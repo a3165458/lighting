@@ -193,13 +193,23 @@ pub fn apply_tablet_only_output() -> Result<()> {
     apply_topology(SDC_TOPOLOGY_EXTERNAL)
 }
 
-/// Force the laptop panel on (Win+P “仅电脑屏幕”). Do not OR in EXTERNAL:
-/// that combination replays the last “仅第二屏幕” layout and leaves the
-/// panel detached until Win+Ctrl+Shift+B.
+/// Wake the laptop panel after Win+P “仅第二屏幕”. INTERNAL-only is the
+/// reliable way to attach a detached internal display; callers that must
+/// keep VDD must follow with [`reenable_extended_desktop`].
 pub fn restore_pc_monitor() -> Result<()> {
     if let Err(err) = apply_topology(SDC_TOPOLOGY_INTERNAL) {
         tracing::warn!("SetDisplayConfig INTERNAL failed: {err:#}");
         display_switch("/internal")?;
+    }
+    Ok(())
+}
+
+/// INTERNAL disconnects every non-laptop target. Put the virtual panel
+/// back as a secondary so extend/mirror can see more than 主屏.
+pub fn reenable_extended_desktop() -> Result<()> {
+    if let Err(err) = apply_project_mode(ShareMode::Extend) {
+        tracing::warn!("extend after INTERNAL: {err:#}");
+        apply_topology(SDC_TOPOLOGY_EXTEND)?;
     }
     Ok(())
 }
@@ -868,20 +878,31 @@ pub fn reassert_primary(snap: &PrimarySnapshot) -> Result<()> {
 }
 
 pub fn restore_desktop(snap: &PrimarySnapshot) -> Result<()> {
-    if !laptop_panel_ok(snap) {
-        let _ = restore_pc_monitor();
+    let list = list_displays().unwrap_or_default();
+    let present = list
+        .iter()
+        .any(|d| d.name.eq_ignore_ascii_case(&snap.device));
+    if !present {
+        // Bring the laptop back without Win+P INTERNAL: that disables VDD
+        // and the UI can only list 主屏 until the next driver reset.
+        let _ = reenable_extended_desktop();
     }
     reassert_primary(snap)?;
-    if !laptop_panel_ok(snap) {
+    let list = list_displays().unwrap_or_default();
+    let still_primary = list
+        .iter()
+        .find(|d| d.name.eq_ignore_ascii_case(&snap.device))
+        .map(|d| d.primary)
+        .unwrap_or(false);
+    if !still_primary {
         restore_primary(snap)?;
     }
     Ok(())
 }
 
-/// Tablet sleep / disconnect while Win+P external is active, or extend
-/// with the laptop already detached (lid-close "second screen only").
-/// Force INTERNAL first. EXTEND / combined topology flags replay the
-/// saved EXTERNAL layout and leave a black panel.
+/// Tablet-only used Win+P external. INTERNAL first so the laptop panel
+/// actually turns on; then EXTEND so the virtual screen is still a
+/// target for the next 双屏扩展 / 仅平板 session.
 pub fn restore_after_tablet_only(snap: &PrimarySnapshot) -> Result<()> {
     if let Err(err) = restore_pc_monitor() {
         tracing::warn!("force INTERNAL after tablet-only: {err:#}");
@@ -889,12 +910,21 @@ pub fn restore_after_tablet_only(snap: &PrimarySnapshot) -> Result<()> {
     if let Err(err) = restore_primary(snap) {
         tracing::warn!("restore snapshot after INTERNAL: {err:#}");
     }
+    if lighting_host::session_policy::reextend_after_internal_restore() {
+        if let Err(err) = reenable_extended_desktop() {
+            tracing::warn!("re-extend after INTERNAL: {err:#}");
+        }
+        if let Err(err) = restore_primary(snap) {
+            tracing::warn!("reassert laptop after re-extend: {err:#}");
+        }
+    }
     if laptop_panel_ok(snap) {
         return Ok(());
     }
     if let Err(err) = display_switch("/internal") {
         tracing::warn!("DisplaySwitch /internal: {err:#}");
     }
+    let _ = reenable_extended_desktop();
     restore_primary(snap)?;
     if !laptop_panel_ok(snap) {
         anyhow::bail!("LAPTOP_PANEL_STILL_OFF:{}", snap.device);

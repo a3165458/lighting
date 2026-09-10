@@ -97,6 +97,11 @@ export function DisplaySettings({
         <SettingRow
           icon={Monitor}
           label="显示器"
+          description={
+            isExtend
+              ? '扩展 / 仅平板自动抓虚拟屏，不抓电脑主屏。'
+              : '镜像抓你选的那一块电脑屏幕。'
+          }
           control={
             <div className="w-[280px] max-w-full">
               <Dropdown
@@ -107,7 +112,7 @@ export function DisplaySettings({
                     : [{ id: '0', label: '未检测到显示器' }]
                 }
                 onChange={(id) => onChange({ selectedDisplay: Number(id) })}
-                disabled={disabled || displays.length === 0}
+                disabled={disabled || displays.length === 0 || isExtend}
                 ariaLabel="选择显示器"
               />
             </div>
