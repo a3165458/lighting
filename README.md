@@ -14,7 +14,7 @@
 | `Lighting-0.1.67-portable.exe` | 便携版，不用安装 |
 | `Lighting.apk` | 平板客户端；也可在电脑里点「重新安装」推送 |
 
-未签名的 Windows 程序可能被 SmartScreen / **360 报毒**，不等于真有木马。临时：360 选「允许 / 加入信任区」。要彻底去掉误报，需要代码签名证书并送 360 加白，见 [`docs/WINDOWS-SMARTSCREEN.md`](docs/WINDOWS-SMARTSCREEN.md)。
+未签名的 Windows 程序可能被 SmartScreen / **360 报毒**，不等于真有木马。临时：360 选「允许 / 加入信任区」。长期方案见 [`docs/WINDOWS-SMARTSCREEN.md`](docs/WINDOWS-SMARTSCREEN.md) 和 [Code signing policy](docs/CODE-SIGNING.md)。
 
 ## 使用
 
@@ -60,3 +60,9 @@
 macOS 主机尚未提供。
 
 开发者在 Windows 上从源码编译，见 [`host-ui/README.md`](host-ui/README.md)。
+
+## Code signing policy
+
+Windows 安装包计划通过 [SignPath Foundation](https://signpath.org/) 免费签名。政策、角色和隐私说明见 [`docs/CODE-SIGNING.md`](docs/CODE-SIGNING.md)。
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
