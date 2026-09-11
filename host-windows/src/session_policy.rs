@@ -1780,10 +1780,10 @@ mod tests {
         assert!(audio_hresult_is_device_lost(0x8007_0490));
         assert!(!audio_hresult_is_device_lost(0));
         assert!(!ddagrab_duplicate_frames());
-        assert_eq!(dda_poll_hz(60), 8000);
-        assert_eq!(dda_poll_hz(120), 8000);
-        assert_eq!(dda_poll_hz(144), 8000);
-        assert_eq!(dda_poll_hz(30), 8000);
+        assert_eq!(dda_poll_hz(60), 60);
+        assert_eq!(dda_poll_hz(120), 120);
+        assert_eq!(dda_poll_hz(144), 120);
+        assert_eq!(dda_poll_hz(30), 30);
         assert_eq!(tcp_send_buffer_bytes(), 48 * 1024);
         assert!(tcp_control_buffer_bytes() < tcp_send_buffer_bytes());
         // One default P+PCM (~28 KB) and one 40 Mbps P (~42 KB) fit;
@@ -1816,7 +1816,7 @@ mod tests {
         assert_eq!(encode_fps(30, 60, 60, true), 60);
         assert_eq!(encode_fps(60, 60, 30, true), 30);
         assert_eq!(ffmpeg_output_fps(encode_fps(60, 60, 60, true)), 60);
-        assert_ne!(ffmpeg_output_fps(120), dda_poll_hz(120));
+        assert_eq!(ffmpeg_output_fps(120), dda_poll_hz(120));
         assert_eq!(ffmpeg_output_fps(45), 45);
         assert!(!ffmpeg_muxer_sets_output_fps());
         assert_eq!(ffmpeg_pipe_buffer_bytes(), 48 * 1024);
