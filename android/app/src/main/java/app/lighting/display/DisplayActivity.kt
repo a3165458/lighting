@@ -466,7 +466,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
         val refresh = lockPeakRefresh()
         worker = thread(name = "lighting-session") {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
-            val caps = try {
+            var caps = try {
                 DeviceCaps.probe()
             } catch (t: Throwable) {
                 Log.e("Lighting", "caps probe failed", t)
@@ -474,14 +474,20 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
             }
             var fails = 0
             var windowStart = 0L
+            val decoderRecovery = DecoderRecovery()
             while (running && sessionGen == gen) {
                 setHud(
                     if (fails == 0) ConnectCopy.connectingLabel(host) else "重连中",
                     reason = null,
                     keep = true,
                 )
+                var decoderFailure: DecoderUnavailable? = null
                 val reachedVideo = try {
                     runSessionOnce(host, port, metrics, refresh, caps, gen)
+                } catch (t: DecoderUnavailable) {
+                    Log.w("LightingDecoder", "request smaller stream after decoder failure", t)
+                    decoderFailure = t
+                    false
                 } catch (t: Throwable) {
                     Log.e("Lighting", "session failed", t)
                     val primary = rememberFail(t, host)
@@ -493,6 +499,24 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     releaseStream()
                 }
                 if (!running || sessionGen != gen) break
+                val decodeError = decoderFailure
+                if (decodeError != null) {
+                    val ceiling = decoderRecovery.next(decodeError.mode)
+                    if (ceiling == null) {
+                        lastError = "平板解码失败，降低画质重试后仍无法流畅投屏"
+                        lastFail = UserFacingError(lastError!!, "请停止共享后重新连接", decodeError.message.orEmpty())
+                        setHud("无法解码 · 点此重试", reason = lastError, keep = true)
+                        showManualReconnect(true)
+                        break
+                    }
+                    caps = caps.withDecodeCeiling(ceiling)
+                    Log.i("LightingDecoder", "retry Hello decoder ceiling=${ceiling.width}x${ceiling.height}@${ceiling.fps} hardware=${caps.hwDecode}")
+                    setHud("正在降低画质重试", reason = "${ceiling.width}×${ceiling.height}@${ceiling.fps}", keep = true)
+                    // Closing the old stream lets the host release its encoder;
+                    // the next Hello carries smaller limits on both codecs.
+                    sleepBackoff(650L, gen)
+                    continue
+                }
                 if (reachedVideo) {
                     fails = 0
                     windowStart = 0L
@@ -612,6 +636,7 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                                 nal,
                                 vs,
                                 cfg.fps,
+                                requireHardware = caps.hwDecode,
                             )
                             configured = true
                             reachedVideo = true
@@ -654,6 +679,10 @@ class DisplayActivity : AppCompatActivity(), SurfaceHolder.Callback {
                     }
                 }
             }
+        } catch (t: DecoderUnavailable) {
+            // Also propagate a runtime input stall, not only configure failures.
+            // The outer loop must negotiate smaller limits after cleanup.
+            throw t
         } catch (t: Throwable) {
             if (!running || sessionGen != gen) return reachedVideo
             if (reachedVideo) {

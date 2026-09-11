@@ -211,10 +211,9 @@ fn rewrite_sps_rbsp(rbsp: &[u8]) -> Option<Vec<u8>> {
     dst.u(8, profile);
     dst.copy_u(&mut src, 8)?;
     let level = src.u(8)?;
-    // 1080p120 needs 5.1 (979200 MB/s). 1440p120 needs 5.2 (1728000).
-    // If AVC decode covers 2K we never switch to HEVC; a 5.1 tag still
-    // lets some SoCs pace at 60. Floor at 5.2. Higher levels unchanged.
-    dst.u(8, level.max(52));
+    // Preserve the encoder's level. Raising every stream to 5.2 can make
+    // a 1080p hardware decoder reject otherwise supported video.
+    dst.u(8, level);
     dst.copy_ue(&mut src)?;
 
     if matches!(
