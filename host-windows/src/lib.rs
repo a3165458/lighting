@@ -1,6 +1,7 @@
 pub mod annexb;
 pub mod apk_install;
 pub mod capture_graph;
+pub mod client_connection;
 pub mod cursor_wire;
 pub mod h264_sps;
 pub mod hevc_sps;

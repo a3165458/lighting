@@ -11,8 +11,8 @@ android {
         applicationId = "app.lighting.display"
         minSdk = 26
         targetSdk = 35
-        versionCode = 69
-        versionName = "0.1.69"
+        versionCode = 70
+        versionName = "0.1.70"
     }
 
     buildTypes {
