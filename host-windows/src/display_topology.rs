@@ -1,12 +1,14 @@
 //! Temporary tablet-only output with an owned, explicit CCD restore snapshot.
 
 use anyhow::{bail, Context, Result};
+use std::time::Duration;
 use windows::Win32::Devices::Display::{
     DisplayConfigGetDeviceInfo, GetDisplayConfigBufferSizes, QueryDisplayConfig, SetDisplayConfig,
     DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME, DISPLAYCONFIG_DEVICE_INFO_HEADER,
     DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE,
     DISPLAYCONFIG_MODE_INFO_TYPE_TARGET, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_SOURCE_DEVICE_NAME,
-    QDC_ONLY_ACTIVE_PATHS, SDC_APPLY, SDC_USE_SUPPLIED_DISPLAY_CONFIG,
+    QDC_ONLY_ACTIVE_PATHS, SDC_ALLOW_CHANGES, SDC_APPLY, SDC_TOPOLOGY_EXTEND,
+    SDC_USE_SUPPLIED_DISPLAY_CONFIG,
 };
 use windows::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, POINTL};
 
@@ -47,13 +49,28 @@ impl TabletOnlyOutput {
 
         // Even a failed apply may change the desktop. Never lose its restore data.
         self.saved = Some(snapshot);
-        tablet.apply().context("enabling tablet-only output")
+        tablet.apply(false).context("enabling tablet-only output")
     }
 
     pub fn restore(&mut self) -> Result<()> {
-        if let Some(snapshot) = &self.saved {
-            snapshot.apply().context("restoring pre-tablet desktop")?;
-            self.saved = None;
+        let Some(snapshot) = self.saved.take() else {
+            return Ok(());
+        };
+        // Replay the pre-blank layout, then Win+P extend so IddCx is not
+        // left detached. Snapshot-only restore is what left "只剩主屏".
+        let snapshot_err = snapshot
+            .apply(true)
+            .context("restoring pre-tablet desktop")
+            .err();
+        let extend_err = apply_extend().err();
+        if let Some(err) = snapshot_err {
+            if extend_err.is_some() {
+                return Err(err);
+            }
+            tracing::warn!("tablet-only snapshot restore failed, extend kept the desktop: {err:#}");
+        }
+        if let Some(err) = extend_err {
+            tracing::warn!("extend after tablet-only failed: {err:#}");
         }
         Ok(())
     }
@@ -154,20 +171,28 @@ impl DisplaySnapshot {
         Ok(())
     }
 
-    fn apply(&self) -> Result<()> {
-        // No database writes or topology presets: replay only these paths/modes.
-        let code = unsafe {
-            SetDisplayConfig(
-                Some(&self.paths),
-                Some(&self.modes),
-                SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG,
-            )
+    fn apply(&self, allow_changes: bool) -> Result<()> {
+        // No database writes: tablet-only must not persist "second screen only".
+        let flags = if allow_changes {
+            SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_ALLOW_CHANGES
+        } else {
+            SDC_APPLY | SDC_USE_SUPPLIED_DISPLAY_CONFIG
         };
+        let code = unsafe { SetDisplayConfig(Some(&self.paths), Some(&self.modes), flags) };
         if code != 0 {
             bail!("SetDisplayConfig failed with code {code}");
         }
         Ok(())
     }
+}
+
+fn apply_extend() -> Result<()> {
+    let code = unsafe { SetDisplayConfig(None, None, SDC_APPLY | SDC_TOPOLOGY_EXTEND) };
+    if code != 0 {
+        bail!("SetDisplayConfig extend failed with code {code}");
+    }
+    std::thread::sleep(Duration::from_millis(400));
+    Ok(())
 }
 
 fn source_matches(path: &DISPLAYCONFIG_PATH_INFO, device_name: &str) -> Result<bool> {

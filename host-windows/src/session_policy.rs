@@ -96,6 +96,26 @@ pub fn primary_restore_action(
     }
 }
 
+/// What to do after a tablet-only CCD snapshot is applied (or fails).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabletOnlyFollowup {
+    /// Snapshot already has the laptop and the virtual panel.
+    ReassertPrimary,
+    /// Either panel is missing. Win+P extend reattaches IddCx; never INTERNAL.
+    ExtendThenReassert,
+}
+
+/// Tablet-only path filtering can leave Windows on a single active target.
+/// Replaying the snapshot is not enough: if the virtual target was dropped,
+/// only extend brings it back. INTERNAL is what left "只剩主屏" in 0.1.67/0.1.68.
+pub fn tablet_only_followup(laptop_present: bool, virtual_present: bool) -> TabletOnlyFollowup {
+    if laptop_present && virtual_present {
+        TabletOnlyFollowup::ReassertPrimary
+    } else {
+        TabletOnlyFollowup::ExtendThenReassert
+    }
+}
+
 /// Base wait before a client's Nth reconnect attempt (`fail_index` 0 = first retry).
 /// The first slot is long enough that a reconnect does not stampede into host
 /// teardown / `adb reverse` bounce; accept itself stays live concurrently.
@@ -2114,6 +2134,26 @@ mod tests {
         assert!(!is_safe_virtual_target(r"\\.\DISPLAY1", r"\\.\DISPLAY1"));
         assert!(is_safe_virtual_target(r"\\.\DISPLAY2", r"\\.\DISPLAY1"));
         assert!(!is_safe_virtual_target("", r"\\.\DISPLAY1"));
+    }
+
+    #[test]
+    fn tablet_only_restore_extends_when_virtual_is_missing() {
+        assert_eq!(
+            tablet_only_followup(true, false),
+            TabletOnlyFollowup::ExtendThenReassert
+        );
+        assert_eq!(
+            tablet_only_followup(false, true),
+            TabletOnlyFollowup::ExtendThenReassert
+        );
+        assert_eq!(
+            tablet_only_followup(false, false),
+            TabletOnlyFollowup::ExtendThenReassert
+        );
+        assert_eq!(
+            tablet_only_followup(true, true),
+            TabletOnlyFollowup::ReassertPrimary
+        );
     }
 
     #[test]
