@@ -2,10 +2,10 @@
 
 ## 给新手
 
-到 [Releases](https://github.com/a3165458/lighting/releases/latest) 下载当前版本（v0.1.67）：
+到 [Releases](https://github.com/a3165458/lighting/releases/latest) 下载当前版本（v0.1.69）：
 
-- `Lighting-0.1.67-setup.exe` — 安装包（推荐）
-- `Lighting-0.1.67-portable.exe` — 便携版，双击即用
+- `Lighting-0.1.69-setup.exe` — 安装包（推荐）
+- `Lighting-0.1.69-portable.exe` — 便携版，双击即用
 
 首次打开会自动准备 USB 调试工具（adb）和画面编码组件（ffmpeg），保存在 `%APPDATA%\Lighting副屏\runtime\`。
 
