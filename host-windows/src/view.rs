@@ -100,6 +100,18 @@ pub fn pick_share_target_index(items: &[(bool, bool)], mode: ShareMode) -> Optio
     }
 }
 
+/// Kind shown in the host display list. A virtual panel that became primary
+/// during tablet-only must still read as 虚拟屏, not 主屏.
+pub fn display_kind_label(primary: bool, is_virtual: bool) -> &'static str {
+    if is_virtual {
+        "虚拟屏"
+    } else if primary {
+        "主屏"
+    } else {
+        "副屏"
+    }
+}
+
 /// Heuristic for virtual / IDD monitors used as Lighting extend targets.
 pub fn looks_virtual_display(name: &str, friendly: &str) -> bool {
     let blob = format!("{name} {friendly}").to_ascii_lowercase();
@@ -168,6 +180,14 @@ mod share_mode_tests {
         );
         assert_eq!(pick_share_target_index(&only_pc, ShareMode::Extend), None);
         assert_eq!(pick_share_target_index(&only_pc, ShareMode::External), None);
+    }
+
+    #[test]
+    fn virtual_panel_is_not_labeled_as_the_pc_primary() {
+        assert_eq!(display_kind_label(true, false), "主屏");
+        assert_eq!(display_kind_label(false, true), "虚拟屏");
+        assert_eq!(display_kind_label(true, true), "虚拟屏");
+        assert_eq!(display_kind_label(false, false), "副屏");
     }
 
     #[test]

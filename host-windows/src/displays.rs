@@ -142,13 +142,7 @@ pub struct DisplayInfo {
 
 impl DisplayInfo {
     pub fn label(&self) -> String {
-        let kind = if self.primary {
-            "主屏"
-        } else if self.is_virtual {
-            "虚拟屏"
-        } else {
-            "副屏"
-        };
+        let kind = lighting_host::view::display_kind_label(self.primary, self.is_virtual);
         let title = if self.friendly.is_empty() {
             &self.name
         } else {
@@ -862,6 +856,24 @@ pub fn restore_desktop(snap: &PrimarySnapshot) -> Result<()> {
         restore_primary(snap)?;
     }
     Ok(())
+}
+
+/// After tablet-only, put the laptop back *and* reattach the virtual panel.
+/// `SDC_TOPOLOGY_INTERNAL` is what left only 主屏 in 0.1.67/0.1.68.
+pub fn restore_after_tablet_only(snap: &PrimarySnapshot) -> Result<()> {
+    let list = list_displays().unwrap_or_default();
+    let laptop = list
+        .iter()
+        .any(|d| d.name.eq_ignore_ascii_case(&snap.device) && !d.is_virtual);
+    let virtual_present = has_virtual_display(&list);
+    if lighting_host::session_policy::tablet_only_followup(laptop, virtual_present)
+        == lighting_host::session_policy::TabletOnlyFollowup::ExtendThenReassert
+    {
+        if let Err(err) = apply_project_mode(ShareMode::Extend) {
+            tracing::warn!("extend after tablet-only failed: {err:#}");
+        }
+    }
+    restore_desktop(snap)
 }
 
 /// RAII: always restore the host panel, including after a mid-share interrupt.
