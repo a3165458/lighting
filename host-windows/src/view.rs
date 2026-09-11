@@ -91,8 +91,7 @@ pub fn pick_share_target_index(items: &[(bool, bool)], mode: ShareMode) -> Optio
         ShareMode::Extend => items
             .iter()
             .position(|(primary, virt)| *virt && !*primary)
-            .or_else(|| items.iter().position(|(primary, _)| !*primary))
-            .or_else(|| items.iter().position(|(_, virt)| *virt)),
+            .or_else(|| items.iter().position(|(primary, _)| !*primary)),
         // After Win+P /external the virtual panel is often the only screen and
         // becomes primary — still capture it.
         ShareMode::External => items
@@ -161,7 +160,7 @@ mod share_mode_tests {
         );
         assert_eq!(
             pick_share_target_index(&only_virtual, ShareMode::Extend),
-            Some(0)
+            None
         );
         let only_pc = [(true, false)];
         assert_eq!(
