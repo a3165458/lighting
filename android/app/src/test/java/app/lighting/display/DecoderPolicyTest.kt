@@ -71,7 +71,7 @@ class DecoderPolicyTest {
     @Test
     fun failed_1920_by_1152_stream_retries_smaller_and_eventually_stops() {
         val recovery = DecoderRecovery()
-        assertEquals(DecodeMode(1920, 1080, 30), recovery.next(DecodeMode(1920, 1152, 60)))
+        assertEquals(DecodeMode(1920, 1080, 60), recovery.next(DecodeMode(1920, 1152, 60)))
         assertEquals(DecodeMode(1280, 720, 30), recovery.next(DecodeMode(1800, 1080, 30)))
         assertEquals(DecodeMode(960, 540, 30), recovery.next(DecodeMode(1200, 720, 30)))
         assertNull(recovery.next(DecodeMode(900, 540, 30)))

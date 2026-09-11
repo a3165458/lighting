@@ -41,7 +41,8 @@ object DecoderPolicy {
 /** Per connection attempt group; never mutate the cached device capabilities. */
 class DecoderRecovery {
     private var nextTier = 0
-    private val tiers = listOf(DecodeMode(1920, 1080, 30), DecodeMode(1280, 720, 30), DecodeMode(960, 540, 30))
+    // Keep 60 fps on the first step: 1920x1152 on Snapdragon 662 fails configure(), not the 60 Hz budget.
+    private val tiers = listOf(DecodeMode(1920, 1080, 60), DecodeMode(1280, 720, 30), DecodeMode(960, 540, 30))
 
     fun next(failed: DecodeMode): DecodeMode? {
         while (nextTier < tiers.size) {
