@@ -108,11 +108,28 @@ pub enum TabletOnlyFollowup {
 /// Tablet-only path filtering can leave Windows on a single active target.
 /// Replaying the snapshot is not enough: if the virtual target was dropped,
 /// only extend brings it back. INTERNAL is what left "只剩主屏" in 0.1.67/0.1.68.
+/// The same follow-up applies when a normal extend session ends: a missing
+/// virtual panel must be reattached, not left as a laptop-only desktop.
 pub fn tablet_only_followup(laptop_present: bool, virtual_present: bool) -> TabletOnlyFollowup {
     if laptop_present && virtual_present {
         TabletOnlyFollowup::ReassertPrimary
     } else {
         TabletOnlyFollowup::ExtendThenReassert
+    }
+}
+
+/// Win+P topology Lighting actually applies. Virtual shares never persist
+/// "second screen only"; that is what left a black laptop panel after sleep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WinPTopology {
+    Clone,
+    Extend,
+}
+
+pub fn share_win_p_topology(mode: crate::view::ShareMode) -> WinPTopology {
+    match mode {
+        crate::view::ShareMode::Mirror => WinPTopology::Clone,
+        crate::view::ShareMode::Extend | crate::view::ShareMode::External => WinPTopology::Extend,
     }
 }
 
@@ -2154,6 +2171,29 @@ mod tests {
             tablet_only_followup(true, true),
             TabletOnlyFollowup::ReassertPrimary
         );
+    }
+
+    #[test]
+    fn extend_and_tablet_only_never_restore_to_internal_only_primary() {
+        use crate::view::ShareMode;
+        assert_eq!(share_win_p_topology(ShareMode::Mirror), WinPTopology::Clone);
+        assert_eq!(share_win_p_topology(ShareMode::Extend), WinPTopology::Extend);
+        assert_eq!(
+            share_win_p_topology(ShareMode::External),
+            WinPTopology::Extend
+        );
+        assert!(ShareMode::Extend.uses_virtual_display());
+        assert!(ShareMode::External.uses_virtual_display());
+        assert_eq!(
+            tablet_only_followup(true, true),
+            TabletOnlyFollowup::ReassertPrimary
+        );
+        for (laptop, virt) in [(true, false), (false, true), (false, false)] {
+            assert_eq!(
+                tablet_only_followup(laptop, virt),
+                TabletOnlyFollowup::ExtendThenReassert
+            );
+        }
     }
 
     #[test]

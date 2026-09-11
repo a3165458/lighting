@@ -172,10 +172,11 @@ pub fn list_displays() -> Result<Vec<DisplayInfo>> {
 
 /// Prepare the desktop while the PC panel is still visible. Tablet-only
 /// captures this extended layout before temporarily selecting its virtual path.
+/// Virtual shares always use extend here — never INTERNAL / "second screen only".
 pub fn apply_project_mode(mode: ShareMode) -> Result<()> {
-    let topology = match mode {
-        ShareMode::Mirror => SDC_TOPOLOGY_CLONE,
-        ShareMode::Extend | ShareMode::External => SDC_TOPOLOGY_EXTEND,
+    let topology = match lighting_host::session_policy::share_win_p_topology(mode) {
+        lighting_host::session_policy::WinPTopology::Clone => SDC_TOPOLOGY_CLONE,
+        lighting_host::session_policy::WinPTopology::Extend => SDC_TOPOLOGY_EXTEND,
     };
     apply_topology(topology)
 }
@@ -858,7 +859,8 @@ pub fn restore_desktop(snap: &PrimarySnapshot) -> Result<()> {
     Ok(())
 }
 
-/// After tablet-only, put the laptop back *and* reattach the virtual panel.
+/// After tablet-only *or* a normal extend session, put the laptop back and
+/// reattach the virtual panel if either one vanished.
 /// `SDC_TOPOLOGY_INTERNAL` is what left only 主屏 in 0.1.67/0.1.68.
 pub fn restore_after_tablet_only(snap: &PrimarySnapshot) -> Result<()> {
     let list = list_displays().unwrap_or_default();
@@ -909,7 +911,7 @@ impl DesktopRestoreGuard {
 impl Drop for DesktopRestoreGuard {
     fn drop(&mut self) {
         if let Some(primary) = self.primary.take() {
-            if let Err(err) = restore_desktop(&primary) {
+            if let Err(err) = restore_after_tablet_only(&primary) {
                 tracing::warn!("restore desktop after share failed: {err:#}");
             } else {
                 tracing::info!(
