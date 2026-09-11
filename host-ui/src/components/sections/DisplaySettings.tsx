@@ -19,7 +19,7 @@ type Props = {
 }
 
 const RES_OPTIONS = [
-  { id: 'device', label: '跟随平板（保持电脑比例）' },
+  { id: 'device', label: '跟随平板（不改电脑分辨率）' },
   { id: 'fhd', label: '最高 1080p' },
   { id: 'uhd2k', label: '最高 2K' },
   { id: 'uhd4k', label: '最高 4K' },
@@ -52,7 +52,7 @@ export function DisplaySettings({
     ? '仅平板：平板连上后关掉电脑屏（Win+P 仅第二屏幕），适合合盖躺着用。投屏期间防休眠。Windows 锁屏后无法抓屏，请关掉自动锁屏。'
     : isExtend
       ? '双屏扩展：平板变成独立桌面，电脑屏仍亮。首次安装驱动可能需管理员确认；失败会显示错误，不会自动切成镜像。'
-      : '镜像主屏：电脑画面同步到平板。「跟随平板」只切电脑原生比例（16:9 电脑不会切到 1920×1200，避免拉伸卡顿）。锁屏后无法抓屏；躺着用请改选「仅平板」。'
+      : '镜像主屏：电脑画面同步到平板，不改电脑分辨率（2K 主屏保持 2K）。锁屏后无法抓屏。'
 
   return (
     <section className="glass-card p-[var(--space-card-pad)]" aria-label="投屏设置">

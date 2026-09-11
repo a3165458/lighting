@@ -1794,7 +1794,14 @@ fn video_write_loop(
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 session.stop();
-                let retry_dda = capture_kind == CaptureKind::Dda && dda_retries < 1;
+                let retry_dda = capture_kind == CaptureKind::Dda
+                    && (dda_retries < 1
+                        || (display.is_virtual
+                            && dda_retries < 3
+                            && !lighting_host::session_policy::prefer_gdigrab_capture(
+                                true,
+                                display.dxgi.is_some(),
+                            )));
                 dda_retries = dda_retries.saturating_add(1);
                 if retry_dda {
                     tracing::warn!("encoder pipe closed, retrying Desktop Duplication");
