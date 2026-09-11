@@ -177,7 +177,13 @@ impl HostService {
             (true, quality, 3840, 2560)
         } else {
             match g.settings.res_cap {
-                ResCap::Device => (true, quality, 3840, 2560),
+                // Encode to the tablet; never CDS the 2K PC panel to 1080p.
+                ResCap::Device => (
+                    lighting_host::session_policy::mirror_changes_pc_mode(),
+                    quality,
+                    3840,
+                    2560,
+                ),
                 ResCap::Fhd => (false, 1.0, scaled(1920, quality), scaled(1080, quality)),
                 ResCap::Uhd2k => (false, 1.0, scaled(2560, quality), scaled(1440, quality)),
                 ResCap::Uhd4k => (false, 1.0, scaled(3840, quality), scaled(2160, quality)),

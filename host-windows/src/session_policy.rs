@@ -71,8 +71,15 @@ pub fn dda_settle_after_mode_change_ms() -> u64 {
 /// mode change plus ffmpeg writing a file named `0` meant CONFIG never
 /// arrived. The encoder now settles DDA, Stop is polled, and ffmpeg
 /// ends at `pipe:1`.
+/// Hello 后再改 IddCx 会重置 DXGI，扩展屏退回 gdigrab（约 10–20 fps，
+/// 声画一起卡）。虚拟屏用开始共享时的尺寸 1:1 抓取。
 pub fn resize_virtual_display_after_hello() -> bool {
-    true
+    false
+}
+
+/// 镜像不得 ChangeDisplaySettings 电脑主屏。2K 显示器会被切成 1080p。
+pub fn mirror_changes_pc_mode() -> bool {
+    false
 }
 
 /// The PC panel must never be the target of a virtual-display mode change.
@@ -2127,7 +2134,8 @@ mod tests {
         assert_eq!(encoder_start_attempts(), 1);
         assert_eq!(encoder_start_attempts_after_mode_change(), 2);
         assert!(dda_settle_after_mode_change_ms() >= 200);
-        assert!(resize_virtual_display_after_hello());
+        assert!(!resize_virtual_display_after_hello());
+        assert!(!mirror_changes_pc_mode());
     }
 
     #[test]
@@ -2139,7 +2147,8 @@ mod tests {
         assert!(!mux_cursor_on_video(true, true));
         assert!(audio_packets_per_video_frame() >= 2);
         assert!(audio_flush_on_video_timeout());
-        assert!(resize_virtual_display_after_hello());
+        assert!(!resize_virtual_display_after_hello());
+        assert!(!mirror_changes_pc_mode());
         let (w, h) = virtual_panel_size(2000, 1200, 3840, 2160, 1.0, 3840, 2160, 16);
         assert_eq!((w, h), (2000, 1200));
     }

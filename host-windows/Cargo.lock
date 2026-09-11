@@ -1626,7 +1626,7 @@ dependencies = [
 
 [[package]]
 name = "lighting-host"
-version = "0.1.66"
+version = "0.1.76"
 dependencies = [
  "anyhow",
  "eframe",
