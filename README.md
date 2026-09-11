@@ -2,7 +2,7 @@
 
 把 Android 平板或手机当成 Windows 电脑的第二块屏幕。走 USB 数据线（Type-C、USB-A、Micro-USB、转接线均可），不依赖 Wi‑Fi。
 
-**当前版本：[v0.1.67](https://github.com/a3165458/lighting/releases/tag/v0.1.67)**
+**当前版本：[v0.1.69](https://github.com/a3165458/lighting/releases/tag/v0.1.69)**（运行逻辑与 v0.1.66 相同，已撤回 0.1.67/0.1.68 的显示拓扑改动）
 
 ## 下载
 
@@ -10,8 +10,8 @@
 
 | 文件 | 说明 |
 |------|------|
-| `Lighting-0.1.67-setup.exe` | 安装包（推荐） |
-| `Lighting-0.1.67-portable.exe` | 便携版，不用安装 |
+| `Lighting-0.1.69-setup.exe` | 安装包（推荐） |
+| `Lighting-0.1.69-portable.exe` | 便携版，不用安装 |
 | `Lighting.apk` | 平板客户端；也可在电脑里点「重新安装」推送 |
 
 未签名的 Windows 程序可能被 SmartScreen / **360 报毒**，不等于真有木马。临时：360 选「允许 / 加入信任区」。长期方案见 [`docs/WINDOWS-SMARTSCREEN.md`](docs/WINDOWS-SMARTSCREEN.md) 和 [Code signing policy](docs/CODE-SIGNING.md)。
@@ -19,7 +19,7 @@
 ## 使用
 
 1. 托盘里把旧 Lighting 退干净
-2. 安装 `Lighting-0.1.67-setup.exe`，或打开便携包
+2. 安装 `Lighting-0.1.69-setup.exe`，或打开便携包
 3. 平板开启 **开发者选项** 和 **USB 调试**，用数据线连电脑（必须是数据线）
 4. 电脑点 **开始共享**
 5. 设置里点 **重新安装**，覆盖平板上的客户端
@@ -39,7 +39,7 @@
 
 **锁屏无法投屏**是 Windows 限制：抓屏抓不到安全桌面。请关掉自动锁屏，投屏时不要按 Win+L。合盖请在电源设置里设为不采取任何操作。
 
-## 当前能力（v0.1.67）
+## 当前能力（v0.1.69）
 
 - USB 有线投屏；可选局域网（高级设置里把监听改为 `0.0.0.0`，仅建议在可信网络使用）
 - 镜像 / 扩展 / 仅平板

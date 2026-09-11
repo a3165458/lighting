@@ -808,16 +808,30 @@ async fn run_session_inner(
         if !wait_after_virtual {
             let was_tablet_only = tablet_only.swap(false, Ordering::SeqCst);
             if let Some(snap) = preserve.clone() {
-                let _ = tokio::task::spawn_blocking(move || {
-                    if let Err(err) = displays::restore_after_client_drop(was_tablet_only, &snap) {
-                        tracing::warn!("restore after tablet drop: {err:#}");
+                let action = lighting_host::session_policy::client_drop_desktop_action(
+                    was_tablet_only,
+                    if was_tablet_only {
+                        lighting_host::session_policy::PrimaryRestoreAction::SetPrimary
                     } else {
-                        tracing::info!("restored laptop after tablet sleep/disconnect");
+                        lighting_host::session_policy::PrimaryRestoreAction::TimingOnly
+                    },
+                );
+                let _ = tokio::task::spawn_blocking(move || match action {
+                    lighting_host::session_policy::ClientDropDesktopAction::UndoExternal => {
+                        if let Err(err) = displays::restore_after_tablet_only(&snap) {
+                            tracing::warn!("restore after tablet-only disconnect: {err:#}");
+                        } else {
+                            tracing::info!("restored laptop after tablet sleep/disconnect");
+                        }
                     }
+                    lighting_host::session_policy::ClientDropDesktopAction::ReassertPrimary => {
+                        if let Err(err) = displays::reassert_primary(&snap) {
+                            tracing::warn!("reassert primary after tablet drop: {err:#}");
+                        }
+                    }
+                    lighting_host::session_policy::ClientDropDesktopAction::None => {}
                 })
                 .await;
-            } else if was_tablet_only {
-                let _ = tokio::task::spawn_blocking(displays::restore_pc_monitor).await;
             }
         }
 
@@ -1024,7 +1038,7 @@ impl Drop for TabletOnlyRestoreGuard {
     fn drop(&mut self) {
         if self.0.swap(false, Ordering::SeqCst) {
             if let Some(snap) = self.1.take() {
-                if let Err(err) = displays::restore_after_tablet_only(&snap) {
+                if let Err(err) = displays::restore_desktop(&snap) {
                     tracing::warn!("restore PC monitor after tablet-only failed: {err:#}");
                 } else {
                     tracing::info!("restored PC monitor after tablet-only session");

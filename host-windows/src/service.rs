@@ -119,21 +119,9 @@ impl HostService {
         if status.phase == "错误" && !status.detail.is_empty() {
             g.last_error = status.detail.clone();
         }
-        if g.last_poll.elapsed() >= Duration::from_secs(if g.running { 1 } else { 2 }) {
+        if !g.running && g.last_poll.elapsed() >= Duration::from_secs(2) {
             g.last_poll = Instant::now();
-            if let Ok(list) = displays::list_displays() {
-                g.displays = list;
-                if g.settings.selected_display >= g.displays.len() {
-                    g.settings.selected_display = 0;
-                }
-                if let Some(idx) = displays::pick_display_index(&g.displays, g.settings.share_mode)
-                {
-                    g.settings.selected_display = idx;
-                }
-            }
-            if !g.running {
-                Self::request_device_refresh_locked(&self.rt, &mut g);
-            }
+            Self::request_device_refresh_locked(&self.rt, &mut g);
         }
     }
 

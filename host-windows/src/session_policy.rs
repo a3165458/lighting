@@ -26,18 +26,6 @@ pub fn client_drop_desktop_action(
     tablet_only_active: bool,
     restore: PrimaryRestoreAction,
 ) -> ClientDropDesktopAction {
-    client_drop_desktop_action_for(tablet_only_active, true, restore)
-}
-
-/// `physical_present` is the snapshotted laptop panel. v0.1.67 treated a
-/// missing panel in *every* mode as UndoExternal / Win+P INTERNAL, which
-/// disabled the virtual display so later extend/mirror could only pick 主屏.
-/// INTERNAL is only for 仅平板, where we actually blanked the laptop.
-pub fn client_drop_desktop_action_for(
-    tablet_only_active: bool,
-    _physical_present: bool,
-    restore: PrimaryRestoreAction,
-) -> ClientDropDesktopAction {
     if tablet_only_active {
         ClientDropDesktopAction::UndoExternal
     } else {
@@ -46,25 +34,6 @@ pub fn client_drop_desktop_action_for(
             _ => ClientDropDesktopAction::ReassertPrimary,
         }
     }
-}
-
-/// Attached enough to show a picture. Must not require `is_primary`: during
-/// extend the virtual panel is often primary, and requiring it made
-/// restore_desktop apply INTERNAL and tear the second screen down.
-pub fn laptop_panel_looks_attached(present: bool, _is_primary: bool, width: u32, height: u32) -> bool {
-    present && width >= 640 && height >= 480
-}
-
-/// Combined INTERNAL|CLONE|EXTEND|EXTERNAL can replay a saved EXTERNAL
-/// layout. restore_desktop must not use INTERNAL-only either (that
-/// disconnects VDD).
-pub fn restore_saved_topology_includes_external() -> bool {
-    false
-}
-
-/// After INTERNAL wakes the laptop, re-extend so VDD is a secondary again.
-pub fn reextend_after_internal_restore() -> bool {
-    true
 }
 
 /// GlideX / SuperDisplay run the virtual panel at 120 Hz even when the tablet
@@ -2146,23 +2115,6 @@ mod tests {
             client_drop_desktop_action(false, PrimaryRestoreAction::SetPrimary),
             ClientDropDesktopAction::ReassertPrimary
         );
-        assert_eq!(
-            client_drop_desktop_action_for(false, false, PrimaryRestoreAction::Skip),
-            ClientDropDesktopAction::None
-        );
-        assert_eq!(
-            client_drop_desktop_action_for(false, false, PrimaryRestoreAction::SetPrimary),
-            ClientDropDesktopAction::ReassertPrimary
-        );
-        assert_eq!(
-            client_drop_desktop_action_for(false, true, PrimaryRestoreAction::Skip),
-            ClientDropDesktopAction::None
-        );
-        assert!(laptop_panel_looks_attached(true, true, 1920, 1080));
-        assert!(laptop_panel_looks_attached(true, false, 1920, 1080));
-        assert!(!laptop_panel_looks_attached(false, true, 1920, 1080));
-        assert!(!restore_saved_topology_includes_external());
-        assert!(reextend_after_internal_restore());
     }
 
     #[test]
