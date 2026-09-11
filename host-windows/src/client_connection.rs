@@ -74,17 +74,27 @@ mod tests {
         let (shutdown, mut server, _non_reading_tablet) = connected().await;
         let session_stop = Arc::new(AtomicBool::new(false));
         let _connection = ClientConnection::new(shutdown, session_stop.clone());
-        let payload = vec![0u8; 16 * 1024 * 1024];
+        // Fill the transport with frame-sized writes instead of assuming one
+        // oversized write blocks on every OS (Windows can reject/buffer it).
+        let payload = [0u8; 32 * 1024];
+        let streaming = async {
+            loop {
+                if let Err(err) = server.write_all(&payload).await {
+                    return err;
+                }
+            }
+        };
+        tokio::pin!(streaming);
         assert!(
-            timeout(Duration::from_millis(100), server.write_all(&payload))
+            timeout(Duration::from_millis(100), &mut streaming)
                 .await
-                .is_err()
+                .is_err(),
+            "the live connection must not fail before the suspend signal"
         );
         session_stop.store(true, Ordering::Relaxed);
-        assert!(timeout(Duration::from_secs(2), server.write_all(&payload))
+        timeout(Duration::from_secs(2), &mut streaming)
             .await
-            .unwrap()
-            .is_err());
+            .expect("suspend must interrupt the same streaming write loop");
     }
 
     #[tokio::test]
