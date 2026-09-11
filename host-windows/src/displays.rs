@@ -13,8 +13,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use windows::core::PCWSTR;
 use windows::Win32::Devices::Display::{
-    SetDisplayConfig, SDC_APPLY, SDC_TOPOLOGY_CLONE, SDC_TOPOLOGY_EXTEND, SDC_TOPOLOGY_EXTERNAL,
-    SDC_TOPOLOGY_INTERNAL, SET_DISPLAY_CONFIG_FLAGS,
+    SetDisplayConfig, SDC_APPLY, SDC_TOPOLOGY_CLONE, SDC_TOPOLOGY_EXTEND, SET_DISPLAY_CONFIG_FLAGS,
 };
 use windows::Win32::Foundation::{
     CloseHandle, BOOL, HANDLE, LPARAM, LUID, RECT, WAIT_OBJECT_0, WAIT_TIMEOUT,
@@ -177,41 +176,14 @@ pub fn list_displays() -> Result<Vec<DisplayInfo>> {
     Ok(displays)
 }
 
-/// Apply Win+P topology. External (tablet-only) still uses `/extend` here so the
-/// Lighting window stays on a visible monitor until the tablet Hello arrives;
-/// [`apply_tablet_only_output`] blanks the PC panel afterwards.
+/// Prepare the desktop while the PC panel is still visible. Tablet-only
+/// captures this extended layout before temporarily selecting its virtual path.
 pub fn apply_project_mode(mode: ShareMode) -> Result<()> {
     let topology = match mode {
         ShareMode::Mirror => SDC_TOPOLOGY_CLONE,
         ShareMode::Extend | ShareMode::External => SDC_TOPOLOGY_EXTEND,
     };
     apply_topology(topology)
-}
-
-/// Win+P “仅第二屏幕”: laptop panel off, desktop lives on the virtual display.
-pub fn apply_tablet_only_output() -> Result<()> {
-    apply_topology(SDC_TOPOLOGY_EXTERNAL)
-}
-
-/// Last-resort CCD restore when we do not have a primary snapshot. Prefer
-/// [`restore_desktop`]: SDC_TOPOLOGY_EXTEND replays the polluted extend slot.
-pub fn restore_pc_monitor() -> Result<()> {
-    let code = unsafe {
-        SetDisplayConfig(
-            None,
-            None,
-            SDC_APPLY
-                | SDC_TOPOLOGY_INTERNAL
-                | SDC_TOPOLOGY_CLONE
-                | SDC_TOPOLOGY_EXTEND
-                | SDC_TOPOLOGY_EXTERNAL,
-        )
-    };
-    if code != 0 {
-        anyhow::bail!("DISPLAY_TOPOLOGY_FAILED:{code}");
-    }
-    std::thread::sleep(Duration::from_millis(400));
-    Ok(())
 }
 
 fn apply_topology(topology: SET_DISPLAY_CONFIG_FLAGS) -> Result<()> {
@@ -870,8 +842,14 @@ pub fn restore_desktop(snap: &PrimarySnapshot) -> Result<()> {
         .iter()
         .any(|d| d.name.eq_ignore_ascii_case(&snap.device));
     if !present {
-        let _ = restore_pc_monitor();
-        std::thread::sleep(Duration::from_millis(400));
+        apply_project_mode(ShareMode::Extend)?;
+        anyhow::ensure!(
+            list_displays()?
+                .iter()
+                .any(|d| d.name.eq_ignore_ascii_case(&snap.device)),
+            "电脑屏仍未连接，拒绝向已断开的显示器写入主屏设置: {}",
+            snap.device
+        );
     }
     reassert_primary(snap)?;
     let list = list_displays().unwrap_or_default();
@@ -884,19 +862,6 @@ pub fn restore_desktop(snap: &PrimarySnapshot) -> Result<()> {
         restore_primary(snap)?;
     }
     Ok(())
-}
-
-/// Tablet sleep / disconnect while Win+P external is active: put the laptop
-/// back on an extend desktop before any CDS_SET_PRIMARY. Doing SET_PRIMARY
-/// against a detached internal panel (with ffmpeg still holding DDA) is what
-/// hung the GPU and required Win+Ctrl+Shift+B.
-pub fn restore_after_tablet_only(snap: &PrimarySnapshot) -> Result<()> {
-    if let Err(err) = apply_project_mode(ShareMode::Extend) {
-        tracing::warn!("extend after tablet-only failed: {err:#}");
-        let _ = restore_pc_monitor();
-        std::thread::sleep(Duration::from_millis(400));
-    }
-    restore_desktop(snap)
 }
 
 /// RAII: always restore the host panel, including after a mid-share interrupt.

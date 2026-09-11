@@ -3,6 +3,7 @@
 mod adb;
 mod audio;
 mod cursor;
+mod display_topology;
 mod displays;
 mod encoder;
 mod input;
@@ -10,6 +11,7 @@ mod ipc;
 mod protocol;
 mod service;
 mod session;
+mod suspend;
 
 use std::time::Duration;
 

@@ -16,7 +16,7 @@ pub enum ShareMode {
     Mirror,
     /// Independent second desktop; PC monitor stays on.
     Extend,
-    /// Tablet-only (Win+P “仅第二屏幕”): PC panel off. Best for using in bed.
+    /// Tablet-only: temporarily select the virtual output, preserving the desktop.
     External,
 }
 
@@ -40,7 +40,7 @@ impl ShareMode {
                 "平板作为独立桌面，电脑屏继续亮。适合坐在电脑前；锁屏同样会中断。"
             }
             ShareMode::External => {
-                "虚拟屏 1:1 铺满平板，并关掉电脑屏（Win+P 仅第二屏幕）。平板休眠或断开时会自动把电脑屏亮回来；合盖请设为不休眠。不要锁屏。"
+                "虚拟屏 1:1 铺满平板，并临时关闭电脑屏。平板休眠或断开后恢复电脑屏；电脑休眠会结束共享，唤醒后需重新开始。合盖请设为不休眠。不要锁屏。"
             }
         }
     }
@@ -92,8 +92,7 @@ pub fn pick_share_target_index(items: &[(bool, bool)], mode: ShareMode) -> Optio
             .iter()
             .position(|(primary, virt)| *virt && !*primary)
             .or_else(|| items.iter().position(|(primary, _)| !*primary)),
-        // After Win+P /external the virtual panel is often the only screen and
-        // becomes primary — still capture it.
+        // With only the virtual path active it becomes primary — still capture it.
         ShareMode::External => items
             .iter()
             .position(|(_, virt)| *virt)

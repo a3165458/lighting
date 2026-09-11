@@ -49,7 +49,7 @@ export function DisplaySettings({
   const hasSecondary = host.displays.some((d) => !d.primary)
   const hasVirtual = host.displays.some((d) => d.virtualDisplay)
   const modeBanner = isTabletOnly
-    ? '仅平板：平板连上后关掉电脑屏（Win+P 仅第二屏幕），适合合盖躺着用。投屏期间防休眠。Windows 锁屏后无法抓屏，请关掉自动锁屏。'
+    ? '仅平板：连接后临时关闭电脑屏，平板休眠或断开后恢复。电脑休眠会结束共享，唤醒后需重新开始。合盖请设为不休眠；Windows 锁屏后无法抓屏。'
     : isExtend
       ? '双屏扩展：平板变成独立桌面，电脑屏仍亮。首次安装驱动可能需管理员确认；失败会显示错误，不会自动切成镜像。'
       : '镜像主屏：电脑画面同步到平板。「跟随平板」只切电脑原生比例（16:9 电脑不会切到 1920×1200，避免拉伸卡顿）。锁屏后无法抓屏；躺着用请改选「仅平板」。'

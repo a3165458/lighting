@@ -12,30 +12,6 @@ pub fn prefer_gdigrab_capture(_is_virtual: bool, has_dxgi: bool) -> bool {
     !has_dxgi
 }
 
-/// What to do to the PC panel after the tablet socket dies (sleep / power off).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ClientDropDesktopAction {
-    None,
-    ReassertPrimary,
-    /// Win+P "仅第二屏幕" left the laptop detached. Undo it so the user is
-    /// not staring at a black panel that only Win+Ctrl+Shift+B can revive.
-    UndoExternal,
-}
-
-pub fn client_drop_desktop_action(
-    tablet_only_active: bool,
-    restore: PrimaryRestoreAction,
-) -> ClientDropDesktopAction {
-    if tablet_only_active {
-        ClientDropDesktopAction::UndoExternal
-    } else {
-        match restore {
-            PrimaryRestoreAction::Skip => ClientDropDesktopAction::None,
-            _ => ClientDropDesktopAction::ReassertPrimary,
-        }
-    }
-}
-
 /// GlideX / SuperDisplay run the virtual panel at 120 Hz even when the tablet
 /// is 60 Hz. A 60 Hz IddCx mode makes DWM/DDA wait a 16 ms vsync; 120 Hz
 /// cuts that wait in half. Never above 120: IddCx mode tables get sparse, and
@@ -994,7 +970,10 @@ pub fn encode_fps(_req_fps: u32, tablet_max: u32, dec_fps: u32, hw: bool) -> u32
     if !hw {
         return 45;
     }
-    let cap = tablet_max.max(24).min(if dec_fps == 0 { 120 } else { dec_fps }).min(120);
+    let cap = tablet_max
+        .max(24)
+        .min(if dec_fps == 0 { 120 } else { dec_fps })
+        .min(120);
     if cap >= 90 {
         120
     } else {
@@ -1581,9 +1560,15 @@ mod tests {
         assert!(keep_live_hello_after_virtual_prepare());
         assert_eq!(skip_force_reverse_if_accept_newer_than_ms(), 3_000);
         assert!(!should_force_reverse_after_virtual_prepare(true, None));
-        assert!(!should_force_reverse_after_virtual_prepare(false, Some(500)));
+        assert!(!should_force_reverse_after_virtual_prepare(
+            false,
+            Some(500)
+        ));
         assert!(should_force_reverse_after_virtual_prepare(false, None));
-        assert!(should_force_reverse_after_virtual_prepare(false, Some(8_000)));
+        assert!(should_force_reverse_after_virtual_prepare(
+            false,
+            Some(8_000)
+        ));
         assert!(usb_reverse_skips_package_probe());
         assert!(launch_stream_client_does_not_block_listen());
         assert!(refresh_usb_while_waiting_for_hello());
@@ -1615,7 +1600,11 @@ mod tests {
         assert!(should_force_stale_reverse(12_000, None, None));
         // Accept in flight (Hello still being classified) — do not --remove.
         assert!(!should_force_stale_reverse(12_000, None, Some(500)));
-        assert!(should_force_stale_reverse(24_000, Some(12_000), Some(13_000)));
+        assert!(should_force_stale_reverse(
+            24_000,
+            Some(12_000),
+            Some(13_000)
+        ));
         // Last recreate was 2s ago — wait the interval.
         assert!(!should_force_stale_reverse(14_000, Some(2_000), None));
         assert!(should_relaunch_client_after_reverse(true, false));
@@ -2091,30 +2080,6 @@ mod tests {
         assert!(prefer_gdigrab_capture(true, false));
         assert!(prefer_gdigrab_capture(false, false));
         assert!(!prefer_gdigrab_capture(false, true));
-    }
-
-    #[test]
-    fn tablet_sleep_undoes_external_topology() {
-        assert_eq!(
-            client_drop_desktop_action(true, PrimaryRestoreAction::Skip),
-            ClientDropDesktopAction::UndoExternal
-        );
-        assert_eq!(
-            client_drop_desktop_action(true, PrimaryRestoreAction::SetPrimary),
-            ClientDropDesktopAction::UndoExternal
-        );
-        assert_eq!(
-            client_drop_desktop_action(false, PrimaryRestoreAction::Skip),
-            ClientDropDesktopAction::None
-        );
-        assert_eq!(
-            client_drop_desktop_action(false, PrimaryRestoreAction::TimingOnly),
-            ClientDropDesktopAction::ReassertPrimary
-        );
-        assert_eq!(
-            client_drop_desktop_action(false, PrimaryRestoreAction::SetPrimary),
-            ClientDropDesktopAction::ReassertPrimary
-        );
     }
 
     #[test]
