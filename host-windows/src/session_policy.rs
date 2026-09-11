@@ -2045,6 +2045,17 @@ mod tests {
     }
 
     #[test]
+    fn odd_iddcx_1152_stays_until_hello_advertises_1080p() {
+        // 联想小新 Pad 2020: VDD 1920x1152 fits a 1920x1920 capability box
+        // and Qualcomm then fails configure(). Keep identity until the next
+        // Hello actually lowers the decoder ceiling.
+        let (w, h) = encode_keep_dda_identity(1920, 1152, 1920, 1200, 1920, 1920);
+        assert_eq!((w, h), (1920, 1152));
+        let (w, h) = encode_keep_dda_identity(1920, 1152, 1920, 1080, 1920, 1080);
+        assert_eq!((w, h), (1920, 1080));
+    }
+
+    #[test]
     fn vdd_xml_inserts_paired_resolution_not_loose_tags() {
         let xml = r#"<vdd_settings>
     <resolutions>
