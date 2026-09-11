@@ -136,6 +136,13 @@ data class DeviceCaps(
             if (hasDecoder(MediaFormat.MIMETYPE_VIDEO_AVC)) codecs.add("avc")
             if (hasDecoder(MediaFormat.MIMETYPE_VIDEO_HEVC)) codecs.add("hevc")
             if (codecs.isEmpty()) codecs.add("avc")
+            // Do not let the host select a codec with no verified hardware mode
+            // just because a software implementation of that MIME exists.
+            if (avc != null || hevc != null) {
+                codecs.clear()
+                if (avc != null) codecs.add("avc")
+                if (hevc != null) codecs.add("hevc")
+            }
 
             val primary = avc ?: hevc
             val maxW: Int
@@ -198,6 +205,7 @@ data class DeviceCaps(
                 if (info.supportedTypes.none { it.equals(mime, true) }) continue
                 val name = info.name
                 if (isSoftwareName(info, name)) continue
+                if (!isClearDecoder(info, mime)) continue
                 val limit = try {
                     readLimit(info, mime, name)
                 } catch (_: Throwable) {
@@ -216,33 +224,24 @@ data class DeviceCaps(
 
         private fun readLimit(info: MediaCodecInfo, mime: String, name: String): HwLimit? {
             val caps = info.getCapabilitiesForType(mime).videoCapabilities ?: return null
-            val maxW = caps.supportedWidths.upper
-            val maxH = caps.supportedHeights.upper
-            if (maxW < 128 || maxH < 128) return null
             val align = maxOf(caps.widthAlignment, caps.heightAlignment, 2)
-            var fps = 30
-            try {
-                // Probe at the codec's real ceiling and common tablet sizes — not only 1080p.
-                val probes = linkedSetOf(
-                    maxW to maxH,
-                    maxH to maxW,
-                    maxW.coerceAtMost(2560) to maxH.coerceAtMost(1600),
-                    maxW.coerceAtMost(2560) to maxH.coerceAtMost(1440),
-                    maxW.coerceAtMost(1920) to maxH.coerceAtMost(1080),
-                )
-                for ((pw, ph) in probes) {
-                    if (pw < 128 || ph < 128) continue
-                    try {
-                        if (caps.isSizeSupported(pw, ph)) {
-                            fps = maxOf(fps, caps.getSupportedFrameRatesFor(pw, ph).upper.toInt())
-                        }
-                    } catch (_: Throwable) {
-                    }
+            val mode = DecoderPolicy.selectMode(caps.supportedWidths.upper, caps.supportedHeights.upper, align) { w, h, fps ->
+                try {
+                    caps.areSizeAndRateSupported(w, h, fps.toDouble())
+                } catch (_: Exception) {
+                    false
                 }
-            } catch (_: Throwable) {
-            }
-            if (fps < 24) fps = 30
-            return HwLimit(name, maxW, maxH, fps, align)
+            } ?: return null
+            return HwLimit(name, mode.width, mode.height, mode.fps, align)
+        }
+
+        fun isClearDecoder(info: MediaCodecInfo, mime: String): Boolean = try {
+            val caps = info.getCapabilitiesForType(mime)
+            DecoderPolicy.allowsDecoder(info.name, false,
+                caps.isFeatureRequired(MediaCodecInfo.CodecCapabilities.FEATURE_SecurePlayback) ||
+                    caps.isFeatureRequired(MediaCodecInfo.CodecCapabilities.FEATURE_TunneledPlayback), false)
+        } catch (_: Exception) {
+            false
         }
 
         private fun hasDecoder(mime: String): Boolean {

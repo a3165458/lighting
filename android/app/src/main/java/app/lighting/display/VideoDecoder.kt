@@ -19,6 +19,7 @@ class VideoDecoder {
     private val inputLock = Any()
     private var presentWorker: Thread? = null
     private var fakePtsUs = 0L
+    private var streamMode = DecodeMode(1280, 720, 30)
     @Volatile var activeName: String = ""
         private set
 
@@ -39,6 +40,7 @@ class VideoDecoder {
         csd: ByteArray?,
         surface: Surface,
         streamFps: Int = 60,
+        requireHardware: Boolean = true,
     ) {
         release()
         mime = if (codecName.equals("hevc", true) || codecName.equals("h265", true)) {
@@ -53,16 +55,12 @@ class VideoDecoder {
         // targets. Aligned fallback only if configure() rejects it.
         val exactW = width.coerceAtLeast(16)
         val exactH = height.coerceAtLeast(16)
+        streamMode = DecodeMode(exactW, exactH, streamFps)
         val sizes = LinkedHashSet<Pair<Int, Int>>()
         sizes.add(exactW to exactH)
-        val alignedW = (exactW / caps.alignment * caps.alignment).coerceAtLeast(16)
-        val alignedH = (exactH / caps.alignment * caps.alignment).coerceAtLeast(16)
-        if (alignedW != exactW || alignedH != exactH) {
-            sizes.add(alignedW to alignedH)
-        }
         val errors = ArrayList<String>()
         for ((w, h) in sizes) {
-            for (name in decoderCandidates(mime, w, h, caps)) {
+            for (name in decoderCandidates(mime, w, h, caps, streamFps, requireHardware)) {
                 for (format in formatVariants(w, h, csd, caps, name, streamFps)) {
                     var decoder: MediaCodec? = null
                     try {
@@ -102,7 +100,7 @@ class VideoDecoder {
                 }
             }
         }
-        throw IllegalStateException("解码失败 0xfffffc0e/UNSUPPORTED。${exactW}x$exactH $mime。${errors.joinToString(" | ")}")
+        throw DecoderUnavailable(streamMode, "$mime。${errors.joinToString(" | ")}")
     }
 
     fun offer(
@@ -118,18 +116,8 @@ class VideoDecoder {
         if (codecConfig || keyframe) {
             skipUntilKey.set(false)
         }
-        // Moonlight directSubmit: feed MediaCodec from the TCP reader.
-        // The extra decode-thread hop used to sit every picture on a
-        // scheduler wakeup (often a full vsync on a loaded pad).
-        if (enqueueLocked(pkt, 0L)) {
-            return
-        }
-        // IDR/CSD used to hop a leftover decode thread via queue.offer.
-        // This reader then offered the next P while the keyframe still
-        // sat on take() — a scheduler slice, and P-before-IDR on a loaded
-        // pad. Block like live P-frames so ffmpeg skips *input* instead.
-        while (running.get()) {
-            if (enqueueLocked(pkt, 8_000L)) return
+        submitDecoderInput(streamMode, { running.get() }) { waitUs ->
+            enqueueLocked(pkt, waitUs)
         }
     }
 
@@ -160,7 +148,7 @@ class VideoDecoder {
         }
     }
 
-    private fun decoderCandidates(mime: String, width: Int, height: Int, caps: DeviceCaps): List<String> {
+    private fun decoderCandidates(mime: String, width: Int, height: Int, caps: DeviceCaps, fps: Int, requireHardware: Boolean): List<String> {
         val names = LinkedHashSet<String>()
         val list = MediaCodecList(MediaCodecList.ALL_CODECS)
         val hardware = ArrayList<MediaCodecInfo>()
@@ -168,19 +156,26 @@ class VideoDecoder {
         for (info in list.codecInfos) {
             if (info.isEncoder) continue
             if (info.supportedTypes.none { it.equals(mime, true) }) continue
-            if (clearlyTooSmall(info, mime, width, height)) continue
-            if (DeviceCaps.isSoftwareName(info, info.name)) software.add(info) else hardware.add(info)
+            val isSoftware = DeviceCaps.isSoftwareName(info, info.name)
+            if (!DecoderPolicy.allowsDecoder(info.name, isSoftware, !DeviceCaps.isClearDecoder(info, mime), requireHardware)) continue
+            val supported = try {
+                info.getCapabilitiesForType(mime).videoCapabilities?.areSizeAndRateSupported(width, height, fps.toDouble()) == true
+            } catch (_: Exception) {
+                false
+            }
+            if (!supported) continue
+            if (isSoftware) software.add(info) else hardware.add(info)
         }
         // Moonlight: FEATURE_LowLatency / *.low_latency first. C2 without the
         // feature is often listed above OMX and then holds a decoded frame.
         hardware.sortBy { DeviceCaps.decoderRank(it.name, caps.soc) + lowLatencyScore(it, mime) }
         names.addAll(hardware.map { it.name })
         names.addAll(software.map { it.name })
-        if (mime == MediaFormat.MIMETYPE_VIDEO_AVC) {
+        if (!requireHardware && mime == MediaFormat.MIMETYPE_VIDEO_AVC) {
             names.add("c2.android.avc.decoder")
             names.add("OMX.google.h264.decoder")
         }
-        if (mime == MediaFormat.MIMETYPE_VIDEO_HEVC) {
+        if (!requireHardware && mime == MediaFormat.MIMETYPE_VIDEO_HEVC) {
             names.add("c2.android.hevc.decoder")
             names.add("OMX.google.hevc.decoder")
         }

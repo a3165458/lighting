@@ -965,12 +965,11 @@ pub fn ddagrab_duplicate_frames() -> bool {
     false
 }
 
-/// ffmpeg `ddagrab` sleeps to 1/framerate *before* AcquireNextFrame
-/// (`vsrc_ddagrab.c`). 120 Hz parked a ready DXGI frame on an 8 ms grid;
-/// 1000 Hz still sat every unique frame on a 1 ms tick. 8000 Hz ≈ 125 µs.
-/// `dup_frames=0` so this is poll rate, not encode rate. Not for gdigrab.
-pub fn dda_poll_hz(_encode_fps: u32) -> u32 {
-    8000
+/// With passthrough output, ddagrab is the actual frame-rate limiter.
+/// Disabling duplicate frames does not cap unique frames at the negotiated
+/// decoder rate. A 30 fps recovery Hello must also slow capture to 30 fps.
+pub fn dda_poll_hz(encode_fps: u32) -> u32 {
+    encode_fps.clamp(1, 120)
 }
 
 /// Audio must never drain ahead of a video AU on the same TCP writer.
