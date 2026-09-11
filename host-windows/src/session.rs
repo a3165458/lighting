@@ -1273,7 +1273,10 @@ async fn handle_client(
                 // for 60 Hz Lenovo Xiaoxin Pad 2020 sessions.
                 let (tw, th) = (panel_w, panel_h);
                 let want_fps = hello.max_fps.max(24).min(120);
-                let preserve_for_hz = preserve.clone();
+                // TabletOnlyOutput deliberately disables the physical path.
+                // Do not pass the saved primary snapshot here: the helper
+                // would call reassert_primary and re-add the PC panel while
+                // we are trying to keep the tablet-only topology active.
                 if session_policy::should_reapply_virtual_mode_after_tablet_only(
                     req.share_mode,
                     true,
@@ -1285,7 +1288,7 @@ async fn handle_client(
                             tw,
                             th,
                             want_fps,
-                            preserve_for_hz.as_ref(),
+                            None,
                         )
                     })
                     .await
