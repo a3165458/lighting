@@ -118,6 +118,16 @@ pub fn tablet_only_followup(laptop_present: bool, virtual_present: bool) -> Tabl
     }
 }
 
+/// A CCD topology switch can reset an IddCx virtual display to its fallback
+/// refresh rate. Reapply the tablet mode after entering tablet-only so a
+/// 60 Hz panel does not start capture at 30 Hz.
+pub fn should_reapply_virtual_mode_after_tablet_only(
+    mode: crate::view::ShareMode,
+    topology_changed: bool,
+) -> bool {
+    mode.blanks_pc_monitor() && topology_changed
+}
+
 /// Win+P topology Lighting actually applies. Virtual shares never persist
 /// "second screen only"; that is what left a black laptop panel after sleep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2171,6 +2181,24 @@ mod tests {
             tablet_only_followup(true, true),
             TabletOnlyFollowup::ReassertPrimary
         );
+    }
+
+    #[test]
+    fn tablet_only_topology_reasserts_virtual_refresh() {
+        use crate::view::ShareMode;
+
+        assert!(should_reapply_virtual_mode_after_tablet_only(
+            ShareMode::External,
+            true
+        ));
+        assert!(!should_reapply_virtual_mode_after_tablet_only(
+            ShareMode::Mirror,
+            true
+        ));
+        assert!(!should_reapply_virtual_mode_after_tablet_only(
+            ShareMode::External,
+            false
+        ));
     }
 
     #[test]
