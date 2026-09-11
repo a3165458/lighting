@@ -1266,6 +1266,42 @@ async fn handle_client(
         {
             Ok(Ok(())) => {
                 after_virtual_mode_change = true;
+                // The CCD topology switch can reset the virtual panel to its
+                // fallback refresh mode (30 Hz on some IddCx tables). Put
+                // the requested mode back and reacquire the capture target
+                // before starting the encoder. This is especially important
+                // for 60 Hz Lenovo Xiaoxin Pad 2020 sessions.
+                let (tw, th) = (panel_w, panel_h);
+                let want_fps = hello.max_fps.max(24).min(120);
+                let preserve_for_hz = preserve.clone();
+                if session_policy::should_reapply_virtual_mode_after_tablet_only(
+                    req.share_mode,
+                    true,
+                ) && tw > 0
+                    && th > 0
+                {
+                    match tokio::task::spawn_blocking(move || {
+                        displays::configure_virtual_for_tablet(
+                            tw,
+                            th,
+                            want_fps,
+                            preserve_for_hz.as_ref(),
+                        )
+                    })
+                    .await
+                    {
+                        Ok(Ok((updated, changed))) => {
+                            *display = updated;
+                            after_virtual_mode_change = after_virtual_mode_change || changed;
+                        }
+                        Ok(Err(err)) => {
+                            tracing::warn!("reapply virtual Hz after tablet-only: {err:#}");
+                        }
+                        Err(err) => {
+                            tracing::warn!("reapply virtual Hz join: {err:#}");
+                        }
+                    }
+                }
                 let list = displays::list_displays()?;
                 if let Some(updated) = list.into_iter().find(|d| d.name == display.name) {
                     *display = updated;
