@@ -644,13 +644,13 @@ mod tests {
     }
 
     #[test]
-    fn floors_level_to_5_2_so_1440p120_is_not_tagged_60fps() {
+    fn preserves_encoder_level_for_hardware_decoder_compatibility() {
         let src = baseline_sps(16, false);
         assert_eq!(src[7], 42);
         let out = rewrite_low_latency(src);
-        assert_eq!(out[7], 52);
+        assert_eq!(out[7], 42);
         assert_eq!(parse_dpb(&out), Some((1, Some((0, 1)))));
-        assert_eq!(rewrite_low_latency(out.clone())[7], 52);
+        assert_eq!(rewrite_low_latency(out.clone())[7], 42);
     }
 
     #[test]
