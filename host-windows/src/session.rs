@@ -804,12 +804,11 @@ async fn run_session_inner(
                     .map_err(|_| anyhow::anyhow!("显示恢复锁已损坏"))?;
                 if output.is_active() {
                     output.restore()?;
-                    if let Some(snap) = snap {
-                        displays::restore_after_tablet_only(&snap)?;
-                    }
                     tracing::info!("restored desktop after tablet-only client ended");
-                } else if let Some(snap) = snap {
-                    displays::reassert_primary(&snap)?;
+                }
+                if let Some(snap) = snap {
+                    // Tablet-only stop and normal extend: re-extend if a panel vanished.
+                    displays::restore_after_tablet_only(&snap)?;
                 }
                 Ok(())
             })
