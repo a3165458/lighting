@@ -412,6 +412,18 @@ async fn run_session_inner(
     };
     let tablet_only = Arc::new(AtomicBool::new(false));
     let _restore_pc = TabletOnlyRestoreGuard(tablet_only.clone(), preserve.clone());
+    let sleep_watch = if req.share_mode.blanks_pc_monitor() {
+        Some(displays::HostSleepGuard::watch(
+            tablet_only.clone(),
+            preserve.clone(),
+        ))
+    } else {
+        None
+    };
+    let sleep_undid = sleep_watch
+        .as_ref()
+        .map(|g| g.undid_external.clone())
+        .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
 
     let adb_path = adb::find_adb().ok();
     let mut reverse_serial: Option<String> = req.device_serial.clone();
@@ -778,6 +790,7 @@ async fn run_session_inner(
             controls.clone(),
             tablet_only.clone(),
             preserve.clone(),
+            sleep_undid.clone(),
             &mut virtual_mode_applied,
         )
         .await;
@@ -1058,6 +1071,7 @@ async fn handle_client(
     controls: Arc<Controls>,
     tablet_only: Arc<AtomicBool>,
     preserve: Option<displays::PrimarySnapshot>,
+    sleep_undid: Arc<AtomicBool>,
     virtual_mode_applied: &mut bool,
 ) -> Result<ClientOutcome> {
     let ClassifiedStream {
@@ -1261,7 +1275,11 @@ async fn handle_client(
         );
     }
 
-    if req.share_mode.blanks_pc_monitor() {
+    if req.share_mode.blanks_pc_monitor()
+        && lighting_host::session_policy::apply_tablet_only_on_hello(
+            sleep_undid.load(Ordering::SeqCst),
+        )
+    {
         set_status(&status, "仅平板", "正在关闭电脑屏（Win+P 仅第二屏幕）…");
         match tokio::task::spawn_blocking(displays::apply_tablet_only_output).await {
             Ok(Ok(())) => {
@@ -1317,6 +1335,12 @@ async fn handle_client(
                 tracing::warn!("tablet-only join failed: {err:#}");
             }
         }
+    } else if req.share_mode.blanks_pc_monitor() {
+        set_status(
+            &status,
+            "仅平板",
+            "电脑休眠前已恢复电脑屏。若要再次关掉电脑屏，请停止后重新开始仅平板。",
+        );
     }
 
     // Virtual: encode the desktop IddCx actually landed on when that size

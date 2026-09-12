@@ -8,6 +8,8 @@ use anyhow::{Context, Result};
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -31,13 +33,17 @@ use windows::Win32::Security::{
     TOKEN_ELEVATION, TOKEN_PRIVILEGES, TOKEN_QUERY,
 };
 use windows::Win32::System::Power::{
-    SetThreadExecutionState, ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED,
+    PowerRegisterSuspendResumeNotification, PowerUnregisterSuspendResumeNotification,
+    SetThreadExecutionState, DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS, ES_CONTINUOUS,
+    ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED, HPOWERNOTIFY,
 };
 use windows::Win32::System::Threading::{
     GetCurrentProcess, OpenProcessToken, TerminateProcess, WaitForSingleObject,
 };
 use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
-use windows::Win32::UI::WindowsAndMessaging::{MONITORINFOF_PRIMARY, SW_SHOWNORMAL};
+use windows::Win32::UI::WindowsAndMessaging::{
+    DEVICE_NOTIFY_CALLBACK, MONITORINFOF_PRIMARY, SW_SHOWNORMAL,
+};
 
 use lighting_host::capture_graph::DxgiCapture;
 use lighting_host::view::{looks_virtual_display, ShareMode};
@@ -1052,6 +1058,115 @@ impl Drop for LidCloseGuard {
         // If we never parsed the previous values, leave "do nothing" in place —
         // that is the setting the user needs for bed use.
     }
+}
+
+struct SleepWatchInner {
+    tablet_only: Arc<AtomicBool>,
+    undid_external: Arc<AtomicBool>,
+    snap: Option<PrimarySnapshot>,
+}
+
+/// Listens for Windows sleep so tablet-only can undo Win+P `/external`
+/// *before* S3. Without this the physical panel wakes with backlight and no
+/// DWM until Ctrl+Win+Shift+B. Mirror / extend never register this.
+pub struct HostSleepGuard {
+    registration: *mut core::ffi::c_void,
+    #[allow(dead_code)]
+    params: Option<Box<DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS>>,
+    context: *mut SleepWatchInner,
+    pub undid_external: Arc<AtomicBool>,
+}
+
+unsafe impl Send for HostSleepGuard {}
+unsafe impl Sync for HostSleepGuard {}
+
+impl HostSleepGuard {
+    pub fn watch(tablet_only: Arc<AtomicBool>, snap: Option<PrimarySnapshot>) -> Self {
+        let undid_external = Arc::new(AtomicBool::new(false));
+        let context = Box::into_raw(Box::new(SleepWatchInner {
+            tablet_only,
+            undid_external: undid_external.clone(),
+            snap,
+        }));
+        let mut params = Box::new(DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS {
+            Callback: Some(sleep_watch_callback),
+            Context: context.cast(),
+        });
+        let mut registration = std::ptr::null_mut();
+        let err = unsafe {
+            PowerRegisterSuspendResumeNotification(
+                DEVICE_NOTIFY_CALLBACK,
+                HANDLE(&mut *params as *mut DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS as *mut _),
+                &mut registration,
+            )
+        };
+        if err.0 != 0 {
+            tracing::warn!("PowerRegisterSuspendResumeNotification failed: {}", err.0);
+            unsafe {
+                drop(Box::from_raw(context));
+            }
+            return Self {
+                registration: std::ptr::null_mut(),
+                params: None,
+                context: std::ptr::null_mut(),
+                undid_external,
+            };
+        }
+        tracing::info!("watching Windows sleep to restore the PC panel in tablet-only");
+        Self {
+            registration,
+            params: Some(params),
+            context,
+            undid_external,
+        }
+    }
+}
+
+impl Drop for HostSleepGuard {
+    fn drop(&mut self) {
+        if !self.registration.is_null() {
+            let handle = HPOWERNOTIFY(self.registration as isize);
+            let err = unsafe { PowerUnregisterSuspendResumeNotification(handle) };
+            if err.0 != 0 {
+                tracing::warn!("PowerUnregisterSuspendResumeNotification failed: {}", err.0);
+            }
+            self.registration = std::ptr::null_mut();
+        }
+        if !self.context.is_null() {
+            unsafe {
+                drop(Box::from_raw(self.context));
+            }
+            self.context = std::ptr::null_mut();
+        }
+        self.params = None;
+    }
+}
+
+unsafe extern "system" fn sleep_watch_callback(
+    context: *const core::ffi::c_void,
+    event: u32,
+    _setting: *const core::ffi::c_void,
+) -> u32 {
+    if context.is_null() {
+        return 0;
+    }
+    let inner = unsafe { &*(context.cast::<SleepWatchInner>()) };
+    if !lighting_host::session_policy::is_host_suspend_power_event(event) {
+        return 0;
+    }
+    if !inner.tablet_only.swap(false, Ordering::SeqCst) {
+        return 0;
+    }
+    inner.undid_external.store(true, Ordering::SeqCst);
+    let restored = match inner.snap.as_ref() {
+        Some(snap) => restore_after_tablet_only(snap),
+        None => restore_pc_monitor(),
+    };
+    match restored {
+        Ok(()) => tracing::info!("restored PC panel before Windows sleep (tablet-only)"),
+        Err(err) => tracing::warn!("restore PC panel before Windows sleep failed: {err:#}"),
+    }
+    0
 }
 
 fn powercfg(args: &[&str]) -> Option<std::process::Output> {
