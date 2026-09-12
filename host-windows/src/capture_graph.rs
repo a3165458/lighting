@@ -240,14 +240,20 @@ fn dda_encoder_graphs(
             graphs.push(format!("{dda},format=d3d11"));
         }
     }
-    if scale {
-        graphs.push(format!(
-            "{dda},hwdownload,format=bgra,format=yuv420p,scale={dst_w}:{dst_h}:flags=bilinear"
-        ));
-    } else {
-        graphs.push(format!("{dda},hwdownload,format=bgra,format=yuv420p"));
-    }
+    graphs.push(cpu_download_graph(dda, scale, dst_w, dst_h));
     graphs
+}
+
+/// CPU fallback under `-noauto_conversion_filters`.
+/// `format` only negotiates a pixfmt; it does not convert. Adjacent
+/// `format=bgra,format=yuv420p` therefore dies with "do not have a common
+/// format". `scale` is the converter (BGRA → yuv420p), optionally resizing.
+fn cpu_download_graph(dda: &str, scale: bool, dst_w: u32, dst_h: u32) -> String {
+    if scale {
+        format!("{dda},hwdownload,format=bgra,scale={dst_w}:{dst_h}:flags=bilinear,format=yuv420p")
+    } else {
+        format!("{dda},hwdownload,format=bgra,scale=flags=bilinear,format=yuv420p")
+    }
 }
 
 /// GDI uses signed virtual-desktop coordinates, including screens left/above primary.
@@ -277,12 +283,14 @@ pub fn gdigrab_input_args(
     ]
 }
 
-/// Software gdigrab scale filter; identity skips resampling.
+/// Software gdigrab filter under `-noauto_conversion_filters`.
+/// gdigrab emits BGRA; `format=yuv420p` first cannot convert. `scale` first
+/// converts (and resizes when needed), then `format=yuv420p` pins the encoder.
 pub fn gdigrab_vf(src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> String {
     if needs_scale(src_w, src_h, dst_w, dst_h) {
-        format!("format=yuv420p,scale={dst_w}:{dst_h}:flags=bilinear")
+        format!("scale={dst_w}:{dst_h}:flags=bilinear,format=yuv420p")
     } else {
-        "format=yuv420p".into()
+        "scale=flags=bilinear,format=yuv420p".into()
     }
 }
 
@@ -306,8 +314,11 @@ mod tests {
             "libx264",
         );
         assert_eq!(graphs.len(), 1);
-        assert!(!graphs[0].contains("scale="));
+        // Format convert via scale, but do not spatially resize.
+        assert!(!graphs[0].contains("scale=1920:1080"));
+        assert!(graphs[0].contains("scale=flags=bilinear"));
         assert!(graphs[0].contains("yuv420p"));
+        assert!(!graphs[0].contains("format=bgra,format=yuv420p"));
     }
 
     #[test]
@@ -328,6 +339,43 @@ mod tests {
         let cpu = graphs.last().unwrap();
         assert!(cpu.contains("flags=bilinear"));
         assert!(!cpu.contains("fast_bilinear"));
+        assert!(
+            cpu.contains("hwdownload,format=bgra,scale=1920:1080:flags=bilinear,format=yuv420p")
+        );
+        assert!(!cpu.contains("format=bgra,format=yuv420p"));
+    }
+
+    #[test]
+    fn cpu_fallback_converts_xiaoxin_1152_without_adjacent_format() {
+        // 1920×1152 capture into a 1920×1080 decoder ceiling encodes 1800×1080.
+        let graphs = dda_capture_graphs(
+            Some(DxgiCapture {
+                adapter_index: 0,
+                output_index: 1,
+                vendor_id: 0x10DE,
+            }),
+            60,
+            1920,
+            1152,
+            1800,
+            1080,
+            "h264_nvenc",
+        );
+        let cpu = graphs
+            .iter()
+            .find(|g| g.contains("hwdownload"))
+            .expect("cpu fallback");
+        assert!(
+            cpu.ends_with("hwdownload,format=bgra,scale=1800:1080:flags=bilinear,format=yuv420p")
+        );
+        assert!(!cpu.contains("format=bgra,format=yuv420p"));
+        assert!(graphs.iter().any(|g| g.contains("scale_cuda")));
+        let cap = DxgiCapture {
+            adapter_index: 0,
+            output_index: 1,
+            vendor_id: 0x10DE,
+        };
+        assert!(extra_hw_device_args(cap, cpu).is_empty());
     }
 
     #[test]
@@ -629,8 +677,15 @@ mod tests {
 
     #[test]
     fn gdigrab_identity_has_no_scale() {
-        assert_eq!(gdigrab_vf(1280, 720, 1280, 720), "format=yuv420p");
-        assert!(gdigrab_vf(1280, 720, 960, 540).contains("bilinear"));
+        assert_eq!(
+            gdigrab_vf(1280, 720, 1280, 720),
+            "scale=flags=bilinear,format=yuv420p"
+        );
+        assert_eq!(
+            gdigrab_vf(1920, 1152, 1800, 1080),
+            "scale=1800:1080:flags=bilinear,format=yuv420p"
+        );
+        assert!(!gdigrab_vf(1920, 1152, 1800, 1080).starts_with("format=yuv420p"));
     }
 
     #[test]

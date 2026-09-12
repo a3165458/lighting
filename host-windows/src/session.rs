@@ -639,116 +639,79 @@ async fn run_session_inner(
             set_status(&status, "已连接", format!("{}", c.addr));
             c
         } else {
-        tokio::select! {
-            _ = stop_rx.changed() => {
-                cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref(), listen_port).await;
-                return Ok(());
-            }
-            incoming = video_rx.recv() => {
-                let Some(c) = incoming else {
+            tokio::select! {
+                _ = stop_rx.changed() => {
                     cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref(), listen_port).await;
-                    anyhow::bail!("listen loop ended");
-                };
-                if let Ok(mut st) = status.lock() {
-                    clear_peer_metrics(&mut st);
-                    st.client_addr = c.addr.to_string();
+                    return Ok(());
                 }
-                set_status(&status, "已连接", format!("{}", c.addr));
-                c
-            }
-            _ = tokio::time::sleep(Duration::from_millis(
-                session_policy::usb_wait_refresh_ms(),
-            )) => {
-                if session_policy::refresh_usb_while_waiting_for_hello() {
-                    if let (Some(adb_bin), Some(serial)) =
-                        (adb_path.clone(), reverse_serial.clone())
-                    {
-                        if usb_refresh_busy
-                            .compare_exchange(
-                                false,
-                                true,
-                                Ordering::Relaxed,
-                                Ordering::Relaxed,
-                            )
-                            .is_ok()
+                incoming = video_rx.recv() => {
+                    let Some(c) = incoming else {
+                        cleanup_reverse(adb_path.as_ref(), reverse_serial.as_deref(), listen_port).await;
+                        anyhow::bail!("listen loop ended");
+                    };
+                    if let Ok(mut st) = status.lock() {
+                        clear_peer_metrics(&mut st);
+                        st.client_addr = c.addr.to_string();
+                    }
+                    set_status(&status, "已连接", format!("{}", c.addr));
+                    c
+                }
+                _ = tokio::time::sleep(Duration::from_millis(
+                    session_policy::usb_wait_refresh_ms(),
+                )) => {
+                    if session_policy::refresh_usb_while_waiting_for_hello() {
+                        if let (Some(adb_bin), Some(serial)) =
+                            (adb_path.clone(), reverse_serial.clone())
                         {
-                            let busy = usb_refresh_busy.clone();
-                            let status_ref = status.clone();
-                            let last_accept_ms = last_accept
-                                .lock()
-                                .ok()
-                                .and_then(|g| *g)
-                                .map(|t| t.elapsed().as_millis() as u64);
-                            let last_recreate_ms = last_reverse_recreate
-                                .map(|t| t.elapsed().as_millis() as u64);
-                            let force_stale = session_policy::should_force_stale_reverse(
-                                hello_wait.elapsed().as_millis() as u64,
-                                last_recreate_ms,
-                                last_accept_ms,
-                            );
-                            if force_stale {
-                                last_reverse_recreate = Some(Instant::now());
-                                // Await on this task: a spawned --remove races
-                                // the next Hello and parks the pad on 重连中.
-                                match adb::recreate_reverse_port(
-                                    &adb_bin,
-                                    &serial,
-                                    listen_port,
+                            if usb_refresh_busy
+                                .compare_exchange(
+                                    false,
+                                    true,
+                                    Ordering::Relaxed,
+                                    Ordering::Relaxed,
                                 )
-                                .await
-                                {
-                                    Ok(()) => {
-                                        let n = drop_parked_classified(&mut video_rx)
-                                            + drop_parked_classified(&mut ctrl_rx);
-                                        if n > 0 {
-                                            tracing::info!(
-                                                "dropped {n} hellos from reverse --remove"
-                                            );
-                                        }
-                                        if let Ok(mut slot) = last_accept.lock() {
-                                            *slot = None;
-                                        }
-                                        set_transport(
-                                            &status,
-                                            format!("USB · adb reverse 已就绪（{serial}）"),
-                                        );
-                                    }
-                                    Err(err) => {
-                                        tracing::warn!(
-                                            "wait-hello reverse refresh failed: {err:#}"
-                                        );
-                                    }
-                                }
-                                busy.store(false, Ordering::Relaxed);
-                            } else {
-                                tokio::spawn(async move {
-                                    match adb::ensure_reverse_port(
+                                .is_ok()
+                            {
+                                let busy = usb_refresh_busy.clone();
+                                let status_ref = status.clone();
+                                let last_accept_ms = last_accept
+                                    .lock()
+                                    .ok()
+                                    .and_then(|g| *g)
+                                    .map(|t| t.elapsed().as_millis() as u64);
+                                let last_recreate_ms = last_reverse_recreate
+                                    .map(|t| t.elapsed().as_millis() as u64);
+                                let force_stale = session_policy::should_force_stale_reverse(
+                                    hello_wait.elapsed().as_millis() as u64,
+                                    last_recreate_ms,
+                                    last_accept_ms,
+                                );
+                                if force_stale {
+                                    last_reverse_recreate = Some(Instant::now());
+                                    // Await on this task: a spawned --remove races
+                                    // the next Hello and parks the pad on 重连中.
+                                    match adb::recreate_reverse_port(
                                         &adb_bin,
                                         &serial,
                                         listen_port,
                                     )
                                     .await
                                     {
-                                        Ok(restored_missing) => {
-                                            if restored_missing {
-                                                set_transport(
-                                                    &status_ref,
-                                                    format!(
-                                                        "USB · adb reverse 已就绪（{serial}）"
-                                                    ),
+                                        Ok(()) => {
+                                            let n = drop_parked_classified(&mut video_rx)
+                                                + drop_parked_classified(&mut ctrl_rx);
+                                            if n > 0 {
+                                                tracing::info!(
+                                                    "dropped {n} hellos from reverse --remove"
                                                 );
                                             }
-                                            if session_policy::should_relaunch_client_after_reverse(
-                                                restored_missing,
-                                                false,
-                                            ) {
-                                                adb::launch_stream_client(
-                                                    &adb_bin,
-                                                    &serial,
-                                                    listen_port,
-                                                )
-                                                .await;
+                                            if let Ok(mut slot) = last_accept.lock() {
+                                                *slot = None;
                                             }
+                                            set_transport(
+                                                &status,
+                                                format!("USB · adb reverse 已就绪（{serial}）"),
+                                            );
                                         }
                                         Err(err) => {
                                             tracing::warn!(
@@ -757,14 +720,51 @@ async fn run_session_inner(
                                         }
                                     }
                                     busy.store(false, Ordering::Relaxed);
-                                });
+                                } else {
+                                    tokio::spawn(async move {
+                                        match adb::ensure_reverse_port(
+                                            &adb_bin,
+                                            &serial,
+                                            listen_port,
+                                        )
+                                        .await
+                                        {
+                                            Ok(restored_missing) => {
+                                                if restored_missing {
+                                                    set_transport(
+                                                        &status_ref,
+                                                        format!(
+                                                            "USB · adb reverse 已就绪（{serial}）"
+                                                        ),
+                                                    );
+                                                }
+                                                if session_policy::should_relaunch_client_after_reverse(
+                                                    restored_missing,
+                                                    false,
+                                                ) {
+                                                    adb::launch_stream_client(
+                                                        &adb_bin,
+                                                        &serial,
+                                                        listen_port,
+                                                    )
+                                                    .await;
+                                                }
+                                            }
+                                            Err(err) => {
+                                                tracing::warn!(
+                                                    "wait-hello reverse refresh failed: {err:#}"
+                                                );
+                                            }
+                                        }
+                                        busy.store(false, Ordering::Relaxed);
+                                    });
+                                }
                             }
                         }
                     }
+                    continue;
                 }
-                continue;
             }
-        }
         };
 
         let outcome = handle_client(
@@ -855,10 +855,7 @@ async fn run_session_inner(
                 set_status(&status, "等待设备", "虚拟屏已设为平板分辨率，正在恢复 USB…");
                 match adb::recreate_reverse_port(&adb_bin, &serial, listen_port).await {
                     Ok(()) => {
-                        set_transport(
-                            &status,
-                            format!("USB · adb reverse 已就绪（{serial}）"),
-                        );
+                        set_transport(&status, format!("USB · adb reverse 已就绪（{serial}）"));
                         if session_policy::relaunch_client_after_virtual_mode_reverse() {
                             adb::launch_stream_client(&adb_bin, &serial, listen_port).await;
                         }
@@ -885,8 +882,7 @@ async fn run_session_inner(
             }
         } else if let (Some(adb_bin), Some(serial)) = (adb_path.clone(), reverse_serial.clone()) {
             tokio::spawn(async move {
-                if let Err(err) = adb::ensure_reverse_port(&adb_bin, &serial, listen_port).await
-                {
+                if let Err(err) = adb::ensure_reverse_port(&adb_bin, &serial, listen_port).await {
                     tracing::warn!("ensure adb reverse after drop failed: {err:#}");
                 }
             });
@@ -1111,10 +1107,7 @@ async fn handle_client(
             set_status(
                 &status,
                 "独立第二屏",
-                format!(
-                    "按当前虚拟屏 {}×{} 推流",
-                    display.width, display.height
-                ),
+                format!("按当前虚拟屏 {}×{} 推流", display.width, display.height),
             );
         } else if *virtual_mode_applied {
             set_status(
@@ -1183,75 +1176,79 @@ async fn handle_client(
             set_status(
                 &status,
                 "适配平板",
-                format!("按平板分辨率编码 {}×{}", hello.screen_width, hello.screen_height),
+                format!(
+                    "按平板分辨率编码 {}×{}",
+                    hello.screen_width, hello.screen_height
+                ),
             );
         } else {
-        let (tw, th) = lighting_host::session_policy::orient_box(
-            display.width,
-            display.height,
-            hello.screen_width,
-            hello.screen_height,
-        );
-        let prefer_fps = hello.max_fps.max(30).min(60);
-        let device = display.name.clone();
-        let current = displays::DisplayMode {
-            width: display.width,
-            height: display.height,
-            fps: prefer_fps,
-        };
-        set_status(
-            &status,
-            "适配平板",
-            format!("正在把电脑分辨率切到平板面板 {tw}×{th}…"),
-        );
-        let switched = tokio::task::spawn_blocking(move || {
-            displays::apply_follow_tablet_mode(&device, current, tw, th, prefer_fps)
-        })
-        .await;
-        match switched {
-            Ok(Ok((applied, restore))) => {
-                let changed =
-                    restore.mode.width != applied.width || restore.mode.height != applied.height;
-                if changed {
-                    mode_guard.0 = Some(restore);
-                    after_virtual_mode_change = true;
-                }
-                let device_name = display.name.clone();
-                if let Ok(list) = displays::list_displays() {
-                    if let Some(updated) = list.iter().find(|d| d.name == device_name).cloned() {
-                        *display = updated;
+            let (tw, th) = lighting_host::session_policy::orient_box(
+                display.width,
+                display.height,
+                hello.screen_width,
+                hello.screen_height,
+            );
+            let prefer_fps = hello.max_fps.max(30).min(60);
+            let device = display.name.clone();
+            let current = displays::DisplayMode {
+                width: display.width,
+                height: display.height,
+                fps: prefer_fps,
+            };
+            set_status(
+                &status,
+                "适配平板",
+                format!("正在把电脑分辨率切到平板面板 {tw}×{th}…"),
+            );
+            let switched = tokio::task::spawn_blocking(move || {
+                displays::apply_follow_tablet_mode(&device, current, tw, th, prefer_fps)
+            })
+            .await;
+            match switched {
+                Ok(Ok((applied, restore))) => {
+                    let changed = restore.mode.width != applied.width
+                        || restore.mode.height != applied.height;
+                    if changed {
+                        mode_guard.0 = Some(restore);
+                        after_virtual_mode_change = true;
+                    }
+                    let device_name = display.name.clone();
+                    if let Ok(list) = displays::list_displays() {
+                        if let Some(updated) = list.iter().find(|d| d.name == device_name).cloned()
+                        {
+                            *display = updated;
+                        } else {
+                            display.width = applied.width;
+                            display.height = applied.height;
+                        }
                     } else {
                         display.width = applied.width;
                         display.height = applied.height;
                     }
-                } else {
-                    display.width = applied.width;
-                    display.height = applied.height;
+                    set_status(
+                        &status,
+                        "适配平板",
+                        format!(
+                            "电脑分辨率已切换为 {}×{}（跟随平板 {}×{}）",
+                            display.width, display.height, hello.screen_width, hello.screen_height
+                        ),
+                    );
                 }
-                set_status(
-                    &status,
-                    "适配平板",
-                    format!(
-                        "电脑分辨率已切换为 {}×{}（跟随平板 {}×{}）",
-                        display.width, display.height, hello.screen_width, hello.screen_height
-                    ),
-                );
-            }
-            Ok(Err(err)) => {
-                tracing::warn!("follow-tablet mode switch failed: {err:#}");
-                set_status(
+                Ok(Err(err)) => {
+                    tracing::warn!("follow-tablet mode switch failed: {err:#}");
+                    set_status(
                     &status,
                     "适配平板",
                     format!(
                         "电脑屏无法切到平板分辨率，已改为缩放推流（显示设置仍可能是电脑分辨率）。{err}"
                     ),
                 );
+                }
+                Err(err) => {
+                    tracing::warn!("follow-tablet mode switch join failed: {err:#}");
+                }
             }
-            Err(err) => {
-                tracing::warn!("follow-tablet mode switch join failed: {err:#}");
-            }
-        }
-        *virtual_mode_applied = true;
+            *virtual_mode_applied = true;
         }
     } else if hello.screen_width > 0 && hello.screen_height > 0 {
         set_status(
@@ -1871,7 +1868,17 @@ async fn wait_encoder_bootstrap(
     })
     .await
     .context("encoder bootstrap worker")
-    .and_then(|(session, pkts)| Ok((session, pkts?)))
+    .and_then(|(mut session, pkts)| match pkts {
+        Ok(packets) => Ok((session, packets)),
+        Err(err) => {
+            let stderr = session.take_ffmpeg_stderr();
+            if stderr.trim().is_empty() {
+                Err(err)
+            } else {
+                Err(err.context(format!("ffmpeg stderr: {}", stderr.trim())))
+            }
+        }
+    })
 }
 
 async fn write_bootstrap<W: tokio::io::AsyncWrite + Unpin>(
@@ -1907,9 +1914,8 @@ async fn start_live_encoder_resilient(
         lighting_host::session_policy::encoder_start_attempts()
     }
     .max(1);
-    let settle = Duration::from_millis(
-        lighting_host::session_policy::dda_settle_after_mode_change_ms(),
-    );
+    let settle =
+        Duration::from_millis(lighting_host::session_policy::dda_settle_after_mode_change_ms());
     let mut last_err: Option<anyhow::Error> = None;
     for i in 0..attempts {
         if stop.load(Ordering::Relaxed) {
@@ -1926,10 +1932,7 @@ async fn start_live_encoder_resilient(
         match start_live_encoder(ffmpeg, display, settings, hevc, stop).await {
             Ok(v) => return Ok(v),
             Err(err) => {
-                tracing::warn!(
-                    "encoder start attempt {}/{attempts} failed: {err:#}",
-                    i + 1
-                );
+                tracing::warn!("encoder start attempt {}/{attempts} failed: {err:#}", i + 1);
                 if stop.load(Ordering::Relaxed) {
                     anyhow::bail!("已停止");
                 }
@@ -1965,6 +1968,9 @@ async fn start_live_encoder(
         }
     }
     let mut last_err: Option<anyhow::Error> = None;
+    let mut skip_cuda = false;
+    let mut skip_qsv = false;
+    let mut skip_amf = false;
     let vendor = display.dxgi.map(|d| d.vendor_id).unwrap_or(0);
     for enc in encoder::encoder_fallback_chain_for(&settings.codec, vendor) {
         let graphs = lighting_host::capture_graph::dda_capture_graphs_for(
@@ -1995,7 +2001,13 @@ async fn start_live_encoder(
         } else {
             vec![String::new()]
         };
-        for graph in graphs {
+        'graphs: for graph in graphs {
+            if (skip_cuda && lighting_host::session_policy::graph_uses_hw_family(&graph, "cuda"))
+                || (skip_qsv && lighting_host::session_policy::graph_uses_hw_family(&graph, "qsv"))
+                || (skip_amf && lighting_host::session_policy::graph_uses_hw_family(&graph, "amf"))
+            {
+                continue;
+            }
             for surfaces in &surface_tries {
                 for rc in &rc_tries {
                     if stop.load(Ordering::Relaxed) {
@@ -2028,7 +2040,22 @@ async fn start_live_encoder(
                             tracing::warn!(
                             "{enc} graph died before codec-config + IDR ({graph} surfaces={surfaces} rc={rc}): {err:#}"
                         );
+                            let family = lighting_host::session_policy::skip_hw_family_after_stderr(
+                                &format!("{err:#}"),
+                            );
                             last_err = Some(err);
+                            if let Some(family) = family {
+                                match family {
+                                    "cuda" => skip_cuda = true,
+                                    "qsv" => skip_qsv = true,
+                                    "amf" => skip_amf = true,
+                                    _ => {}
+                                }
+                                tracing::warn!(
+                                    "skipping remaining {family} graphs: device init failed on this ffmpeg"
+                                );
+                                continue 'graphs;
+                            }
                         }
                     }
                 }

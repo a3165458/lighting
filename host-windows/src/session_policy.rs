@@ -439,6 +439,47 @@ pub fn ffmpeg_auto_conversion_filter_args() -> [&'static str; 1] {
     [ffmpeg_auto_conversion_cli_arg()]
 }
 
+/// Which derived-device family a capture graph belongs to.
+/// CPU `hwdownload` graphs return none so a failed CUDA init does not skip
+/// the portable fallback.
+pub fn graph_uses_hw_family(graph: &str, family: &str) -> bool {
+    match family {
+        "cuda" => {
+            graph.contains("scale_cuda")
+                || graph.contains("derive_device=cuda")
+                || graph.contains("hwupload_cuda")
+        }
+        "qsv" => graph.contains("derive_device=qsv") || graph.contains("scale_qsv"),
+        "amf" => graph.contains("vpp_amf") || graph.contains("derive_device=amf"),
+        _ => false,
+    }
+}
+
+/// ffmpeg stderr that means every remaining graph in this family will fail
+/// the same way (device derive is unimplemented / missing). Surfaces and
+/// rate-control retries cannot fix it.
+pub fn skip_hw_family_after_stderr(stderr: &str) -> Option<&'static str> {
+    let cuda = stderr.contains("cuda=cuda@capture") || stderr.contains("cuda@capture");
+    if cuda
+        && (stderr.contains("Function not implemented")
+            || stderr.contains("Device creation failed: -40"))
+    {
+        return Some("cuda");
+    }
+    if (stderr.contains("qsv=qsv@capture") || stderr.contains("qsv@capture"))
+        && (stderr.contains("Error creating a MFX session")
+            || stderr.contains("Device creation failed: -1313558101"))
+    {
+        return Some("qsv");
+    }
+    if (stderr.contains("amf=amf@capture") || stderr.contains("amf@capture"))
+        && (stderr.contains("No such device") || stderr.contains("AMF failed to initialise"))
+    {
+        return Some("amf");
+    }
+    None
+}
+
 /// Global ffmpeg boolean flags do not consume a following 0/1.
 fn ffmpeg_opt_bool(flag: &str) -> bool {
     matches!(
@@ -1000,7 +1041,10 @@ pub fn encode_fps(_req_fps: u32, tablet_max: u32, dec_fps: u32, hw: bool) -> u32
     if !hw {
         return 45;
     }
-    let cap = tablet_max.max(24).min(if dec_fps == 0 { 120 } else { dec_fps }).min(120);
+    let cap = tablet_max
+        .max(24)
+        .min(if dec_fps == 0 { 120 } else { dec_fps })
+        .min(120);
     if cap >= 90 {
         120
     } else {
@@ -1587,9 +1631,15 @@ mod tests {
         assert!(keep_live_hello_after_virtual_prepare());
         assert_eq!(skip_force_reverse_if_accept_newer_than_ms(), 3_000);
         assert!(!should_force_reverse_after_virtual_prepare(true, None));
-        assert!(!should_force_reverse_after_virtual_prepare(false, Some(500)));
+        assert!(!should_force_reverse_after_virtual_prepare(
+            false,
+            Some(500)
+        ));
         assert!(should_force_reverse_after_virtual_prepare(false, None));
-        assert!(should_force_reverse_after_virtual_prepare(false, Some(8_000)));
+        assert!(should_force_reverse_after_virtual_prepare(
+            false,
+            Some(8_000)
+        ));
         assert!(usb_reverse_skips_package_probe());
         assert!(launch_stream_client_does_not_block_listen());
         assert!(refresh_usb_while_waiting_for_hello());
@@ -1621,7 +1671,11 @@ mod tests {
         assert!(should_force_stale_reverse(12_000, None, None));
         // Accept in flight (Hello still being classified) — do not --remove.
         assert!(!should_force_stale_reverse(12_000, None, Some(500)));
-        assert!(should_force_stale_reverse(24_000, Some(12_000), Some(13_000)));
+        assert!(should_force_stale_reverse(
+            24_000,
+            Some(12_000),
+            Some(13_000)
+        ));
         // Last recreate was 2s ago — wait the interval.
         assert!(!should_force_stale_reverse(14_000, Some(2_000), None));
         assert!(should_relaunch_client_after_reverse(true, false));
@@ -2300,6 +2354,48 @@ Current AC Power Setting Index: 0x00000003
         assert_eq!(encoder_fallback_chain("avc", 0x10DE)[0], "h264_nvenc");
         assert_eq!(encoder_fallback_chain("avc", 0x1002)[0], "h264_amf");
         assert_eq!(encoder_fallback_chain("hevc", 0x8086)[0], "hevc_qsv");
+    }
+
+    #[test]
+    fn skips_cuda_family_when_derive_is_unimplemented() {
+        let err = "Device creation failed: -40.\nFailed to set value 'cuda=cuda@capture' for option 'init_hw_device': Function not implemented\nError parsing global options: Function not implemented";
+        assert_eq!(skip_hw_family_after_stderr(err), Some("cuda"));
+        let cuda = "ddagrab=output_idx=1:framerate=60,hwmap=derive_device=cuda:reverse=1:extra_hw_frames=0,scale_cuda=1800:1080:format=nv12";
+        let cpu = "ddagrab=output_idx=1:framerate=60,hwdownload,format=bgra,scale=1800:1080:flags=bilinear,format=yuv420p";
+        assert!(graph_uses_hw_family(cuda, "cuda"));
+        assert!(!graph_uses_hw_family(cpu, "cuda"));
+        assert!(!graph_uses_hw_family(cpu, "qsv"));
+        assert!(!graph_uses_hw_family(cpu, "amf"));
+        assert_eq!(
+            skip_hw_family_after_stderr(
+                "The filters 'Parsed_format_2' and 'Parsed_format_3' do not have a common format"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn skips_qsv_and_amf_when_device_init_is_dead() {
+        assert_eq!(
+            skip_hw_family_after_stderr(
+                "[QSV] Error creating a MFX session: -9.\nFailed to set value 'qsv=qsv@capture'"
+            ),
+            Some("qsv")
+        );
+        assert_eq!(
+            skip_hw_family_after_stderr(
+                "AMF failed to initialise on the given D3D11 device: 4.\nFailed to set value 'amf=amf@capture' for option 'init_hw_device': No such device"
+            ),
+            Some("amf")
+        );
+        assert!(graph_uses_hw_family(
+            "ddagrab,hwmap=derive_device=qsv:reverse=1:extra_hw_frames=0,scale_qsv=w=1800:h=1080:format=nv12",
+            "qsv"
+        ));
+        assert!(graph_uses_hw_family(
+            "ddagrab,hwmap=derive_device=amf:reverse=1:extra_hw_frames=0,vpp_amf=w=1800:h=1080:format=nv12",
+            "amf"
+        ));
     }
 
     #[test]
