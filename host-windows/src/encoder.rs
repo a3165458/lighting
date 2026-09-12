@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -55,6 +55,8 @@ pub struct EncoderSession {
     child: Option<Child>,
     pub rx: mpsc::Receiver<EncodedPacket>,
     boost_stop: Option<Arc<AtomicBool>>,
+    stderr: Arc<Mutex<String>>,
+    stderr_join: Option<thread::JoinHandle<()>>,
 }
 
 impl EncoderSession {
@@ -66,6 +68,20 @@ impl EncoderSession {
             let _ = child.kill();
             let _ = child.wait();
         }
+        if let Some(handle) = self.stderr_join.take() {
+            let _ = handle.join();
+        }
+    }
+
+    pub fn ffmpeg_stderr(&self) -> String {
+        self.stderr.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    /// Kill ffmpeg, drain stderr, and return it so the session loop can skip
+    /// a whole dead HW family after one device-init failure.
+    pub fn take_ffmpeg_stderr(&mut self) -> String {
+        self.stop();
+        self.ffmpeg_stderr()
     }
 }
 
@@ -127,18 +143,7 @@ pub fn start_encoder(
     let mut child = cmd.spawn().context("spawn ffmpeg")?;
     raise_process_priority(&child);
     let stderr = child.stderr.take().context("ffmpeg stderr")?;
-
-    thread::spawn(move || {
-        raise_thread_priority();
-        let mut r = BufReader::new(stderr);
-        let mut buf = String::new();
-        if r.read_to_string(&mut buf).is_ok() && !buf.trim().is_empty() {
-            for line in buf.lines() {
-                tracing::debug!("ffmpeg: {line}");
-            }
-            tracing::info!("ffmpeg stderr (last):\n{}", tail(&buf, 12));
-        }
-    });
+    let (stderr_buf, stderr_join) = spawn_stderr_reader(stderr, 12);
 
     let hevc = is_hevc(&settings.codec);
     let rx = spawn_annexb_pump(stdout, hevc);
@@ -147,7 +152,33 @@ pub fn start_encoder(
         child: Some(child),
         rx,
         boost_stop: spawn_ffmpeg_thread_boost(pid),
+        stderr: stderr_buf,
+        stderr_join: Some(stderr_join),
     })
+}
+
+fn spawn_stderr_reader(
+    stderr: impl Read + Send + 'static,
+    last_n: usize,
+) -> (Arc<Mutex<String>>, thread::JoinHandle<()>) {
+    let buf = Arc::new(Mutex::new(String::new()));
+    let shared = buf.clone();
+    let join = thread::spawn(move || {
+        raise_thread_priority();
+        let mut r = BufReader::new(stderr);
+        let mut text = String::new();
+        let _ = r.read_to_string(&mut text);
+        if !text.trim().is_empty() {
+            for line in text.lines() {
+                tracing::debug!("ffmpeg: {line}");
+            }
+            tracing::info!("ffmpeg stderr (last):\n{}", tail(&text, last_n));
+        }
+        if let Ok(mut slot) = shared.lock() {
+            *slot = text;
+        }
+    });
+    (buf, join)
 }
 
 fn spawn_annexb_pump(
@@ -478,14 +509,7 @@ pub fn start_encoder_gdigrab(
     let mut child = cmd.spawn().context("spawn ffmpeg gdigrab")?;
     raise_process_priority(&child);
     let stderr = child.stderr.take().context("ffmpeg stderr")?;
-    thread::spawn(move || {
-        raise_thread_priority();
-        let mut r = BufReader::new(stderr);
-        let mut buf = String::new();
-        if r.read_to_string(&mut buf).is_ok() && !buf.trim().is_empty() {
-            tracing::info!("ffmpeg stderr:\n{}", tail(&buf, 16));
-        }
-    });
+    let (stderr_buf, stderr_join) = spawn_stderr_reader(stderr, 16);
     let hevc = is_hevc(&settings.codec);
     let rx = spawn_annexb_pump(stdout, hevc);
     let pid = child.id();
@@ -493,6 +517,8 @@ pub fn start_encoder_gdigrab(
         child: Some(child),
         rx,
         boost_stop: spawn_ffmpeg_thread_boost(pid),
+        stderr: stderr_buf,
+        stderr_join: Some(stderr_join),
     })
 }
 
@@ -923,8 +949,8 @@ mod tests {
             "ffmpeg would treat a bare 0 as the output URL: {args:?}"
         );
         assert!(args.iter().any(|a| a == "-noauto_conversion_filters"));
-        assert!(!args.windows(2).any(|w| {
-            w[0] == "-auto_conversion_filters" && (w[1] == "0" || w[1] == "1")
-        }));
+        assert!(!args
+            .windows(2)
+            .any(|w| { w[0] == "-auto_conversion_filters" && (w[1] == "0" || w[1] == "1") }));
     }
 }
