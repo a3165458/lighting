@@ -854,14 +854,13 @@ pub fn x265_params(gop: u32) -> String {
     )
 }
 
-/// libx264. `-tune zerolatency` still leaves `frame-threads` at auto on some
-/// ffmpeg builds (one extra coded picture) and never inserts AUD, so annexb
-/// holds the VCL until Quiet / IDLE_FLUSH. Hardware NVENC/QSV/AMF already
-/// pass `-aud 1`; this is the last-resort chain.
+/// libx264. `-tune zerolatency` turns on slice-based threading, which splits
+/// each picture into several VCL NALs. Qualcomm OMX then paints the first
+/// slice (top rows) and magenta-washes the rest. Force a single slice.
 pub fn x264_params(gop: u32, level: &str) -> String {
     let keyint = gop.max(1);
     format!(
-        "bframes=0:ref=1:open-gop=0:keyint={keyint}:min-keyint={keyint}:rc-lookahead=0:sync-lookahead=0:sliced-threads=1:frame-threads=1:scenecut=0:repeat-headers=1:aud=1:level={level}"
+        "bframes=0:ref=1:open-gop=0:keyint={keyint}:min-keyint={keyint}:rc-lookahead=0:sync-lookahead=0:sliced-threads=0:threads=1:scenecut=0:repeat-headers=1:aud=1:level={level}"
     )
 }
 
@@ -1503,6 +1502,25 @@ pub fn align_dim(v: u32, _alignment: u32) -> u32 {
     v.max(16) & !1
 }
 
+/// Macroblock-align the bitstream, without touching IddCx modes.
+///
+/// 1920×1080 / 1280×720 keep their standard `frame_crop`. A 5:3 tablet fitted
+/// into 1080p becomes 1800×1080 (then 1792×1056) — Qualcomm OMX on this GSI
+/// still 花屏s (magenta wash, only the top rows of the desktop readable).
+/// Snap those near-1080p odd sizes to 1920×1080, which already works in mirror.
+pub fn align_avc_macroblocks(w: u32, h: u32) -> (u32, u32) {
+    if matches!(
+        (w, h),
+        (1920, 1080) | (1280, 720) | (1920, 1200) | (1920, 1152) | (2560, 1440)
+    ) {
+        return (w, h);
+    }
+    if w <= 1920 && h <= 1088 {
+        return (1920, 1080);
+    }
+    ((w / 16).max(1) * 16, (h / 32).max(1) * 32)
+}
+
 /// When IddCx did not land on `wanted`, encode the captured desktop 1:1
 /// if it still fits the decoder. Shrinking in the filter graph is the
 /// scale_d3d11 pool; the tablet already SCALE_TO_FITs.
@@ -1816,7 +1834,9 @@ mod tests {
         assert!(x265_params(120).contains("keyint=120"));
         assert!(x265_params(120).contains("aud=1"));
         assert!(x264_params(120, "4.2").contains("bframes=0"));
-        assert!(x264_params(120, "4.2").contains("frame-threads=1"));
+        assert!(x264_params(120, "4.2").contains("sliced-threads=0"));
+        assert!(x264_params(120, "4.2").contains("threads=1"));
+        assert!(!x264_params(120, "4.2").contains("sliced-threads=1"));
         assert!(x264_params(120, "4.2").contains("aud=1"));
         assert!(x264_params(120, "4.2").contains("keyint=120"));
         assert!(x264_params(120, "4.2").contains("level=4.2"));
@@ -2082,6 +2102,16 @@ mod tests {
         assert_eq!(align_dim(2340, 16), 2340);
         assert_eq!(align_dim(1080, 16), 1080);
         assert_eq!(align_dim(1920, 16), 1920);
+    }
+
+    #[test]
+    fn avc_macroblock_align_fixes_1800x1080_huaping() {
+        assert_eq!(align_avc_macroblocks(1800, 1080), (1920, 1080));
+        assert_eq!(align_avc_macroblocks(1792, 1056), (1920, 1080));
+        assert_eq!(align_avc_macroblocks(1792, 1072), (1920, 1080));
+        assert_eq!(align_avc_macroblocks(1920, 1080), (1920, 1080));
+        assert_eq!(align_avc_macroblocks(1280, 720), (1280, 720));
+        assert_eq!(align_avc_macroblocks(1920, 1152), (1920, 1152));
     }
 
     #[test]

@@ -1349,6 +1349,7 @@ async fn handle_client(
             lighting_host::session_policy::align_dim(h, align),
         )
     };
+    let (width, height) = lighting_host::session_policy::align_avc_macroblocks(width, height);
 
     let fps = adapted_fps(req.fps, hello.max_fps, dec_fps, hw);
     let auto_br = auto_bitrate(width, height, fps);

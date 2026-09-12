@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn cpu_fallback_converts_xiaoxin_1152_without_adjacent_format() {
-        // 1920×1152 capture into a 1920×1080 decoder ceiling encodes 1800×1080.
+        // Odd 5:3-into-1080p sizes 花屏 on Qualcomm; session snaps to 1920×1080.
         let graphs = dda_capture_graphs(
             Some(DxgiCapture {
                 adapter_index: 0,
@@ -357,7 +357,7 @@ mod tests {
             60,
             1920,
             1152,
-            1800,
+            1920,
             1080,
             "h264_nvenc",
         );
@@ -366,7 +366,7 @@ mod tests {
             .find(|g| g.contains("hwdownload"))
             .expect("cpu fallback");
         assert!(
-            cpu.ends_with("hwdownload,format=bgra,scale=1800:1080:flags=bilinear,format=yuv420p")
+            cpu.ends_with("hwdownload,format=bgra,scale=1920:1080:flags=bilinear,format=yuv420p")
         );
         assert!(!cpu.contains("format=bgra,format=yuv420p"));
         assert!(graphs.iter().any(|g| g.contains("scale_cuda")));

@@ -411,8 +411,22 @@ fn build_args(
         encoder.to_string(),
     ]);
     args.extend(encoder_flags(encoder, settings));
+    args.extend(encoder_color_args());
     args.extend(output_mux_args(encoder));
     args
+}
+
+fn encoder_color_args() -> Vec<String> {
+    vec![
+        "-color_primaries".into(),
+        "bt709".into(),
+        "-color_trc".into(),
+        "bt709".into(),
+        "-colorspace".into(),
+        "bt709".into(),
+        "-color_range".into(),
+        "tv".into(),
+    ]
 }
 
 fn output_mux_args(encoder: &str) -> Vec<String> {
@@ -496,6 +510,7 @@ pub fn start_encoder_gdigrab(
         encoder.to_string(),
     ]);
     args.extend(encoder_flags(encoder, settings));
+    args.extend(encoder_color_args());
     args.extend(output_mux_args(encoder));
 
     tracing::info!("ffmpeg(gdigrab) {}", args.join(" "));
@@ -882,6 +897,8 @@ fn encoder_flags(encoder: &str, settings: &EncodeSettings) -> Vec<String> {
             settings.profile.clone(),
             "-level:v".into(),
             level,
+            "-slices".into(),
+            lighting_host::session_policy::encoder_slices().to_string(),
             "-x264-params".into(),
             lighting_host::session_policy::x264_params(
                 settings.fps.max(30),
