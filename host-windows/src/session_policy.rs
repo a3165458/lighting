@@ -36,6 +36,30 @@ pub fn client_drop_desktop_action(
     }
 }
 
+/// `WM_POWERBROADCAST` / `PowerRegisterSuspendResumeNotification` type:
+/// `PBT_APMSUSPEND` (4). Hibernate uses the same event.
+pub fn is_host_suspend_power_event(event: u32) -> bool {
+    event == 4
+}
+
+/// Windows itself is about to sleep (Start menu / power button). Mirror and
+/// extend leave the physical panel in the topology, so they must not call
+/// SetDisplayConfig here. Tablet-only must undo `/external` *before* S3,
+/// otherwise the panel wakes with backlight but no DWM (Ctrl+Win+Shift+B).
+pub fn host_sleep_desktop_action(tablet_only_active: bool) -> ClientDropDesktopAction {
+    if tablet_only_active {
+        ClientDropDesktopAction::UndoExternal
+    } else {
+        ClientDropDesktopAction::None
+    }
+}
+
+/// After the host wakes, do not immediately re-blank the PC. The lock screen
+/// has to paint on a physical output. A new Start Share still applies 仅平板.
+pub fn apply_tablet_only_on_hello(host_sleep_undid_external: bool) -> bool {
+    !host_sleep_undid_external
+}
+
 /// GlideX / SuperDisplay run the virtual panel at 120 Hz even when the tablet
 /// is 60 Hz. A 60 Hz IddCx mode makes DWM/DDA wait a 16 ms vsync; 120 Hz
 /// cuts that wait in half. Never above 120: IddCx mode tables get sparse, and
@@ -2216,6 +2240,24 @@ mod tests {
             client_drop_desktop_action(false, PrimaryRestoreAction::SetPrimary),
             ClientDropDesktopAction::ReassertPrimary
         );
+    }
+
+    #[test]
+    fn host_sleep_restores_only_tablet_only_topology() {
+        assert!(is_host_suspend_power_event(4));
+        assert!(!is_host_suspend_power_event(7));
+        assert!(!is_host_suspend_power_event(18));
+        assert!(!is_host_suspend_power_event(6));
+        assert_eq!(
+            host_sleep_desktop_action(true),
+            ClientDropDesktopAction::UndoExternal
+        );
+        assert_eq!(
+            host_sleep_desktop_action(false),
+            ClientDropDesktopAction::None
+        );
+        assert!(apply_tablet_only_on_hello(false));
+        assert!(!apply_tablet_only_on_hello(true));
     }
 
     #[test]
