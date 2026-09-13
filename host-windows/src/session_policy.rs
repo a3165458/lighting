@@ -42,6 +42,12 @@ pub fn is_host_suspend_power_event(event: u32) -> bool {
     event == 4
 }
 
+/// `PBT_APMRESUMECRITICAL` (6), `PBT_APMRESUMESUSPEND` (7),
+/// `PBT_APMRESUMESTANDBY` (8), `PBT_APMRESUMEAUTOMATIC` (18).
+pub fn is_host_resume_power_event(event: u32) -> bool {
+    matches!(event, 6 | 7 | 8 | 18)
+}
+
 /// Windows itself is about to sleep (Start menu / power button). Mirror and
 /// extend leave the physical panel in the topology, so they must not call
 /// SetDisplayConfig here. Tablet-only must undo `/external` *before* S3,
@@ -52,6 +58,31 @@ pub fn host_sleep_desktop_action(tablet_only_active: bool) -> ClientDropDesktopA
     } else {
         ClientDropDesktopAction::None
     }
+}
+
+/// 仅平板下用户点休眠时的顺序：先释放抓屏，再断开共享并把电脑屏改回主屏，
+/// 最后才让系统真正睡下去。唤醒后不再自动关电脑屏。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostSleepPrepStep {
+    KillCapture,
+    StopShare,
+    RestorePrimary,
+    Suspend,
+}
+
+pub fn tablet_only_sleep_sequence() -> [HostSleepPrepStep; 4] {
+    [
+        HostSleepPrepStep::KillCapture,
+        HostSleepPrepStep::StopShare,
+        HostSleepPrepStep::RestorePrimary,
+        HostSleepPrepStep::Suspend,
+    ]
+}
+
+/// Wake must put a physical panel back even if the suspend-time restore lost
+/// the race against the GPU powering down.
+pub fn host_resume_should_restore_pc(tablet_only_session: bool) -> bool {
+    tablet_only_session
 }
 
 /// After the host wakes, do not immediately re-blank the PC. The lock screen
@@ -2258,6 +2289,135 @@ mod tests {
         );
         assert!(apply_tablet_only_on_hello(false));
         assert!(!apply_tablet_only_on_hello(true));
+        assert!(is_host_resume_power_event(7));
+        assert!(is_host_resume_power_event(18));
+        assert!(is_host_resume_power_event(6));
+        assert!(is_host_resume_power_event(8));
+        assert!(!is_host_resume_power_event(4));
+        assert!(host_resume_should_restore_pc(true));
+        assert!(!host_resume_should_restore_pc(false));
+        assert_eq!(
+            tablet_only_sleep_sequence(),
+            [
+                HostSleepPrepStep::KillCapture,
+                HostSleepPrepStep::StopShare,
+                HostSleepPrepStep::RestorePrimary,
+                HostSleepPrepStep::Suspend,
+            ]
+        );
+    }
+
+    #[test]
+    fn tablet_only_sleep_sequence_is_disconnect_restore_then_suspend() {
+        let steps = tablet_only_sleep_sequence();
+        assert_eq!(
+            steps,
+            [
+                HostSleepPrepStep::KillCapture,
+                HostSleepPrepStep::StopShare,
+                HostSleepPrepStep::RestorePrimary,
+                HostSleepPrepStep::Suspend,
+            ]
+        );
+        let restore = steps
+            .iter()
+            .position(|s| *s == HostSleepPrepStep::RestorePrimary)
+            .expect("restore");
+        let suspend = steps
+            .iter()
+            .position(|s| *s == HostSleepPrepStep::Suspend)
+            .expect("suspend");
+        assert!(
+            restore < suspend,
+            "PC primary must be restored before S3, not inside the suspend callback"
+        );
+        assert_eq!(steps[0], HostSleepPrepStep::KillCapture);
+        assert_eq!(steps[1], HostSleepPrepStep::StopShare);
+    }
+
+    #[test]
+    fn mirror_and_extend_sleep_are_topology_noops() {
+        // Mirror and extend leave the physical panel in the topology.
+        // HostSleepGuard is not installed for them; the policy is still None.
+        assert_eq!(
+            host_sleep_desktop_action(false),
+            ClientDropDesktopAction::None
+        );
+        assert!(!host_resume_should_restore_pc(false));
+        assert_ne!(
+            host_sleep_desktop_action(true),
+            host_sleep_desktop_action(false)
+        );
+    }
+
+    #[test]
+    fn resume_restores_pc_even_if_suspend_restore_lost_the_race() {
+        // v0.1.80 restored inside PBT_APMSUSPEND; GPU already powering down.
+        let suspend_restore_succeeded = false;
+        assert!(
+            host_resume_should_restore_pc(true),
+            "wake must put a physical panel back when suspend restore raced the GPU"
+        );
+        assert!(host_resume_should_restore_pc(true) || suspend_restore_succeeded);
+        assert!(!host_resume_should_restore_pc(false));
+        // Guard marks undid_external before restore returns, so Hello cannot re-blank.
+        let undid_external = true;
+        assert!(!apply_tablet_only_on_hello(undid_external));
+    }
+
+    #[test]
+    fn hello_after_sleep_must_not_immediately_reblank_pc() {
+        // Same share session after PBT_APMSUSPEND: lock screen needs a physical output.
+        assert!(!apply_tablet_only_on_hello(true));
+        // A later Start Share (fresh guard, undid_external=false) still applies 仅平板.
+        assert!(apply_tablet_only_on_hello(false));
+    }
+
+    #[test]
+    fn classifies_host_suspend_and_resume_power_events() {
+        // PBT_APMSUSPEND (4). Hibernate uses the same event.
+        assert!(is_host_suspend_power_event(4));
+        for other in [0u32, 6, 7, 8, 9, 10, 11, 18, 32787] {
+            assert!(
+                !is_host_suspend_power_event(other),
+                "event {other} must not be treated as suspend"
+            );
+        }
+        // PBT_APMRESUMECRITICAL (6), RESUMESUSPEND (7), RESUMESTANDBY (8),
+        // RESUMEAUTOMATIC (18).
+        for resume in [6u32, 7, 8, 18] {
+            assert!(is_host_resume_power_event(resume), "event {resume}");
+            assert!(!is_host_suspend_power_event(resume));
+        }
+        for not_resume in [0u32, 4, 9, 10, 11, 32787] {
+            assert!(
+                !is_host_resume_power_event(not_resume),
+                "event {not_resume} must not be treated as resume"
+            );
+        }
+    }
+
+    #[test]
+    fn simulated_sleep_wake_hello_cycle_matches_host_sleep_guard_policy() {
+        // Event injection only — GitHub runners cannot S3 / IddCx / lock-screen.
+        let tablet_only = true;
+
+        assert!(is_host_suspend_power_event(4));
+        assert_eq!(
+            host_sleep_desktop_action(tablet_only),
+            ClientDropDesktopAction::UndoExternal
+        );
+        assert_eq!(
+            tablet_only_sleep_sequence()[3],
+            HostSleepPrepStep::Suspend
+        );
+        // Set even if restore_after_tablet_only races the GPU powering down.
+        let undid_external = true;
+
+        assert!(is_host_resume_power_event(7));
+        assert!(host_resume_should_restore_pc(true));
+
+        assert!(!apply_tablet_only_on_hello(undid_external));
     }
 
     #[test]
