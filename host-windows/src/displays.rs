@@ -8,8 +8,8 @@ use anyhow::{Context, Result};
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -19,7 +19,8 @@ use windows::Win32::Devices::Display::{
     SDC_TOPOLOGY_INTERNAL, SET_DISPLAY_CONFIG_FLAGS,
 };
 use windows::Win32::Foundation::{
-    CloseHandle, BOOL, HANDLE, LPARAM, LUID, RECT, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    CloseHandle, GetLastError, BOOL, HANDLE, HWND, LPARAM, LRESULT, LUID, RECT, WAIT_OBJECT_0,
+    WAIT_TIMEOUT, WPARAM,
 };
 use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIFactory1};
 use windows::Win32::Graphics::Gdi::{
@@ -32,17 +33,26 @@ use windows::Win32::Security::{
     LUID_AND_ATTRIBUTES, SE_INC_BASE_PRIORITY_NAME, SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES,
     TOKEN_ELEVATION, TOKEN_PRIVILEGES, TOKEN_QUERY,
 };
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Power::{
     PowerRegisterSuspendResumeNotification, PowerUnregisterSuspendResumeNotification,
-    SetThreadExecutionState, DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS, ES_CONTINUOUS,
-    ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED, HPOWERNOTIFY,
+    RegisterSuspendResumeNotification, SetThreadExecutionState, UnregisterSuspendResumeNotification,
+    DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS, ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED,
+    HPOWERNOTIFY,
 };
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, OpenProcessToken, TerminateProcess, WaitForSingleObject,
+    GetCurrentProcess, GetCurrentProcessId, OpenProcess, OpenProcessToken, TerminateProcess,
+    WaitForSingleObject, PROCESS_TERMINATE,
 };
 use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DEVICE_NOTIFY_CALLBACK, MONITORINFOF_PRIMARY, SW_SHOWNORMAL,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, PostMessageW,
+    PostQuitMessage, RegisterClassW, TranslateMessage, CS_HREDRAW, CS_VREDRAW, DEVICE_NOTIFY_CALLBACK,
+    DEVICE_NOTIFY_WINDOW_HANDLE, MONITORINFOF_PRIMARY, MSG, SW_SHOWNORMAL, WM_CLOSE, WM_DESTROY,
+    WM_POWERBROADCAST, WNDCLASSW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 use lighting_host::capture_graph::DxgiCapture;
@@ -1063,17 +1073,25 @@ impl Drop for LidCloseGuard {
 struct SleepWatchInner {
     tablet_only: Arc<AtomicBool>,
     undid_external: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
     snap: Option<PrimarySnapshot>,
+    busy: Mutex<()>,
 }
 
-/// Listens for Windows sleep so tablet-only can undo Win+P `/external`
-/// *before* S3. Without this the physical panel wakes with backlight and no
-/// DWM until Ctrl+Win+Shift+B. Mirror / extend never register this.
+static SLEEP_WATCH: AtomicPtr<SleepWatchInner> = AtomicPtr::new(std::ptr::null_mut());
+const WAKE_RESTORE_TASK: &str = "LightingWakeRestoreDisplay";
+
+/// Listens for Windows sleep so tablet-only can disconnect, restore the
+/// physical primary, and *then* let the machine sleep. A callback-only
+/// restore races the GPU powering down and still wakes to a black panel.
 pub struct HostSleepGuard {
     registration: *mut core::ffi::c_void,
     #[allow(dead_code)]
     params: Option<Box<DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS>>,
     context: *mut SleepWatchInner,
+    hwnd: HWND,
+    window_notify: Option<HPOWERNOTIFY>,
+    thread: Option<std::thread::JoinHandle<()>>,
     pub undid_external: Arc<AtomicBool>,
 }
 
@@ -1081,13 +1099,22 @@ unsafe impl Send for HostSleepGuard {}
 unsafe impl Sync for HostSleepGuard {}
 
 impl HostSleepGuard {
-    pub fn watch(tablet_only: Arc<AtomicBool>, snap: Option<PrimarySnapshot>) -> Self {
+    pub fn watch(
+        tablet_only: Arc<AtomicBool>,
+        snap: Option<PrimarySnapshot>,
+        stop: Arc<AtomicBool>,
+    ) -> Self {
         let undid_external = Arc::new(AtomicBool::new(false));
         let context = Box::into_raw(Box::new(SleepWatchInner {
             tablet_only,
             undid_external: undid_external.clone(),
+            stop,
             snap,
+            busy: Mutex::new(()),
         }));
+        SLEEP_WATCH.store(context, Ordering::SeqCst);
+        install_wake_restore_task();
+
         let mut params = Box::new(DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS {
             Callback: Some(sleep_watch_callback),
             Context: context.cast(),
@@ -1102,21 +1129,38 @@ impl HostSleepGuard {
         };
         if err.0 != 0 {
             tracing::warn!("PowerRegisterSuspendResumeNotification failed: {}", err.0);
-            unsafe {
-                drop(Box::from_raw(context));
-            }
-            return Self {
-                registration: std::ptr::null_mut(),
-                params: None,
-                context: std::ptr::null_mut(),
-                undid_external,
-            };
+            registration = std::ptr::null_mut();
         }
-        tracing::info!("watching Windows sleep to restore the PC panel in tablet-only");
+
+        let (hwnd_tx, hwnd_rx) = std::sync::mpsc::channel::<isize>();
+        let thread = std::thread::Builder::new()
+            .name("lighting-power".into())
+            .spawn(move || power_window_thread(hwnd_tx))
+            .ok();
+        let hwnd = HWND(hwnd_rx.recv_timeout(Duration::from_secs(2)).unwrap_or(0) as *mut _);
+        let window_notify = if hwnd.0.is_null() {
+            None
+        } else {
+            unsafe {
+                RegisterSuspendResumeNotification(
+                    HANDLE(hwnd.0),
+                    DEVICE_NOTIFY_WINDOW_HANDLE,
+                )
+                .ok()
+            }
+        };
+        tracing::info!("watching Windows sleep to disconnect tablet-only then restore the PC panel");
         Self {
             registration,
-            params: Some(params),
+            params: if registration.is_null() {
+                None
+            } else {
+                Some(params)
+            },
             context,
+            hwnd,
+            window_notify,
+            thread,
             undid_external,
         }
     }
@@ -1124,6 +1168,19 @@ impl HostSleepGuard {
 
 impl Drop for HostSleepGuard {
     fn drop(&mut self) {
+        SLEEP_WATCH.store(std::ptr::null_mut(), Ordering::SeqCst);
+        remove_wake_restore_task();
+        if let Some(notify) = self.window_notify.take() {
+            let _ = unsafe { UnregisterSuspendResumeNotification(notify) };
+        }
+        if !self.hwnd.0.is_null() {
+            unsafe {
+                let _ = PostMessageW(self.hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+            }
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
         if !self.registration.is_null() {
             let handle = HPOWERNOTIFY(self.registration as isize);
             let err = unsafe { PowerUnregisterSuspendResumeNotification(handle) };
@@ -1151,22 +1208,232 @@ unsafe extern "system" fn sleep_watch_callback(
         return 0;
     }
     let inner = unsafe { &*(context.cast::<SleepWatchInner>()) };
-    if !lighting_host::session_policy::is_host_suspend_power_event(event) {
-        return 0;
+    handle_host_power_event(inner, event);
+    0
+}
+
+fn power_window_thread(hwnd_tx: std::sync::mpsc::Sender<isize>) {
+    let class = windows::core::w!("LightingHostPower");
+    let Ok(module) = (unsafe { GetModuleHandleW(None) }) else {
+        let _ = hwnd_tx.send(0);
+        return;
+    };
+    let wc = WNDCLASSW {
+        style: CS_HREDRAW | CS_VREDRAW,
+        lpfnWndProc: Some(power_wndproc),
+        hInstance: windows::Win32::Foundation::HINSTANCE(module.0),
+        lpszClassName: class,
+        ..Default::default()
+    };
+    let atom = unsafe { RegisterClassW(&wc) };
+    if atom == 0 {
+        let err = unsafe { GetLastError() };
+        if err.0 != 1410 {
+            tracing::warn!("RegisterClassW LightingHostPower failed: {}", err.0);
+            let _ = hwnd_tx.send(0);
+            return;
+        }
     }
-    if !inner.tablet_only.swap(false, Ordering::SeqCst) {
-        return 0;
+    let hwnd = unsafe {
+        CreateWindowExW(
+            WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+            class,
+            windows::core::w!("LightingHostPower"),
+            WS_POPUP,
+            0,
+            0,
+            0,
+            0,
+            HWND::default(),
+            None,
+            windows::Win32::Foundation::HINSTANCE(module.0),
+            None,
+        )
+    };
+    let hwnd = hwnd.unwrap_or_default();
+    let _ = hwnd_tx.send(hwnd.0 as isize);
+    if hwnd.0.is_null() {
+        return;
     }
+    let mut msg = MSG::default();
+    loop {
+        let ok = unsafe { GetMessageW(&mut msg, HWND::default(), 0, 0) };
+        if !ok.as_bool() {
+            break;
+        }
+        unsafe {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+}
+
+unsafe extern "system" fn power_wndproc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match msg {
+        WM_POWERBROADCAST => {
+            if let Some(inner) = current_sleep_watch() {
+                handle_host_power_event(inner, wparam.0 as u32);
+            }
+            LRESULT(1)
+        }
+        WM_CLOSE => {
+            let _ = DestroyWindow(hwnd);
+            LRESULT(0)
+        }
+        WM_DESTROY => {
+            PostQuitMessage(0);
+            LRESULT(0)
+        }
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+fn current_sleep_watch<'a>() -> Option<&'a SleepWatchInner> {
+    let ptr = SLEEP_WATCH.load(Ordering::SeqCst);
+    if ptr.is_null() {
+        None
+    } else {
+        Some(unsafe { &*ptr })
+    }
+}
+
+fn handle_host_power_event(inner: &SleepWatchInner, event: u32) {
+    if lighting_host::session_policy::is_host_suspend_power_event(event) {
+        disconnect_restore_before_sleep(inner);
+    } else if lighting_host::session_policy::is_host_resume_power_event(event) {
+        restore_pc_after_wake(inner);
+    }
+}
+
+/// User's requested sequence: kill capture, drop the share, put the laptop
+/// back as primary, then let Windows continue sleeping.
+fn disconnect_restore_before_sleep(inner: &SleepWatchInner) {
+    let _busy = inner.busy.lock().unwrap_or_else(|e| e.into_inner());
+    if lighting_host::session_policy::host_sleep_desktop_action(inner.tablet_only.load(Ordering::SeqCst))
+        != lighting_host::session_policy::ClientDropDesktopAction::UndoExternal
+        && !inner.undid_external.load(Ordering::SeqCst)
+    {
+        return;
+    }
+    tracing::info!("tablet-only: disconnect and restore PC panel before Windows sleep");
+    kill_owned_ffmpeg();
+    inner.stop.store(true, Ordering::SeqCst);
+    inner.tablet_only.store(false, Ordering::SeqCst);
     inner.undid_external.store(true, Ordering::SeqCst);
     let restored = match inner.snap.as_ref() {
         Some(snap) => restore_after_tablet_only(snap),
         None => restore_pc_monitor(),
     };
     match restored {
-        Ok(()) => tracing::info!("restored PC panel before Windows sleep (tablet-only)"),
-        Err(err) => tracing::warn!("restore PC panel before Windows sleep failed: {err:#}"),
+        Ok(()) => tracing::info!("PC panel restored; Windows may sleep now"),
+        Err(err) => tracing::warn!("restore PC panel before sleep failed: {err:#}"),
     }
-    0
+    wait_for_physical_primary();
+}
+
+fn restore_pc_after_wake(inner: &SleepWatchInner) {
+    let _busy = inner.busy.lock().unwrap_or_else(|e| e.into_inner());
+    if !lighting_host::session_policy::host_resume_should_restore_pc(true) {
+        return;
+    }
+    inner.stop.store(true, Ordering::SeqCst);
+    inner.tablet_only.store(false, Ordering::SeqCst);
+    inner.undid_external.store(true, Ordering::SeqCst);
+    let restored = match inner.snap.as_ref() {
+        Some(snap) => restore_after_tablet_only(snap),
+        None => restore_pc_monitor(),
+    };
+    match restored {
+        Ok(()) => tracing::info!("restored PC panel after Windows wake"),
+        Err(err) => tracing::warn!("restore PC panel after wake failed: {err:#}"),
+    }
+    let _ = apply_project_mode(ShareMode::Extend);
+    wait_for_physical_primary();
+}
+
+fn wait_for_physical_primary() {
+    let deadline = std::time::Instant::now() + Duration::from_millis(1200);
+    while std::time::Instant::now() < deadline {
+        if let Ok(list) = list_displays() {
+            if list.iter().any(|d| d.primary && !d.is_virtual) {
+                return;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(80));
+    }
+}
+
+fn kill_owned_ffmpeg() {
+    unsafe {
+        let me = GetCurrentProcessId();
+        let snap = match CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
+            Ok(h) => h,
+            Err(_) => return,
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        if Process32FirstW(snap, &mut entry).is_ok() {
+            loop {
+                let name = String::from_utf16_lossy(&entry.szExeFile);
+                let name = name.trim_end_matches('\0');
+                if name.eq_ignore_ascii_case("ffmpeg.exe") && entry.th32ParentProcessID == me {
+                    if let Ok(proc) = OpenProcess(PROCESS_TERMINATE, false, entry.th32ProcessID) {
+                        let _ = TerminateProcess(proc, 1);
+                        let _ = CloseHandle(proc);
+                    }
+                }
+                if Process32NextW(snap, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snap);
+    }
+}
+
+fn install_wake_restore_task() {
+    let tr = r"C:\Windows\System32\DisplaySwitch.exe /extend";
+    let out = Command::new("schtasks.exe")
+        .args([
+            "/Create",
+            "/F",
+            "/TN",
+            WAKE_RESTORE_TASK,
+            "/SC",
+            "ONEVENT",
+            "/EC",
+            "System",
+            "/MO",
+            "*[System[Provider[@Name='Microsoft-Windows-Kernel-Power'] and EventID=107]]",
+            "/TR",
+            tr,
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+    match out {
+        Ok(o) if o.status.success() => {
+            tracing::info!("installed wake task {WAKE_RESTORE_TASK} to restore the PC panel")
+        }
+        Ok(o) => tracing::warn!(
+            "schtasks create {WAKE_RESTORE_TASK}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        ),
+        Err(err) => tracing::warn!("schtasks create failed: {err}"),
+    }
+}
+
+fn remove_wake_restore_task() {
+    let _ = Command::new("schtasks.exe")
+        .args(["/Delete", "/F", "/TN", WAKE_RESTORE_TASK])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
 }
 
 fn powercfg(args: &[&str]) -> Option<std::process::Output> {
