@@ -416,6 +416,7 @@ async fn run_session_inner(
         Some(displays::HostSleepGuard::watch(
             tablet_only.clone(),
             preserve.clone(),
+            stop.clone(),
         ))
     } else {
         None

@@ -40,7 +40,7 @@ impl ShareMode {
                 "平板作为独立桌面，电脑屏继续亮。适合坐在电脑前；锁屏同样会中断。"
             }
             ShareMode::External => {
-                "虚拟屏 1:1 铺满平板，并关掉电脑屏（Win+P 仅第二屏幕）。平板休眠/断开或电脑休眠时会先把电脑屏亮回来，避免唤醒黑屏。合盖请设为不休眠。不要锁屏。"
+                "虚拟屏 1:1 铺满平板，并关掉电脑屏。电脑休眠时会先断开投屏、把画面切回主屏再睡觉，避免唤醒黑屏。合盖请设为不休眠。不要锁屏。"
             }
         }
     }
@@ -143,6 +143,7 @@ mod share_mode_tests {
         assert!(ShareMode::External.uses_virtual_display());
         assert!(ShareMode::External.blanks_pc_monitor());
         assert!(!ShareMode::Extend.blanks_pc_monitor());
+        assert!(!ShareMode::Mirror.blanks_pc_monitor());
         assert_eq!(ShareMode::Extend.display_switch_arg(), "/extend");
     }
 
