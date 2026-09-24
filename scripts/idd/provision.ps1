@@ -3,10 +3,8 @@
 #
 # Option B: enable Root\LightingIdd (our IddCx UMDF). Monitor appears on D0.
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$BundleDir,
-    [Parameter(Mandatory = $true)]
-    [string]$ResultFile,
+    [string]$BundleDir = '',
+    [string]$ResultFile = '',
     [ValidateSet('Full', 'EnableOnly')]
     [string]$Mode = 'Full'
 )
@@ -24,17 +22,61 @@ function Write-Result([string]$Status, [string]$Detail) {
     Set-Content -Path $ResultFile -Value ($Status + '|' + $safe) -Encoding ASCII -NoNewline
 }
 
+function Test-IntendedVirtualHwid {
+    param(
+        [string]$InstanceId = '',
+        [object]$HardwareIds = $null,
+        [string]$FriendlyName = '',
+        [Parameter(Mandatory = $true)]
+        [string]$Token
+    )
+    $parts = @($InstanceId)
+    if ($null -ne $HardwareIds) {
+        $parts += @($HardwareIds | ForEach-Object { "$_" })
+    }
+    $idText = ($parts -join '|')
+    $all = $idText + '|' + $FriendlyName
+    if ($all -match '(?i)glidex') { return $false }
+    $tok = [regex]::Escape($Token)
+    return [bool]($idText -match "(?i)(^|[^A-Za-z0-9])$tok([^A-Za-z0-9]|$)")
+}
+
+function Test-ReadyVirtualDevice {
+    param(
+        $Device,
+        [Parameter(Mandatory = $true)]
+        [string]$Token
+    )
+    if (-not $Device) { return $false }
+    if (-not (Test-IntendedVirtualHwid -InstanceId $Device.InstanceId -HardwareIds $Device.HardwareID -FriendlyName $Device.FriendlyName -Token $Token)) {
+        return $false
+    }
+    $class = [string]$Device.Class
+    $status = [string]$Device.Status
+    if ($class -eq 'Unknown') { return $false }
+    if ($status -match '(?i)Problem|Error|Disabled') { return $false }
+    if ($null -ne $Device.ConfigManagerErrorCode -and [int]$Device.ConfigManagerErrorCode -ne 0) {
+        return $false
+    }
+    return $true
+}
+
+function Should-RunNefconInstall([bool]$DevicePresent) {
+    return -not $DevicePresent
+}
+
 function Find-LightingIddDevice {
     try {
-        $device = Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object {
-            ($_.InstanceId -like '*LightingIdd*') -or
-            ($_.HardwareID -like '*LightingIdd*') -or
-            (($_.FriendlyName) -and ($_.FriendlyName -match 'Lighting Virtual Display'))
-        } | Select-Object -First 1
-        if (-not $device) {
-            $device = Get-PnpDevice -HardwareID $HwId -ErrorAction SilentlyContinue | Select-Object -First 1
-        }
-        return $device
+        $found = @()
+        try {
+            $found += @(Get-PnpDevice -HardwareID $HwId -ErrorAction SilentlyContinue)
+        } catch {}
+        try {
+            $found += @(Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object {
+                Test-IntendedVirtualHwid -InstanceId $_.InstanceId -HardwareIds $_.HardwareID -FriendlyName $_.FriendlyName -Token 'LightingIdd'
+            })
+        } catch {}
+        return ($found | Where-Object { $_ } | Select-Object -First 1)
     } catch {
         return $null
     }
@@ -42,16 +84,14 @@ function Find-LightingIddDevice {
 
 function Enable-LightingIddDevice {
     $device = Find-LightingIddDevice
-    if (-not $device) {
-        try { pnputil /enable-device /deviceid $HwId 2>&1 | Out-Null } catch {}
-        $device = Find-LightingIddDevice
-    }
     if (-not $device) { return $null }
     try { Enable-PnpDevice -InstanceId $device.InstanceId -Confirm:$false -ErrorAction SilentlyContinue } catch {}
     try { pnputil /enable-device $device.InstanceId 2>&1 | Out-Null } catch {}
     try { pnputil /restart-device $device.InstanceId 2>&1 | Out-Null } catch {}
     Start-Sleep -Seconds 3
-    return (Find-LightingIddDevice)
+    $device = Find-LightingIddDevice
+    if (Test-ReadyVirtualDevice -Device $device -Token 'LightingIdd') { return $device }
+    return $null
 }
 
 function Test-PnpSuccess([int]$ExitCode) {
@@ -72,31 +112,33 @@ function Install-FromBundle([string]$Dir) {
     if (-not $nef) {
         $nef = Get-ChildItem -Path $Dir -Recurse -Filter 'nefconw.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
     }
+    if (-not $nef) {
+        $nef = Get-ChildItem -Path $Dir -Recurse -Filter 'devcon.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+    }
 
-    $added = $false
+    $staged = $false
     $pnputilEc = -1
     try {
         pnputil /add-driver $inf.FullName /install 2>&1 | Out-Null
         $pnputilEc = $LASTEXITCODE
-        if (Test-PnpSuccess $pnputilEc) { $added = $true }
+        if (Test-PnpSuccess $pnputilEc) { $staged = $true }
     } catch {
         $pnputilEc = $LASTEXITCODE
     }
 
-    # Create root device node if needed (same pattern as sample / GlideX-class installers).
-    if ($nef) {
+    # Staging is not a device. Create Root\LightingIdd when the node is missing.
+    if ((Should-RunNefconInstall ([bool](Find-LightingIddDevice))) -and $nef) {
         Push-Location $infDir
         try {
             & $nef.FullName install $inf.Name $HwId 2>&1 | Out-Null
-            if (Test-PnpSuccess $LASTEXITCODE) { $added = $true }
         } catch {}
         finally {
             Pop-Location
         }
     }
 
-    if (-not $added -and -not (Find-LightingIddDevice)) {
-        throw "DRIVER_INSTALL_FAILED:pnputil=$pnputilEc"
+    if (-not (Find-LightingIddDevice)) {
+        throw "DRIVER_INSTALL_FAILED:pnputil=$pnputilEc,staged=$staged"
     }
     Start-Sleep -Seconds 4
 }
@@ -115,6 +157,13 @@ function Map-ProvisionError([string]$Message) {
     if ($slug.Length -gt 48) { $slug = $slug.Substring(0, 48) }
     if ([string]::IsNullOrWhiteSpace($slug)) { return 'UNEXPECTED' }
     return "ERR_$slug"
+}
+
+if ($MyInvocation.InvocationName -eq '.') {
+    return
+}
+if ([string]::IsNullOrWhiteSpace($BundleDir) -or [string]::IsNullOrWhiteSpace($ResultFile)) {
+    throw 'BundleDir and ResultFile are required'
 }
 
 try {
