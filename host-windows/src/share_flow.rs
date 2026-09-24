@@ -44,6 +44,21 @@ pub fn tablet_only_abort_message(reason: &str) -> String {
     )
 }
 
+/// Progress / error copy when the portable shipped INF without LightingIdd.dll.
+pub fn idd_bundle_incomplete_copy() -> &'static str {
+    "安装包缺少虚拟屏驱动文件"
+}
+
+/// True only when both INF and DLL are present. INF-only must not launch provision.ps1.
+pub fn should_attempt_idd_install(inf_present: bool, dll_present: bool) -> bool {
+    inf_present && dll_present
+}
+
+pub fn is_idd_bundle_incomplete(raw: &str) -> bool {
+    let u = raw.to_uppercase();
+    u.contains("BUNDLE_DLL_MISSING") || u.contains("BUNDLE_INF_MISSING")
+}
+
 /// Copy shown while installing the virtual display driver.
 pub fn virtual_driver_install_copy(already_admin: bool) -> &'static str {
     if already_admin {
@@ -174,17 +189,58 @@ pub fn classify_provision_finish(
         return Err(ProvisionFinishError::Timeout);
     }
     if !result_file_present {
-        return Err(if exit_success {
-            ProvisionFinishError::NoResult
-        } else {
-            ProvisionFinishError::Interrupted
-        });
+        // 360 often kills the child before Write-Result. Missing file is
+        // an interrupt, even if wait() saw a zero exit.
+        let _ = exit_success;
+        return Err(ProvisionFinishError::Interrupted);
     }
     let line = result_line.trim();
     if line.starts_with("OK|") || line.starts_with("FAIL|") {
         return Ok(());
     }
-    Err(ProvisionFinishError::UnknownResult)
+    Err(ProvisionFinishError::Interrupted)
+}
+
+/// LightingIdd was interrupted by AV / missing result — do not hide it behind
+/// MttVDD `DEVICE_NOT_FOUND` / `VDD_NO_MONITOR`.
+pub fn should_surface_provision_interrupt(raw: &str) -> bool {
+    let u = raw.to_uppercase();
+    u.contains("INSTALL_INTERRUPTED")
+        || u.contains("DRIVER_NO_RESULT")
+        || u.contains("DRIVER_UNKNOWN_RESULT")
+        || u.contains("DRIVER_LAUNCHER_FAILED")
+        || u.contains("INSTALL_TIMEOUT")
+}
+
+fn looks_like_vdd_device_missing(raw: &str) -> bool {
+    let u = raw.to_uppercase();
+    u.contains("DEVICE_NOT_FOUND")
+        || u.contains("DEVICE_STILL_MISSING")
+        || u.contains("VDD_NO_MONITOR")
+        || u.contains("IDD_NO_MONITOR")
+}
+
+/// Final error after LightingIdd then optional MttVDD. Interrupts win.
+/// Incomplete Idd (missing DLL) must not be swallowed into 「未找到虚拟显示设备」.
+pub fn choose_virtual_prepare_error(idd_err: Option<&str>, vdd_err: Option<&str>) -> String {
+    if let Some(idd) = idd_err {
+        if should_surface_provision_interrupt(idd) {
+            return idd.trim().to_string();
+        }
+        if is_idd_bundle_incomplete(idd)
+            && vdd_err
+                .map(looks_like_vdd_device_missing)
+                .unwrap_or(true)
+        {
+            return idd.trim().to_string();
+        }
+    }
+    vdd_err
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or_else(|| idd_err.map(str::trim).filter(|s| !s.is_empty()))
+        .unwrap_or("VDD_NO_MONITOR")
+        .to_string()
 }
 
 /// Drop Electron's `Error invoking remote method '…': Error:` wrapper.
@@ -541,15 +597,15 @@ mod tests {
         );
         assert_eq!(
             classify_provision_finish(false, true, false, ""),
-            Err(ProvisionFinishError::NoResult)
+            Err(ProvisionFinishError::Interrupted)
+        );
+        assert_eq!(
+            classify_provision_finish(false, false, true, "garbage"),
+            Err(ProvisionFinishError::Interrupted)
         );
         assert_eq!(
             classify_provision_finish(true, false, false, ""),
             Err(ProvisionFinishError::Timeout)
-        );
-        assert_eq!(
-            classify_provision_finish(false, false, true, "garbage"),
-            Err(ProvisionFinishError::UnknownResult)
         );
         assert_eq!(
             classify_provision_finish(false, true, true, "OK|READY"),
@@ -594,5 +650,68 @@ mod tests {
         assert!(!virtual_driver_install_copy(true).contains("自动镜像"));
         assert!(!share_start_notice(ShareMode::External, true).contains("自动镜像"));
         assert!(!share_start_notice(ShareMode::External, false).contains("自动镜像"));
+    }
+
+    #[test]
+    fn elevated_interrupt_is_not_hidden_as_device_not_found() {
+        assert!(should_surface_provision_interrupt("INSTALL_INTERRUPTED"));
+        assert!(should_surface_provision_interrupt("FAIL|INSTALL_INTERRUPTED"));
+        assert!(should_surface_provision_interrupt("DRIVER_NO_RESULT"));
+        assert!(!should_surface_provision_interrupt("DEVICE_NOT_FOUND"));
+        assert!(!should_surface_provision_interrupt("VDD_NO_MONITOR"));
+        assert_eq!(
+            choose_virtual_prepare_error(Some("INSTALL_INTERRUPTED"), Some("VDD_NO_MONITOR")),
+            "INSTALL_INTERRUPTED"
+        );
+        assert_eq!(
+            choose_virtual_prepare_error(Some("IDD_NO_MONITOR"), Some("VDD_NO_MONITOR")),
+            "VDD_NO_MONITOR"
+        );
+        let out = decide_after_virtual_prepare(
+            ShareMode::External,
+            false,
+            "INSTALL_INTERRUPTED",
+            false,
+            false,
+        );
+        match out {
+            VirtualPrepareOutcome::Abort { reason } => {
+                let human = crate::ui_text::human_last_error(&reason);
+                assert!(human.contains("360") || human.contains("安全软件"));
+                assert!(human.contains("中断"));
+                assert!(!human.contains("未找到虚拟显示设备"));
+                assert!(!human.contains("已取消"));
+                let abort = tablet_only_abort_message(&human);
+                assert!(abort.contains("没有改用镜像"));
+                assert!(abort.contains("360") || abort.contains("安全软件"));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn incomplete_idd_bundle_skips_install_and_is_not_device_not_found() {
+        assert!(!should_attempt_idd_install(true, false));
+        assert!(!should_attempt_idd_install(false, true));
+        assert!(should_attempt_idd_install(true, true));
+        assert_eq!(idd_bundle_incomplete_copy(), "安装包缺少虚拟屏驱动文件");
+        assert!(!should_surface_provision_interrupt("BUNDLE_DLL_MISSING"));
+        assert!(!should_surface_provision_interrupt("BUNDLE_INF_MISSING"));
+        assert!(is_idd_bundle_incomplete("FAIL|BUNDLE_DLL_MISSING"));
+        assert_eq!(
+            choose_virtual_prepare_error(Some("BUNDLE_DLL_MISSING"), Some("DEVICE_NOT_FOUND")),
+            "BUNDLE_DLL_MISSING"
+        );
+        assert_eq!(
+            choose_virtual_prepare_error(Some("BUNDLE_DLL_MISSING"), Some("VDD_NO_MONITOR")),
+            "BUNDLE_DLL_MISSING"
+        );
+        let human = crate::ui_text::human_last_error("BUNDLE_DLL_MISSING");
+        assert_eq!(human, "安装包缺少虚拟屏驱动文件");
+        assert!(!human.contains("未找到虚拟显示设备"));
+        let abort = tablet_only_abort_message(&human);
+        assert!(abort.contains("安装包缺少虚拟屏驱动文件"));
+        assert!(!abort.contains("未找到虚拟显示设备"));
+        assert!(!abort.contains("自动镜像"));
     }
 }

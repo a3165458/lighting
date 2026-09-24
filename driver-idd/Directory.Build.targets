@@ -1,0 +1,17 @@
+<Project>
+  <!-- Imported after the UMDF toolset. Force-disable /WX and PREfast so WDK
+       headers (C6553, C28193) cannot fail a pack that otherwise compiles. -->
+  <PropertyGroup>
+    <TreatWarningAsError>false</TreatWarningAsError>
+    <EnablePREfast>false</EnablePREfast>
+    <RunCodeAnalysis>false</RunCodeAnalysis>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <EnablePREfast>false</EnablePREfast>
+      <DisableSpecificWarnings>6553;28193;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <AdditionalOptions>/WX- %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+</Project>
