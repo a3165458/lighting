@@ -33,6 +33,8 @@ use windows::core::PCWSTR;
 use lighting_host::view::{looks_virtual_display, ShareMode};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+/// Visible console so 360 / AV can prompt 「允许」 instead of silently killing us.
+const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
 const VDD_PIPE: &str = r"\\.\pipe\MTTVirtualDisplayPipe";
 /// Official MttVDD default when registry `VDDPATH` is absent.
 const VDD_SETTINGS_DEFAULT: &str = r"C:\VirtualDisplayDriver\vdd_settings.xml";
@@ -364,7 +366,17 @@ fn run_provision_script(
     let elevated = process_is_elevated();
     tracing::info!(elevated, mode, "launching virtual display provision");
     if elevated {
-        run_provision_already_admin(script, bundle, mode, &result_file)?;
+        let exit_success = run_provision_already_admin(script, bundle, mode, &result_file)?;
+        let raw = std::fs::read_to_string(&result_file).unwrap_or_default();
+        if let Err(kind) = lighting_host::share_flow::classify_provision_finish(
+            false,
+            exit_success,
+            result_file.is_file(),
+            raw.trim(),
+        ) {
+            let _ = std::fs::remove_file(&result_file);
+            anyhow::bail!("{}", kind.code());
+        }
     } else if running_ipc_only() {
         anyhow::bail!(
             "{}",
@@ -384,7 +396,10 @@ fn run_provision_script(
     if line.starts_with("FAIL|") {
         anyhow::bail!("{}", line.trim_start_matches("FAIL|"));
     }
-    anyhow::bail!("DRIVER_UNKNOWN_RESULT")
+    anyhow::bail!(
+        "{}",
+        lighting_host::share_flow::ProvisionFinishError::UnknownResult.code()
+    )
 }
 
 fn run_provision_already_admin(
@@ -392,7 +407,7 @@ fn run_provision_already_admin(
     bundle: &std::path::Path,
     mode: &str,
     result_file: &std::path::Path,
-) -> Result<()> {
+) -> Result<bool> {
     let mut child = Command::new("powershell.exe")
         .args([
             "-NoProfile",
@@ -407,24 +422,24 @@ fn run_provision_already_admin(
             "-Mode",
             mode,
         ])
-        .creation_flags(CREATE_NO_WINDOW)
+        .creation_flags(CREATE_NEW_CONSOLE)
         .spawn()
         .context("DRIVER_LAUNCHER_FAILED")?;
     wait_child_with_timeout(&mut child, PROVISION_TIMEOUT)
 }
 
-fn wait_child_with_timeout(child: &mut std::process::Child, timeout: Duration) -> Result<()> {
+fn wait_child_with_timeout(child: &mut std::process::Child, timeout: Duration) -> Result<bool> {
     let start = std::time::Instant::now();
     loop {
         match child.try_wait() {
-            Ok(Some(_status)) => return Ok(()),
+            Ok(Some(status)) => return Ok(status.success()),
             Ok(None) if start.elapsed() >= timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
                 anyhow::bail!("INSTALL_TIMEOUT");
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(150)),
-            Err(err) => anyhow::bail!("DRIVER_LAUNCHER_FAILED:{err}"),
+            Err(err) => anyhow::bail!("INSTALL_INTERRUPTED:{err}"),
         }
     }
 }

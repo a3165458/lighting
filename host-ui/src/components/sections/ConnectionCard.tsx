@@ -85,7 +85,7 @@ export function ConnectionCard({ host, busy, onToggleShare, onInstallClient }: P
           (host.phase === '准备虚拟屏' || host.activityTitle === '正在启用虚拟屏') &&
           host.hostElevated && (
             <p className="mt-2 text-sm text-text-secondary">
-              已是管理员，安装驱动时不会再弹确认窗口，请稍候。
+              已是管理员，安装驱动时不会再弹确认窗口。若弹出 360/杀毒软件请选允许。
             </p>
           )}
         {showSteps &&
