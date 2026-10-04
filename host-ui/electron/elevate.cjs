@@ -20,6 +20,8 @@ const COPY = {
     '无法唤起或等待管理员确认窗口。请完全退出 Lighting，右键选「以管理员身份运行」后再试（已是管理员时不会再弹窗）。',
   UAC_HIDDEN_HOST:
     '主机进程没有可见窗口，无法弹出管理员确认。请再点开始共享并留意蓝底「用户账户控制」，或右键以管理员身份运行（已是管理员时不会再弹窗）。',
+  INSTALL_INTERRUPTED:
+    '安装被中断（可能是 360/杀毒软件）。请在安全软件里允许 Lighting、powershell、pnputil，然后完全退出再试。已是管理员时不会再弹 UAC。',
 }
 
 function humanizeElevateCode(code) {
@@ -28,16 +30,21 @@ function humanizeElevateCode(code) {
 
 function mapElevateError(err) {
   const text = `${err?.stderr || ''} ${err?.message || err || ''}`
-  if (/1223|canceled|cancelled|被用户取消|操作已取消|UAC_CANCELLED/i.test(text)) {
+  // Only a dismissed visible UAC (Win32 1223 / 被用户取消). Do not treat
+  // killed children, missing result files, or generic "canceled" as that.
+  if (/(?:^|[^0-9])1223(?:[^0-9]|$)|被用户取消|操作已取消|UAC_CANCELLED/.test(text)) {
     return new Error(humanizeElevateCode('UAC_CANCELLED'))
   }
-  if (err?.killed || /ETIMEDOUT|timeout|UAC_TIMEOUT/i.test(text)) {
+  if (err?.killed || /ETIMEDOUT|UAC_TIMEOUT|INSTALL_TIMEOUT/.test(text)) {
     return new Error(humanizeElevateCode('UAC_TIMEOUT'))
   }
   if (/access is denied|ACCESS_DENIED|0x5\b|拒绝/i.test(text)) {
     return new Error(humanizeElevateCode('ACCESS_DENIED'))
   }
-  return new Error(humanizeElevateCode('SHELLEXECUTE_FAILED'))
+  if (/INSTALL_INTERRUPTED|UAC_HELPER_EXIT|UAC_NO_PROCESS/i.test(text)) {
+    return new Error(humanizeElevateCode('INSTALL_INTERRUPTED'))
+  }
+  return new Error(humanizeElevateCode('INSTALL_INTERRUPTED'))
 }
 
 /**
@@ -60,7 +67,7 @@ async function spawnElevatedHost({ hostExe, resourcesDir, port }) {
     'Write-Host \'请在蓝底「用户账户控制」窗口点「是」…\'',
     `$helper = ${psQuote(helper)}`,
     '$p = Start-Process -FilePath "$env:SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -ArgumentList @(\'-NoProfile\',\'-ExecutionPolicy\',\'Bypass\',\'-File\', $helper) -Verb RunAs -Wait -PassThru',
-    'if (-not $p) { throw \'UAC_CANCELLED\' }',
+    'if (-not $p) { throw \'UAC_NO_PROCESS\' }',
     'if ($null -ne $p.ExitCode -and $p.ExitCode -ne 0) { throw "UAC_HELPER_EXIT:$($p.ExitCode)" }',
     '',
   ].join('\r\n')

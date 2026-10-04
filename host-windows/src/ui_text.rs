@@ -318,10 +318,12 @@ pub fn human_vdd_error(raw: &str) -> Option<String> {
         "未找到虚拟显示设备。请完全退出后以管理员身份运行再试。"
     } else if code_upper.contains("UAC_TIMEOUT") {
         "等了很久也没有管理员确认窗口。请完全退出 Lighting，右键选「以管理员身份运行」后再点开始共享（已是管理员时不会再弹窗）。"
+    } else if code_upper.contains("INSTALL_INTERRUPTED") {
+        "安装被中断（可能是 360/杀毒软件）。请在安全软件里允许 Lighting、powershell、pnputil，然后完全退出再试。已是管理员时不会再弹 UAC。"
     } else if code_upper.contains("INSTALL_TIMEOUT") {
-        "驱动安装超时。请完全退出 Lighting 后以管理员身份运行再试。"
+        "驱动安装超时。请完全退出 Lighting 后以管理员身份运行再试。若弹出 360/杀毒软件请选允许。"
     } else if code_upper.contains("UAC_NO_RESULT") || code_upper.contains("DRIVER_NO_RESULT") {
-        "没有收到驱动安装结果。刚才可能没有弹出管理员确认。请再点开始共享并留意蓝底窗口，或完全退出后右键以管理员身份运行（已是管理员时不会再弹窗）。"
+        "没写出安装结果。若弹出 360/杀毒软件请选允许；仍失败请把 Lighting 加入白名单后重试。"
     } else if code_upper.contains("UAC_HIDDEN_HOST") {
         "主机进程没有可见窗口，无法弹出管理员确认。请再点开始共享并留意蓝底「用户账户控制」，或右键以管理员身份运行（已是管理员时不会再弹窗）。"
     } else if code_upper.contains("SHELLEXECUTE_FAILED") || code_upper.contains("UAC_WAIT_FAILED") {
@@ -337,7 +339,7 @@ pub fn human_vdd_error(raw: &str) -> Option<String> {
     } else if code_upper.contains("UNEXPECTED") || code_upper.starts_with("ERR_") {
         "虚拟显示驱动安装遇到未知错误。请完全退出后以管理员身份运行 Lighting；仍失败可到 GitHub 手动安装 Virtual Display Driver。"
     } else if code_upper.contains("LAUNCHER_FAILED") || code_upper.contains("UNKNOWN_RESULT") {
-        "无法启动虚拟显示驱动安装程序。请完全退出后以管理员身份运行 Lighting。"
+        "没写出安装结果，或安装程序未能启动（可能是 360/杀毒软件拦了）。请允许后完全退出再试；已是管理员时不会再弹 UAC。"
     } else if upper.contains("静默安装")
         || upper.contains("NEFCON")
         || upper.contains("EXITCODE")
@@ -552,9 +554,9 @@ mod tests {
         assert_eq!(
             human_detail_text(
                 "准备虚拟屏",
-                "已是管理员，正在直接安装虚拟显示驱动（不会再弹出确认窗口）…"
+                crate::share_flow::virtual_driver_install_copy(true)
             ),
-            "已是管理员，正在直接安装虚拟显示驱动（不会再弹出确认窗口）…"
+            crate::share_flow::virtual_driver_install_copy(true)
         );
     }
 
@@ -573,7 +575,13 @@ mod tests {
         assert!(human_vdd_error("UNEXPECTED").unwrap().contains("未知错误"));
         assert!(human_vdd_error("UAC_CANCELLED").unwrap().contains("取消"));
         assert!(!human_vdd_error("UAC_NO_RESULT").unwrap().contains("取消"));
-        assert!(human_vdd_error("UAC_NO_RESULT").unwrap().contains("没有收到驱动安装结果"));
+        assert!(!human_vdd_error("DRIVER_NO_RESULT").unwrap().contains("取消"));
+        assert!(!human_vdd_error("DRIVER_UNKNOWN_RESULT").unwrap().contains("取消"));
+        assert!(!human_vdd_error("INSTALL_TIMEOUT").unwrap().contains("已取消"));
+        assert!(!human_vdd_error("INSTALL_INTERRUPTED").unwrap().contains("已取消"));
+        assert!(human_vdd_error("INSTALL_INTERRUPTED").unwrap().contains("360"));
+        assert!(human_vdd_error("DRIVER_NO_RESULT").unwrap().contains("没写出"));
+        assert!(human_vdd_error("UAC_NO_RESULT").unwrap().contains("没写出"));
         assert!(human_vdd_error("UAC_HIDDEN_HOST").unwrap().contains("可见窗口"));
         assert!(human_vdd_error("SHELLEXECUTE_FAILED").unwrap().contains("无法唤起"));
         assert!(human_vdd_error("UAC_WAIT_FAILED").unwrap().contains("管理员确认"));
@@ -582,7 +590,8 @@ mod tests {
         assert!(human_vdd_error("DRIVER_SIGNATURE").unwrap().contains("签名"));
         assert!(human_vdd_error("UAC_TIMEOUT").unwrap().contains("以管理员身份运行"));
         assert!(human_vdd_error("INSTALL_TIMEOUT").unwrap().contains("超时"));
-        assert!(human_vdd_error("DRIVER_LAUNCHER_FAILED").unwrap().contains("无法启动"));
+        assert!(human_vdd_error("DRIVER_LAUNCHER_FAILED").unwrap().contains("360"));
+        assert!(!human_vdd_error("DRIVER_LAUNCHER_FAILED").unwrap().contains("已取消"));
         assert!(human_last_error("VDD_BUNDLE_MISSING").contains("缺少"));
         assert!(looks_like_bind_or_port("connection refused"));
         assert!(looks_technical("adb reverse tcp:17400"));

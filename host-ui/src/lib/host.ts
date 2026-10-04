@@ -128,6 +128,13 @@ export function hasHostBridge(): boolean {
   return typeof window !== 'undefined' && Boolean(window.lightingHost)
 }
 
+/** Drop Electron's `Error invoking remote method '…': Error:` wrapper. */
+export function stripElectronIpcError(raw: string | undefined): string {
+  const text = String(raw || '').trim()
+  const match = text.match(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?(.*)$/s)
+  return (match?.[1] || text).trim()
+}
+
 /** Hide lastError when usbHint / activity already contain the abort paragraph. */
 export function shouldShowSeparateLastError(
   lastError: string | undefined,
